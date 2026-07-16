@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  python-ai-talk:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: go-ai-talk/python-ai-talk:local
+    container_name: go-ai-talk-python-ai-talk
+    environment:
+      TZ: Asia/Shanghai
+      PYTHON_AI_TALK_HOST: "0.0.0.0"
+      PYTHON_AI_TALK_PORT: "8000"
+      PYTHON_AI_TALK_REDIS_URL: "${PYTHON_AI_TALK_REDIS_URL:-redis://redis:6379/0}"
+      PYTHON_AI_TALK_CHROMA_PERSIST_DIR: "/app/data/chroma_db"
+      PYTHON_AI_TALK_EMBEDDING_MODEL: "BAAI/bge-small-zh-v1.5"
+      PYTHON_AI_TALK_HISTORY_SERVICE_URL: "${PYTHON_AI_TALK_HISTORY_SERVICE_URL:-http://host.docker.internal:9801}"
+      PYTHON_AI_TALK_DEVICE_SERVICE_URL: "${PYTHON_AI_TALK_DEVICE_SERVICE_URL:-http://host.docker.internal:9803}"
+      PYTHON_AI_TALK_VOICE_SERVICE_URL: "${PYTHON_AI_TALK_VOICE_SERVICE_URL:-http://host.docker.internal:9802}"
+      PYTHON_AI_TALK_DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      PYTHON_AI_TALK_GLM_API_KEY: "${GLM_API_KEY:-}"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    volumes:
+      - ./data/chroma_db:/app/data/chroma_db
+      - ./data/models:/app/data/models
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

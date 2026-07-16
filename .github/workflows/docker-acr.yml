@@ -1,0 +1,208 @@
+name: docker-acr
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: 推送目标命名空间
+        required: true
+        type: choice
+        options:
+          - test
+          - prod
+      image_tag:
+        description: 镜像主 tag（base tag，如 v1.0.0-rc.1）
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve-env:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_env: ${{ steps.resolve.outputs.deploy_env }}
+      primary_tag: ${{ steps.resolve.outputs.primary_tag }}
+    steps:
+      - name: 解析目标环境与镜像 tag
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          DISPATCH_ENV: ${{ inputs.target_env }}
+          DISPATCH_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          resolve_env_from_tag() {
+            local tag="$1"
+            if [[ ! "${tag}" == v* ]]; then
+              echo "::error::tag 须以 v 开头: ${tag}" >&2
+              exit 1
+            fi
+            if [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo prod
+            else
+              echo test
+            fi
+          }
+
+          deploy_env=""
+          primary_tag=""
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            deploy_env="${DISPATCH_ENV}"
+            primary_tag="${DISPATCH_TAG}"
+            if [[ -z "${primary_tag}" ]]; then
+              echo "::error::workflow_dispatch 须填写 image_tag" >&2
+              exit 1
+            fi
+            echo "手动触发: env=${deploy_env} tag=${primary_tag}"
+          elif [[ "${GIT_REF}" == refs/tags/* ]]; then
+            tag_raw="${GIT_REF#refs/tags/}"
+            primary_tag="${tag_raw}"
+            if [[ "${tag_raw}" == *+* ]]; then
+              primary_tag="${tag_raw%%+*}"
+            fi
+            deploy_env="$(resolve_env_from_tag "${primary_tag}")"
+            echo "tag push: git=${tag_raw} base=${primary_tag} → ${deploy_env}"
+          else
+            echo "::error::不支持的 ref: ${GIT_REF}（仅 push tag v* 或 workflow_dispatch）" >&2
+            exit 1
+          fi
+
+          echo "deploy_env=${deploy_env}" >> "${GITHUB_OUTPUT}"
+          echo "primary_tag=${primary_tag}" >> "${GITHUB_OUTPUT}"
+
+  build-push:
+    needs: resolve-env
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.deploy_env }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 加载 ACR Secrets
+        id: acr
+        shell: bash
+        env:
+          DEPLOY_ENV: ${{ needs.resolve-env.outputs.deploy_env }}
+          PRIMARY_TAG: ${{ needs.resolve-env.outputs.primary_tag }}
+          REGISTRY_PULL: ${{ secrets.REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          RUNBOOK_HINT="docs/runbooks/release-deploy-and-run.md「ACR 与 CI 凭证」"
+
+          validate_push_registry() {
+            local reg="$1"
+            local host ns suggested
+
+            if [[ -z "${reg}" ]]; then
+              echo "::error title=缺少 REGISTRY::请在 GitHub Environment '${DEPLOY_ENV}' 配置 secret REGISTRY=<域名>/<命名空间>"
+              exit 1
+            fi
+
+            host="${reg%%/*}"
+            if [[ "${host}" == "${reg}" ]]; then
+              ns="(缺失)"
+            else
+              ns="${reg#*/}"
+            fi
+
+            echo "deploy_env: ${DEPLOY_ENV}"
+            echo "push host: ${host}"
+            echo "push namespace: ${ns}"
+
+            if [[ "${reg}" == *"-vpc."* ]]; then
+              suggested="${host/-vpc./.}"
+              if [[ "${ns}" != "(缺失)" ]]; then
+                suggested="${suggested}/${ns}"
+              fi
+              echo "::error title=REGISTRY 仍含 -vpc::GitHub Actions 公网 runner 无法 push VPC 专线地址"
+              echo "::error::推导后应为: ${suggested}"
+              exit 1
+            fi
+
+            if [[ "${reg}" != *"/"* ]]; then
+              echo "::error title=REGISTRY 缺少命名空间::格式须为 <公网域名>/<命名空间>"
+              exit 1
+            fi
+
+            echo "✓ push registry 格式校验通过"
+          }
+
+          registry_pull="${REGISTRY_PULL}"
+          acr_username="${ACR_USERNAME}"
+          acr_password="${ACR_PASSWORD}"
+
+          if [[ -z "${registry_pull}" ]]; then
+            echo "::error title=缺少 REGISTRY::请在 GitHub Environment '${DEPLOY_ENV}' 配置 secret REGISTRY"
+            exit 1
+          fi
+          if [[ -z "${acr_username}" ]]; then
+            echo "::error title=缺少 ACR_USERNAME::请在 Repository secrets 配置 ACR_USERNAME"
+            exit 1
+          fi
+          if [[ -z "${acr_password}" ]]; then
+            echo "::error title=缺少 ACR_PASSWORD::请在 Repository secrets 配置 ACR_PASSWORD"
+            exit 1
+          fi
+
+          registry_push="${registry_pull/-vpc./.}"
+          validate_push_registry "${registry_push}"
+
+          echo "::add-mask::${acr_password}"
+
+          echo "env=${DEPLOY_ENV}" >> "${GITHUB_OUTPUT}"
+          echo "registry=${registry_push}" >> "${GITHUB_OUTPUT}"
+          echo "host=${registry_push%%/*}" >> "${GITHUB_OUTPUT}"
+          echo "primary_tag=${PRIMARY_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "username=${acr_username}" >> "${GITHUB_OUTPUT}"
+          echo "password=${acr_password}" >> "${GITHUB_OUTPUT}"
+
+      - name: 解析镜像 tag
+        id: tags
+        shell: bash
+        env:
+          ACR_REGISTRY: ${{ steps.acr.outputs.registry }}
+          PRIMARY_TAG: ${{ steps.acr.outputs.primary_tag }}
+        run: |
+          set -euo pipefail
+          image="${ACR_REGISTRY}/python-ai-talk"
+          {
+            echo "list<<EOF"
+            echo "${image}:${PRIMARY_TAG}"
+            echo "${image}:${GITHUB_SHA}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+          echo "primary=${PRIMARY_TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Login ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.acr.outputs.host }}
+          username: ${{ steps.acr.outputs.username }}
+          password: ${{ steps.acr.outputs.password }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.list }}
+
+      - name: 构建摘要
+        shell: bash
+        run: |
+          echo "python-ai-talk → [${{ steps.acr.outputs.env }}] ${{ steps.acr.outputs.registry }}:${{ steps.acr.outputs.primary_tag }} (+ ${GITHUB_SHA})"
