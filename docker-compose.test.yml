@@ -1,0 +1,27 @@
+# 测试环境 overlay：与基线 docker-compose.yml 组合使用
+# 项目名 python-ai-talk-test（与生产 python-ai-talk-prod 隔离；勿省略 overlay 或与 prod 共用默认 project 名）
+# 本文件只改「测试与生产不同的部署项」：镜像、container_name、ports、networks
+# 不写 environment：业务环境变量全部由基线 + --env-file .env.test 注入
+# 宿主机端口 18000 在此定义（基线无 ports，不会与生产 8000 叠加）
+#
+# 启动命令：
+#   docker compose --env-file env/.env.test \
+#     -f docker-compose.yml \
+#     -f docker-compose.test.yml \
+#     pull && up -d --no-build
+
+name: python-ai-talk-test
+
+services:
+  python-ai-talk:
+    image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
+    container_name: go-ai-talk-python-ai-talk-test
+    ports:
+      - "18000:8000"
+    networks: [go-ai-talk-test-net]
+
+
+networks:
+  go-ai-talk-test-net:
+    external: true
+    name: go-ai-talk-test-net

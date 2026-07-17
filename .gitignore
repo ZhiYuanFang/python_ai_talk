@@ -56,3 +56,11 @@ logs/
 
 # Docker
 docker-compose.override.yml
+
+# Environment variables (sensitive)
+.env
+.env.local
+.env.*.local
+env/.env.local
+env/.env.test
+env/.env.prod

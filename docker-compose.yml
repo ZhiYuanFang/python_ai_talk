@@ -1,26 +1,32 @@
 version: "3.9"
 
+# 基线配置：定义 python-ai-talk 服务骨架
+# 环境变量全部由 --env-file 注入，本文件只定义服务结构和默认值占位符
+# 命名规范：三层一致（.env 文件、docker-compose 注入、python 应用读取同名变量）
+# 使用方式：
+#   本地开发：docker compose --env-file env/.env.local -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#   测试环境：docker compose --env-file env/.env.test -f docker-compose.yml -f docker-compose.test.yml pull && up -d --no-build
+#   生产环境：docker compose --env-file env/.env.prod -f docker-compose.yml -f docker-compose.prod.yml pull && up -d --no-build
+
 services:
   python-ai-talk:
     build:
       context: .
       dockerfile: Dockerfile
-    image: go-ai-talk/python-ai-talk:local
-    container_name: go-ai-talk-python-ai-talk
     environment:
       TZ: Asia/Shanghai
-      PYTHON_AI_TALK_HOST: "0.0.0.0"
-      PYTHON_AI_TALK_PORT: "8000"
-      PYTHON_AI_TALK_REDIS_URL: "${PYTHON_AI_TALK_REDIS_URL:-redis://redis:6379/0}"
-      PYTHON_AI_TALK_CHROMA_PERSIST_DIR: "/app/data/chroma_db"
-      PYTHON_AI_TALK_EMBEDDING_MODEL: "BAAI/bge-small-zh-v1.5"
-      PYTHON_AI_TALK_HISTORY_SERVICE_URL: "${PYTHON_AI_TALK_HISTORY_SERVICE_URL:-http://host.docker.internal:9801}"
-      PYTHON_AI_TALK_DEVICE_SERVICE_URL: "${PYTHON_AI_TALK_DEVICE_SERVICE_URL:-http://host.docker.internal:9803}"
-      PYTHON_AI_TALK_VOICE_SERVICE_URL: "${PYTHON_AI_TALK_VOICE_SERVICE_URL:-http://host.docker.internal:9802}"
-      PYTHON_AI_TALK_DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
-      PYTHON_AI_TALK_GLM_API_KEY: "${GLM_API_KEY:-}"
-    ports:
-      - "8000:8000"
+      # --- 兄弟仓服务地址 ---
+      HISTORY_SERVICE_URL: "${HISTORY_SERVICE_URL:-}"
+      DEVICE_SERVICE_URL: "${DEVICE_SERVICE_URL:-}"
+      VOICE_SERVICE_URL: "${VOICE_SERVICE_URL:-}"
+      # --- Redis ---
+      REDIS_URL: "${REDIS_URL:-}"
+      # --- AI 密钥（与 go_ai_talk 兄弟仓共用）---
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      GLM_API_KEY: "${GLM_API_KEY:-}"
+      # --- 向量数据库 ---
+      CHROMA_PERSIST_DIR: "${CHROMA_PERSIST_DIR:-/app/data/chroma_db}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/health || exit 1"]
       interval: 10s
@@ -29,5 +35,3 @@ services:
     volumes:
       - ./data/chroma_db:/app/data/chroma_db
       - ./data/models:/app/data/models
-    extra_hosts:
-      - "host.docker.internal:host-gateway"

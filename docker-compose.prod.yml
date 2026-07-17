@@ -1,0 +1,27 @@
+# 生产环境 overlay：与基线 docker-compose.yml 组合使用
+# 项目名 python-ai-talk-prod（与测试栈 python-ai-talk-test 隔离，同机双栈 MUST 各自独立 project）
+# 镜像来自 registry；启动前 pull，且 MUST 使用 --no-build
+#
+# 本文件只改「生产部署项」：镜像、ports、networks
+# 不写 environment：业务环境变量全部由基线 + --env-file .env.prod 注入
+# 宿主机端口在此定义（基线无 ports，避免与 test overlay 合并叠加）
+#
+# 启动命令：
+#   docker compose --env-file env/.env.prod \
+#     -f docker-compose.yml \
+#     -f docker-compose.prod.yml \
+#     pull && up -d --no-build
+
+name: python-ai-talk-prod
+
+services:
+  python-ai-talk:
+    image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
+    ports:
+      - "8000:8000"
+    networks: [go-ai-talk-net]
+
+networks:
+  go-ai-talk-net:
+    external: true
+    name: go-ai-talk-net

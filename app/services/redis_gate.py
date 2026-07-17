@@ -15,7 +15,8 @@ Redis 闸门控制模块
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-
+import redis
+from redis.cluster import RedisCluster
 import redis.asyncio as redis
 
 from app.config.settings import settings
@@ -42,12 +43,21 @@ class RedisGate:
         2. 定义 Lua 脚本用于原子性操作
         """
         # 创建 Redis 连接客户端
-        self._redis = redis.Redis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-            socket_timeout=5,
-            socket_connect_timeout=5,
-        )
+        # 判断是否是集群模式
+        if "," in settings.redis_url:  # 包含逗号说明是多节点集群
+            self._redis = RedisCluster.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+            )
+        else:
+            self._redis = redis.Redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+            )
 
         # Lua 脚本：尝试获取许可
         # 如果当前并发数 < max_in_flight，则增加计数器并返回 1（成功）
