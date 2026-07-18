@@ -3,7 +3,7 @@ name = "python-ai-talk"
 version = "0.1.0"
 description = "母婴喂养场景的自然语言意图识别服务"
 authors = ["trae"]
-readme = "README.md"
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
