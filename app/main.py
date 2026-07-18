@@ -101,10 +101,12 @@ def create_app() -> FastAPI:
             try:
                 # 尝试从知识库目录加载文档并构建向量库
                 from scripts.build_vector_db import build_vector_db
-                await build_vector_db()
+                # 修复: build_vector_db 是同步函数，不能用 await
+                build_vector_db()
                 logger.info("向量库构建完成")
             except Exception as e:
-                logger.warning(f"向量库自动构建失败，将在首次使用时构建: {str(e)}")
+                # 修复: 用 error 级别 + exc_info 记录完整 traceback，避免静默失败
+                logger.error(f"向量库自动构建失败: {str(e)}", exc_info=True)
 
         logger.info("Python AI Talk Service 启动完成")
 
