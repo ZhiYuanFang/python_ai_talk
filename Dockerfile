@@ -13,7 +13,7 @@ COPY pyproject.toml ./
 
 RUN pip install poetry && \
     poetry config virtualenvs.create false && \
-    poetry install --no-interaction --no-dev
+    poetry install --no-interaction --without dev
 
 FROM python:3.11-slim
 
