@@ -13,6 +13,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: go-ai-talk-python-ai-talk
     environment:
       TZ: Asia/Shanghai
       # --- 兄弟仓服务地址 ---
