@@ -235,7 +235,7 @@ if __name__ == "__main__":
         "app.main:app",  # 应用模块路径
         host="0.0.0.0",  # 监听所有网络接口
         port=settings.server_port,  # 服务端口
-        workers=2,  # 工作进程数（生产环境可根据 CPU 核心数调整）
+        workers=1,  # 工作进程数（生产环境可根据 CPU 核心数调整）
         reload=False,  # 开发环境自动重载（生产环境应关闭）
         log_level=settings.log_level.lower(),  # 日志级别
     )
