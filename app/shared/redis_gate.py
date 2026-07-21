@@ -51,6 +51,20 @@ class RedisGate:
                 socket_timeout=5,
                 socket_connect_timeout=5,
             )
+            # 手动解析多个节点地址
+            nodes = settings.redis_url.split(",")
+            startup_nodes = []
+            for node in nodes:
+                # 去掉 redis:// 前缀
+                clean_node = node.replace("redis://", "")
+                host, port = clean_node.split(":")
+                startup_nodes.append({"host": host, "port": int(port)})
+            self._redis = RedisCluster(
+                startup_nodes=startup_nodes,
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+            )
         else:
             self._redis = redis.Redis.from_url(
                 settings.redis_url,
