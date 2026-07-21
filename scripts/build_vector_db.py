@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import tqdm
 
 from app.config.settings import settings
-from app.services.vector_store import vector_store
+from app.shared.vector_store import vector_store
 
 # 配置日志系统
 logging.basicConfig(

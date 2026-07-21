@@ -465,7 +465,7 @@ python scripts/build_vector_db.py --force
 
 ```python
 # 导入向量存储服务
-from app.services.vector_store import vector_store
+from app.shared.vector_store import vector_store
 
 # 执行检索
 results = vector_store.search(
@@ -818,10 +818,10 @@ python scripts/build_vector_db.py --force
 python scripts/build_vector_db.py --data-dir ./data/knowledge
 
 # 查看向量库文档数量
-python -c "from app.services.vector_store import vector_store; print(vector_store.get_document_count())"
+python -c "from app.shared.vector_store import vector_store; print(vector_store.get_document_count())"
 
 # 测试检索功能
-python -c "from app.services.vector_store import vector_store; print(vector_store.search('宝宝拉肚子怎么办'))"
+python -c "from app.shared.vector_store import vector_store; print(vector_store.search('宝宝拉肚子怎么办'))"
 ```
 
 ### B. 目录结构
