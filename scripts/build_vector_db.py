@@ -4,6 +4,7 @@
 业务说明：
 本脚本用于构建 Chroma 向量数据库，将母婴知识文档转换为向量并存储。
 支持文档加载、切分、Embedding、写入和验证。
+支持扩展元数据字段（source、quality_score、match_count、helpful_count 等），用于知识飞轮。
 
 设计思路：
 1. 支持 Markdown 和 TXT 格式的文档
@@ -11,6 +12,7 @@
 3. 使用 BGE-small-zh-v1.5 进行 Embedding
 4. 支持增量更新（检测新增/更新文档）
 5. 构建完成后验证向量库完整性
+6. 支持扩展元数据字段，用于知识飞轮质量评分
 
 使用方法：
     # 基本用法
@@ -30,6 +32,7 @@ import argparse
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import tqdm
@@ -109,12 +112,19 @@ def load_documents(data_dir: str) -> List[Dict[str, Any]]:
                 if not category:
                     category = "未分类"
 
-                # 构建文档元数据
+                # 构建文档元数据（包含扩展字段，用于知识飞轮）
                 metadata = {
                     "file_name": filename,
                     "file_path": relative_path,
                     "category": category,
                     "file_size": len(content),
+                    "source": "admin",            # 数据来源：admin（管理员上传）或 user（用户反馈）
+                    "quality_score": 0.8,         # 初始质量分
+                    "match_count": 0,             # 被匹配次数
+                    "helpful_count": 0,           # 有用反馈次数
+                    "doc_id": os.path.splitext(filename)[0],  # 原始文档 ID
+                    "created_at": datetime.now().isoformat(),  # 创建时间
+                    "updated_at": datetime.now().isoformat(),  # 更新时间
                 }
 
                 # 添加到文档列表

@@ -134,7 +134,8 @@ class ClinicStreamResponse(BaseModel):
     胖宝诊疗流式响应模型
 
     业务说明：
-    封装胖宝诊疗接口的流式响应数据，包含思考过程和回答内容。
+    封装胖宝诊疗接口的流式响应数据，包含思考过程、回答内容和回答 ID（用于反馈）。
     """
-    type: str = Field(..., description="消息类型：thinking, answer")
+    type: str = Field(..., description="消息类型：thinking, answer, done")
     content: str = Field("", description="内容（思考或回答）")
+    answer_id: Optional[str] = Field(None, description="回答 ID（仅在 done 事件中返回，用于反馈）")

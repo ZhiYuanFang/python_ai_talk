@@ -4,16 +4,20 @@
 业务说明：
 本模块负责封装 Chroma 向量数据库的操作，提供文档检索能力。
 使用 BGE-small-zh-v1.5 作为 Embedding 模型，将文本转换为向量。
+支持扩展元数据字段（source、quality_score、match_count、helpful_count 等）。
 
 设计思路：
 1. 使用 Chroma 作为本地向量数据库，支持持久化存储
 2. 使用 sentence-transformers 加载 BGE-small-zh-v1.5 模型
-3. 封装检索、添加、更新等常用操作
+3. 封装检索、添加、更新、删除等常用操作
 4. 提供单例模式，确保全局只有一个向量存储实例
+5. 支持扩展元数据字段，用于知识飞轮（质量评分、反馈统计）
 """
 
 import logging
 import os
+import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import chromadb
@@ -33,6 +37,7 @@ class VectorStore:
     业务说明：
     提供向量数据库的检索和管理能力，用于母婴知识检索场景。
     支持将文档转换为向量并存储，以及根据查询向量检索相似文档。
+    支持扩展元数据字段，用于知识飞轮和质量评分。
     """
 
     _instance: Optional["VectorStore"] = None  # 单例实例
@@ -125,9 +130,10 @@ class VectorStore:
         1. 提取文档内容和元数据
         2. 将文档内容转换为向量
         3. 将向量和元数据写入 Chroma
+        4. 支持扩展元数据字段（source、quality_score、match_count、helpful_count 等）
 
         Args:
-            documents: 文档列表，每个文档包含 "content" 和 "metadata" 字段
+            documents: 文档列表，每个文档包含 "content"、"metadata" 和可选的 "id" 字段
         """
         if not documents:
             logger.warning("尝试添加空文档列表")
@@ -139,12 +145,28 @@ class VectorStore:
         metadatas = []
 
         for i, doc in enumerate(documents):
-            # 生成文档 ID，格式为 "doc_{index}"
-            ids.append(f"doc_{i}")
+            # 使用文档自带的 ID，或者生成新的唯一 ID
+            doc_id = doc.get("id") or f"doc_{uuid.uuid4().hex[:8]}"
+            ids.append(doc_id)
             # 获取文档内容
             contents.append(doc.get("content", ""))
-            # 获取文档元数据
-            metadatas.append(doc.get("metadata", {}))
+
+            # 获取文档元数据，添加默认值
+            metadata = doc.get("metadata", {})
+            # 确保必需的扩展元数据字段存在，添加默认值
+            metadata.setdefault("source", "admin")
+            metadata.setdefault("quality_score", 0.8)
+            metadata.setdefault("match_count", 0)
+            metadata.setdefault("helpful_count", 0)
+            metadata.setdefault("category", "未分类")
+            metadata.setdefault("doc_id", doc_id)
+            metadata.setdefault("file_name", "")
+            metadata.setdefault("created_at", datetime.now().isoformat())
+            metadata.setdefault("updated_at", datetime.now().isoformat())
+            metadata.setdefault("chunk_index", 0)
+            metadata.setdefault("total_chunks", 1)
+
+            metadatas.append(metadata)
 
         # 将文档内容转换为向量
         logger.info(f"开始对 {len(documents)} 个文档进行 Embedding...")
@@ -170,6 +192,7 @@ class VectorStore:
         1. 将查询文本转换为向量
         2. 在 Chroma 中检索相似向量
         3. 返回检索结果，包含文档内容和相似度分数
+        4. 更新被匹配文档的 match_count
 
         Args:
             query: 查询文本
@@ -192,13 +215,18 @@ class VectorStore:
         results = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
-            include=["documents", "metadatas", "distances"],
+            include=["documents", "metadatas", "distances", "ids"],
         )
 
         # 处理检索结果
         # 将 Chroma 返回的格式转换为更友好的格式
         formatted_results = []
+        matched_ids = []
+
         for i in range(len(results["ids"][0])):
+            # 记录被匹配的文档 ID，用于后续更新 match_count
+            matched_ids.append(results["ids"][0][i])
+
             # 计算相似度分数（Chroma 返回的是距离，需要转换为相似度）
             # 相似度 = 1 / (1 + 距离)，范围在 0-1 之间，值越大越相似
             distance = results["distances"][0][i]
@@ -209,12 +237,91 @@ class VectorStore:
                 "content": results["documents"][0][i],
                 "metadata": results["metadatas"][0][i],
                 "score": round(score, 4),  # 保留 4 位小数
+                "id": results["ids"][0][i],
             })
+
+        # 更新被匹配文档的 match_count
+        self._update_match_count(matched_ids)
 
         # 记录检索完成日志
         logger.debug(f"检索完成，找到 {len(formatted_results)} 个相似文档")
 
         return formatted_results
+
+    def _update_match_count(self, ids: List[str]):
+        """
+        更新文档的匹配计数
+
+        业务逻辑：
+        当文档被检索匹配时，增加其 match_count，用于知识飞轮质量评分
+
+        Args:
+            ids: 文档 ID 列表
+        """
+        if not ids:
+            return
+
+        try:
+            # 获取这些文档的当前元数据
+            existing_data = self._collection.get(ids=ids, include=["metadatas"])
+
+            # 构建更新后的元数据
+            new_metadatas = []
+            for i, id_ in enumerate(ids):
+                if i < len(existing_data["metadatas"]):
+                    metadata = existing_data["metadatas"][i].copy()
+                    metadata["match_count"] = metadata.get("match_count", 0) + 1
+                    metadata["updated_at"] = datetime.now().isoformat()
+                    new_metadatas.append(metadata)
+
+            # 更新元数据
+            if new_metadatas:
+                self._collection.update(ids=ids, metadatas=new_metadatas)
+                logger.debug(f"更新了 {len(ids)} 个文档的 match_count")
+        except Exception as e:
+            logger.error(f"更新 match_count 失败: {str(e)}")
+
+    def update_quality_score(self, doc_id: str, feedback: int):
+        """
+        根据用户反馈更新知识质量分
+
+        业务逻辑：
+        - 👍（feedback=1）：quality_score += 0.1，helpful_count += 1
+        - 👎（feedback=-1）：quality_score -= 0.2
+        - 同时更新 match_count 和 updated_at
+
+        Args:
+            doc_id: 文档 ID
+            feedback: 反馈值，1=👍，-1=👎
+        """
+        try:
+            # 获取文档当前元数据
+            existing_data = self._collection.get(ids=[doc_id], include=["metadatas"])
+
+            if not existing_data["metadatas"]:
+                logger.warning(f"文档 {doc_id} 不存在，无法更新质量分")
+                return
+
+            metadata = existing_data["metadatas"][0].copy()
+
+            # 更新质量分
+            current_score = metadata.get("quality_score", 0.8)
+            if feedback == 1:
+                metadata["quality_score"] = min(1.0, current_score + 0.1)
+                metadata["helpful_count"] = metadata.get("helpful_count", 0) + 1
+            elif feedback == -1:
+                metadata["quality_score"] = max(0.0, current_score - 0.2)
+
+            # 更新匹配计数和时间戳
+            metadata["match_count"] = metadata.get("match_count", 0) + 1
+            metadata["updated_at"] = datetime.now().isoformat()
+
+            # 保存更新后的元数据
+            self._collection.update(ids=[doc_id], metadatas=[metadata])
+
+            logger.info(f"文档 {doc_id} 质量分已更新: {metadata['quality_score']}")
+        except Exception as e:
+            logger.error(f"更新质量分失败: {str(e)}")
 
     def get_document_count(self) -> int:
         """
@@ -256,6 +363,254 @@ class VectorStore:
         self.clear()
         self.add_documents(documents)
         logger.info("向量库重建完成")
+
+    def get_documents_by_doc_id(self, doc_id: str) -> List[Dict[str, Any]]:
+        """
+        根据 doc_id 获取所有相关文档（同一原始文档的所有 chunks）
+
+        业务逻辑：
+        使用 Chroma 的 where 子句查询所有具有相同 doc_id 的文档
+
+        Args:
+            doc_id: 原始文档 ID
+
+        Returns:
+            文档列表
+        """
+        try:
+            results = self._collection.get(
+                where={"doc_id": doc_id},
+                include=["documents", "metadatas", "ids"],
+            )
+
+            formatted_results = []
+            for i in range(len(results["ids"])):
+                formatted_results.append({
+                    "id": results["ids"][i],
+                    "content": results["documents"][i],
+                    "metadata": results["metadatas"][i],
+                })
+
+            return formatted_results
+        except Exception as e:
+            logger.error(f"根据 doc_id 获取文档失败: {str(e)}")
+            return []
+
+    def delete_by_doc_id(self, doc_id: str):
+        """
+        根据 doc_id 删除所有相关文档（同一原始文档的所有 chunks）
+
+        业务逻辑：
+        使用 Chroma 的 delete 方法，通过 where 子句删除所有具有相同 doc_id 的文档
+
+        Args:
+            doc_id: 原始文档 ID
+        """
+        try:
+            # 先获取所有相关文档的 ID
+            results = self._collection.get(where={"doc_id": doc_id}, include=[])
+            if results["ids"]:
+                self._collection.delete(ids=results["ids"])
+                logger.info(f"成功删除 doc_id={doc_id} 的 {len(results['ids'])} 个文档")
+            else:
+                logger.warning(f"未找到 doc_id={doc_id} 的文档")
+        except Exception as e:
+            logger.error(f"删除文档失败: {str(e)}")
+
+    def get_all_documents(self, category: str = None) -> List[Dict[str, Any]]:
+        """
+        获取所有文档（支持按分类筛选）
+
+        业务逻辑：
+        返回向量库中的所有文档，支持按 category 筛选
+
+        Args:
+            category: 分类名称，可选
+
+        Returns:
+            文档列表
+        """
+        try:
+            where = {"category": category} if category else None
+            results = self._collection.get(
+                where=where,
+                include=["documents", "metadatas", "ids"],
+            )
+
+            formatted_results = []
+            for i in range(len(results["ids"])):
+                formatted_results.append({
+                    "id": results["ids"][i],
+                    "content": results["documents"][i],
+                    "metadata": results["metadatas"][i],
+                })
+
+            return formatted_results
+        except Exception as e:
+            logger.error(f"获取所有文档失败: {str(e)}")
+            return []
+
+    def get_categories(self) -> List[Dict[str, Any]]:
+        """
+        获取所有知识分类及其文档数量
+
+        业务逻辑：
+        查询向量库中所有不同的 category，并统计每个分类的文档数量
+
+        Returns:
+            分类列表，每个分类包含 name 和 count
+        """
+        try:
+            # 获取所有文档的元数据
+            results = self._collection.get(include=["metadatas"])
+
+            # 统计每个分类的文档数量
+            category_counts = {}
+            for metadata in results["metadatas"]:
+                category = metadata.get("category", "未分类")
+                category_counts[category] = category_counts.get(category, 0) + 1
+
+            # 转换为列表格式
+            categories = []
+            for name, count in category_counts.items():
+                categories.append({"name": name, "count": count})
+
+            return categories
+        except Exception as e:
+            logger.error(f"获取分类列表失败: {str(e)}")
+            return []
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        获取向量库统计信息
+
+        业务逻辑：
+        返回文档总数、向量总数、分类数量等统计信息
+
+        Returns:
+            统计信息字典
+        """
+        try:
+            total_count = self.get_document_count()
+            categories = self.get_categories()
+
+            # 获取质量分分布
+            results = self._collection.get(include=["metadatas"])
+            quality_scores = []
+            for metadata in results["metadatas"]:
+                quality_scores.append(metadata.get("quality_score", 0.8))
+
+            avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0.8
+
+            return {
+                "total_documents": total_count,
+                "total_categories": len(categories),
+                "categories": categories,
+                "avg_quality_score": round(avg_quality, 4),
+            }
+        except Exception as e:
+            logger.error(f"获取统计信息失败: {str(e)}")
+            return {}
+
+    def cleanup_low_quality_knowledge(self, threshold: float = 0.3):
+        """
+        清理低质量用户知识
+
+        业务逻辑：
+        删除 source=user 且 quality_score < threshold 的知识
+
+        Args:
+            threshold: 质量分阈值，默认 0.3
+        """
+        try:
+            # 查询所有 source=user 的文档
+            results = self._collection.get(
+                where={"source": "user"},
+                include=["metadatas", "ids"],
+            )
+
+            # 筛选出质量分低于阈值的文档
+            low_quality_ids = []
+            for i, metadata in enumerate(results["metadatas"]):
+                if metadata.get("quality_score", 0.8) < threshold:
+                    low_quality_ids.append(results["ids"][i])
+
+            # 删除低质量文档
+            if low_quality_ids:
+                self._collection.delete(ids=low_quality_ids)
+                logger.info(f"清理了 {len(low_quality_ids)} 个低质量用户知识")
+            else:
+                logger.info("没有需要清理的低质量用户知识")
+        except Exception as e:
+            logger.error(f"清理低质量知识失败: {str(e)}")
+
+    def ensure_metadata_completeness(self):
+        """
+        确保向量库中所有文档的元数据完整
+
+        业务逻辑：
+        遍历所有文档，为缺失的扩展元数据字段添加默认值
+        用于服务启动时补全旧数据的元数据
+        """
+        try:
+            # 获取所有文档的 ID 和元数据
+            results = self._collection.get(include=["metadatas", "ids"])
+
+            # 检查并更新元数据
+            updated_ids = []
+            updated_metadatas = []
+
+            for i, metadata in enumerate(results["metadatas"]):
+                needs_update = False
+                new_metadata = metadata.copy()
+
+                # 检查并添加缺失的字段
+                if "source" not in new_metadata:
+                    new_metadata["source"] = "admin"
+                    needs_update = True
+                if "quality_score" not in new_metadata:
+                    new_metadata["quality_score"] = 0.8
+                    needs_update = True
+                if "match_count" not in new_metadata:
+                    new_metadata["match_count"] = 0
+                    needs_update = True
+                if "helpful_count" not in new_metadata:
+                    new_metadata["helpful_count"] = 0
+                    needs_update = True
+                if "category" not in new_metadata:
+                    new_metadata["category"] = "未分类"
+                    needs_update = True
+                if "doc_id" not in new_metadata:
+                    new_metadata["doc_id"] = results["ids"][i]
+                    needs_update = True
+                if "file_name" not in new_metadata:
+                    new_metadata["file_name"] = ""
+                    needs_update = True
+                if "created_at" not in new_metadata:
+                    new_metadata["created_at"] = datetime.now().isoformat()
+                    needs_update = True
+                if "updated_at" not in new_metadata:
+                    new_metadata["updated_at"] = datetime.now().isoformat()
+                    needs_update = True
+                if "chunk_index" not in new_metadata:
+                    new_metadata["chunk_index"] = 0
+                    needs_update = True
+                if "total_chunks" not in new_metadata:
+                    new_metadata["total_chunks"] = 1
+                    needs_update = True
+
+                if needs_update:
+                    updated_ids.append(results["ids"][i])
+                    updated_metadatas.append(new_metadata)
+
+            # 批量更新元数据
+            if updated_ids:
+                self._collection.update(ids=updated_ids, metadatas=updated_metadatas)
+                logger.info(f"补全了 {len(updated_ids)} 个文档的元数据")
+            else:
+                logger.info("所有文档的元数据已完整")
+        except Exception as e:
+            logger.error(f"补全元数据失败: {str(e)}")
 
 
 # 创建全局向量存储实例

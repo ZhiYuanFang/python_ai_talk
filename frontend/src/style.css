@@ -1,0 +1,78 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background-color: #f5f7fa;
+}
+
+.sidebar {
+  min-height: 100vh;
+  background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+}
+
+.sidebar .nav-link {
+  color: rgba(255, 255, 255, 0.9);
+  border-radius: 8px;
+  margin: 4px 8px;
+}
+
+.sidebar .nav-link:hover,
+.sidebar .nav-link.active {
+  background-color: rgba(255, 255, 255, 0.2);
+  color: white;
+}
+
+.content-area {
+  min-height: 100vh;
+}
+
+.upload-area {
+  border: 2px dashed #dee2e6;
+  border-radius: 12px;
+  padding: 40px;
+  text-align: center;
+  transition: all 0.3s;
+}
+
+.upload-area:hover {
+  border-color: #667eea;
+  background-color: #f8f9ff;
+}
+
+.upload-area.dragover {
+  border-color: #667eea;
+  background-color: #f0f3ff;
+}
+
+.quality-badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.quality-high {
+  background-color: #d4edda;
+  color: #155724;
+}
+
+.quality-medium {
+  background-color: #fff3cd;
+  color: #856404;
+}
+
+.quality-low {
+  background-color: #f8d7da;
+  color: #721c24;
+}
+
+.modal-backdrop {
+  z-index: 1050;
+}
+
+.modal {
+  z-index: 1051;
+}

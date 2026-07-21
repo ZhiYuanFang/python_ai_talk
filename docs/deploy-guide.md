@@ -291,11 +291,90 @@ app/
 │   └── services/               # 业务服务
 │       └── knowledge_vector_store.py # 知识向量存储
 │
+├── api/routes/                 # API 路由
+│   ├── knowledge.py            # **新增**：知识库管理接口（上传、列表、详情、更新、删除、统计）
+│   ├── clinic.py               # 诊疗问答路由（新增 /feedback 接口）
+│   ├── tip.py                  # 小贴士路由（新增 /feedback 接口）
+│   └── ...                     # 其他路由
+│
 └── shared/                     # 共享服务
     ├── http_client.py          # HTTP 客户端（调用兄弟仓 API）
     ├── llm_client.py           # LLM 客户端（DeepSeek/GLM）
     ├── redis_gate.py           # Redis 门控
-    └── vector_store.py         # 通用向量存储服务
+    └── vector_store.py         # 通用向量存储服务（扩展元数据字段：quality_score、match_count、helpful_count）
+```
+
+### 2.3.1 知识飞轮功能说明
+
+项目新增知识飞轮功能，支持通过外部上传 MD 文件动态填充知识库，并根据用户反馈动态更新知识质量分：
+
+**核心特性**：
+
+| 特性 | 说明 |
+|------|------|
+| **外部知识上传** | 管理员可通过 Web 页面上传 MD/TXT 文件，自动切分、Embedding 并写入向量库 |
+| **知识质量评分** | 每条知识记录包含 `quality_score`（质量分）、`match_count`（匹配次数）、`helpful_count`（有用次数） |
+| **用户反馈机制** | 用户可对诊疗和小贴士回答进行 👍/👎 反馈，影响知识质量分 |
+| **定期清理** | 后台定时任务（每 24 小时）自动清理质量分低于阈值（0.3）的低质量知识 |
+
+**新增 API 接口**：
+
+| 接口 | 方法 | 路径 | 说明 |
+|------|------|------|------|
+| 知识库上传 | POST | `/v1/knowledge/upload` | 上传 MD/TXT 文件到知识库 |
+| 知识库列表 | GET | `/v1/knowledge/list` | 获取知识库文档列表（支持分页、分类筛选） |
+| 知识库详情 | GET | `/v1/knowledge/{doc_id}` | 获取文档详情 |
+| 知识库更新 | PUT | `/v1/knowledge/{doc_id}` | 更新文档内容 |
+| 知识库删除 | DELETE | `/v1/knowledge/{doc_id}` | 删除文档 |
+| 知识库统计 | GET | `/v1/knowledge/stats` | 获取知识库统计信息 |
+| 知识库分类 | GET | `/v1/knowledge/categories` | 获取所有知识分类 |
+| 诊疗反馈 | POST | `/v1/clinic/feedback` | 诊疗回答反馈（👍/👎） |
+| 小贴士反馈 | POST | `/v1/tip/feedback` | 小贴士回答反馈（👍/👎） |
+
+**流式响应变更**：
+
+诊疗和小贴士流式接口新增 `done` 事件，包含 `answer_id` 字段，用于前端提交反馈：
+
+```
+data: {"type": "done", "content": "回答完成", "answer_id": "clinic_abc123"}
+```
+
+### 2.3.2 前端管理页面
+
+项目新增独立的 Vue 前端管理页面，代码位于 `frontend/` 目录（与服务端隔离）：
+
+```
+frontend/
+├── index.html                  # HTML 入口
+├── package.json                # 前端依赖
+├── vite.config.js              # Vite 配置（代理 /v1 到后端）
+└── src/
+    ├── main.js                 # Vue 入口
+    ├── App.vue                 # 主组件
+    ├── style.css               # 全局样式
+    ├── api/
+    │   └── knowledge.js        # 知识库 API 封装
+    └── components/
+        ├── UploadPanel.vue     # 上传面板
+        ├── DocumentList.vue    # 文档列表
+        ├── StatsPanel.vue      # 统计面板
+        └── CategoriesPanel.vue # 分类管理面板
+```
+
+**前端运行方式**：
+
+```bash
+# 进入前端目录
+cd frontend
+
+# 安装依赖
+npm install
+
+# 启动开发服务器（端口 5173，代理到后端 8000）
+npm run dev
+
+# 构建生产版本
+npm run build
 ```
 
 **与旧目录的对应关系**：

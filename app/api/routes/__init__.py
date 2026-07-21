@@ -10,6 +10,7 @@
 - /analyze/intent：意图分析
 - /clinic/stream：胖宝诊疗（流式）
 - /tip/stream：小贴士生成（流式）
+- /knowledge：知识库管理（上传、列表、详情、更新、删除、统计、分类）
 """
 
 from fastapi import APIRouter
@@ -18,6 +19,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.intent import router as intent_router
 from app.api.routes.clinic import router as clinic_router
 from app.api.routes.tip import router as tip_router
+from app.api.routes.knowledge import router as knowledge_router
 
 # 创建主路由，统一前缀 /v1
 router = APIRouter(prefix="/v1")
@@ -27,3 +29,4 @@ router.include_router(health_router)
 router.include_router(intent_router)
 router.include_router(clinic_router)
 router.include_router(tip_router)
+router.include_router(knowledge_router)

@@ -57,6 +57,12 @@ logs/
 # Docker
 docker-compose.override.yml
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
 # Environment variables (sensitive)
 .env
 .env.local

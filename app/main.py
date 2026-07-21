@@ -3,6 +3,7 @@ FastAPI 应用主入口
 
 业务说明：
 本文件是 Python AI 服务的启动入口，负责初始化 FastAPI 应用、加载配置、注册路由。
+包含知识飞轮的定期清理任务，自动清理低质量知识。
 
 设计思路：
 1. 使用 FastAPI 创建高性能的异步 Web 服务
@@ -10,8 +11,10 @@ FastAPI 应用主入口
 3. 注册 API 路由，组织接口结构
 4. 支持跨域请求（CORS）
 5. 提供优雅的启动和关闭钩子
+6. 启动后台定时任务，定期清理低质量知识（知识飞轮）
 """
 
+import asyncio
 import logging
 import os
 
@@ -23,6 +26,30 @@ from app.api.routes import router
 from app.config.settings import settings
 from app.shared.http_client import http_client
 from app.shared.vector_store import vector_store
+
+# 后台任务取消对象
+_cleanup_task = None
+
+async def _periodic_cleanup():
+    """
+    定期清理低质量知识的后台任务（知识飞轮）
+
+    业务逻辑：
+    1. 每隔 24 小时执行一次清理任务
+    2. 调用 vector_store.cleanup_low_quality_knowledge() 清理质量分低于阈值的知识
+    3. 记录清理日志
+    """
+    while True:
+        try:
+            logger.info("开始执行定期清理低质量知识任务（知识飞轮）...")
+            vector_store.cleanup_low_quality_knowledge(threshold=0.3)
+            logger.info("定期清理任务执行完成")
+        except Exception as e:
+            logger.error(f"定期清理任务执行失败: {str(e)}", exc_info=True)
+
+        # 等待 24 小时后再次执行
+        await asyncio.sleep(24 * 60 * 60)
+
 
 # 配置日志系统
 # 设置日志级别（DEBUG < INFO < WARNING < ERROR < CRITICAL）
@@ -108,6 +135,10 @@ def create_app() -> FastAPI:
             except Exception as e:
                 # 修复: 用 error 级别 + exc_info 记录完整 traceback，避免静默失败
                 logger.error(f"向量库自动构建失败: {str(e)}", exc_info=True)
+        else:
+            # 向量库已有数据，补全旧数据的扩展元数据字段（用于知识飞轮）
+            logger.info("向量库已有数据，检查并补全扩展元数据...")
+            vector_store.ensure_metadata_completeness()
 
         # 初始化喂养事件向量库
         # 延迟导入，避免循环依赖
@@ -146,6 +177,11 @@ def create_app() -> FastAPI:
             # 喂养事件向量库已有数据，记录当前记录数
             logger.info(f"喂养事件向量库已有 {event_count} 条记录，跳过初始化")
 
+        # 启动知识飞轮后台任务（定期清理低质量知识）
+        global _cleanup_task
+        _cleanup_task = asyncio.create_task(_periodic_cleanup())
+        logger.info("知识飞轮后台任务已启动（每 24 小时清理一次低质量知识）")
+
         logger.info("Python AI Talk Service 启动完成")
 
     # 添加关闭钩子
@@ -156,10 +192,21 @@ def create_app() -> FastAPI:
         应用关闭钩子
 
         业务逻辑：
-        1. 关闭 HTTP 客户端连接
-        2. 记录关闭日志
+        1. 取消后台任务（知识飞轮定期清理）
+        2. 关闭 HTTP 客户端连接
+        3. 记录关闭日志
         """
         logger.info("Python AI Talk Service 关闭中...")
+
+        # 取消后台任务（知识飞轮定期清理）
+        global _cleanup_task
+        if _cleanup_task:
+            _cleanup_task.cancel()
+            try:
+                await _cleanup_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("知识飞轮后台任务已取消")
 
         # 关闭 HTTP 客户端连接
         await http_client.close()
