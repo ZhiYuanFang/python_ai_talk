@@ -51,12 +51,12 @@ class EventVectorStore:
 
     def __init__(self):
         """
-        初始化喂养事件向量存储
+        初始化喂养事件向量存储（轻量初始化，延迟加载模型和数据库）
 
         业务逻辑：
-        1. 加载与知识向量库相同的 BGE-small-zh-v1.5 Embedding 模型
-        2. 初始化与知识向量库相同的 ChromaDB 客户端
-        3. 创建或获取 feeding_events Collection
+        1. 仅设置初始化标记和线程锁，不加载模型和数据库
+        2. 实际初始化在第一次调用公共方法时通过 _ensure_initialized() 执行
+        3. 延迟初始化的目的：避免 import 阶段加载模型，提升服务启动健壮性
 
         Args:
             无
@@ -65,51 +65,72 @@ class EventVectorStore:
             无
 
         Side Effects:
-            - 创建数据目录（如果不存在）
-            - 加载 Embedding 模型到内存
-            - 创建或连接 ChromaDB Collection
+            无
         """
         # 防止重复初始化
         if hasattr(self, '_initialized'):
             return
 
-        # 记录初始化开始日志
-        logger.info("开始初始化喂养事件向量存储...")
+        # 初始化标记（False 表示尚未初始化）
+        self._initialized = False
 
-        # 创建数据目录（如果不存在），确保 ChromaDB 持久化目录存在
-        os.makedirs(settings.chroma_persist_dir, exist_ok=True)
+        # 线程锁，确保并发安全的延迟初始化
+        import threading
+        self._init_lock = threading.Lock()
 
-        # 加载 Embedding 模型
-        # 复用与知识向量库相同的 BAAI/bge-small-zh-v1.5 模型，保证向量空间一致
-        logger.info(f"加载 Embedding 模型: {settings.embedding_model}")
-        self._embedding_model = SentenceTransformer(
-            settings.embedding_model,  # 使用配置中的模型名称
-            cache_folder=os.path.join("data", "models"),  # 模型缓存目录
-        )
+    def _ensure_initialized(self):
+        """
+        确保喂养事件向量存储已初始化（延迟加载）
 
-        # 初始化 ChromaDB 客户端
-        # 复用与知识向量库相同的客户端配置，数据存储在同一持久化目录下
-        logger.info(f"初始化 ChromaDB 客户端，数据目录: {settings.chroma_persist_dir}")
-        self._chroma_client = chromadb.PersistentClient(
-            path=settings.chroma_persist_dir,  # 持久化存储路径
-            settings=Settings(
-                anonymized_telemetry=False,  # 禁用匿名遥测，保护隐私
-                allow_reset=False,  # 禁止重置，防止误操作清空数据
-            ),
-        )
+        业务逻辑：
+        第一次调用时执行实际的初始化工作（加载模型、初始化 ChromaDB 等）。
+        使用双重检查锁定确保并发安全。
+        """
+        # 第一次检查：无锁快速路径
+        if self._initialized:
+            return
 
-        # 创建或获取 feeding_events Collection
-        # 使用独立 Collection 存储喂养事件，与母婴知识库隔离
-        self._collection = self._chroma_client.get_or_create_collection(
-            name="feeding_events",  # Collection 名称，与知识库区分
-            metadata={"description": "喂养事件向量库"},  # 描述信息
-        )
+        # 获取锁
+        with self._init_lock:
+            # 第二次检查：确保只有一个线程执行初始化
+            if not self._initialized:
+                # 记录初始化开始日志
+                logger.info("开始初始化喂养事件向量存储...")
 
-        # 标记初始化完成
-        self._initialized = True
+                # 创建数据目录（如果不存在），确保 ChromaDB 持久化目录存在
+                os.makedirs(settings.chroma_persist_dir, exist_ok=True)
 
-        # 记录初始化完成日志
-        logger.info("喂养事件向量存储初始化完成")
+                # 加载 Embedding 模型
+                # 复用与知识向量库相同的 BAAI/bge-small-zh-v1.5 模型，保证向量空间一致
+                logger.info(f"加载 Embedding 模型: {settings.embedding_model}")
+                self._embedding_model = SentenceTransformer(
+                    settings.embedding_model,  # 使用配置中的模型名称
+                    cache_folder=os.path.join("data", "models"),  # 模型缓存目录
+                )
+
+                # 初始化 ChromaDB 客户端
+                # 复用与知识向量库相同的客户端配置，数据存储在同一持久化目录下
+                logger.info(f"初始化 ChromaDB 客户端，数据目录: {settings.chroma_persist_dir}")
+                self._chroma_client = chromadb.PersistentClient(
+                    path=settings.chroma_persist_dir,  # 持久化存储路径
+                    settings=Settings(
+                        anonymized_telemetry=False,  # 禁用匿名遥测，保护隐私
+                        allow_reset=False,  # 禁止重置，防止误操作清空数据
+                    ),
+                )
+
+                # 创建或获取 feeding_events Collection
+                # 使用独立 Collection 存储喂养事件，与母婴知识库隔离
+                self._collection = self._chroma_client.get_or_create_collection(
+                    name="feeding_events",  # Collection 名称，与知识库区分
+                    metadata={"description": "喂养事件向量库"},  # 描述信息
+                )
+
+                # 标记初始化完成
+                self._initialized = True
+
+                # 记录初始化完成日志
+                logger.info("喂养事件向量存储初始化完成")
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
         """
@@ -137,9 +158,10 @@ class EventVectorStore:
         在喂养事件向量库中搜索相似事件
 
         业务逻辑：
-        1. 将查询文本转换为向量
-        2. 在 feeding_events Collection 中检索最相似的事件
-        3. 将距离转换为相似度分数并格式化返回结果
+        1. 确保向量存储已初始化（延迟加载）
+        2. 将查询文本转换为向量
+        3. 在 feeding_events Collection 中检索最相似的事件
+        4. 将距离转换为相似度分数并格式化返回结果
 
         Args:
             query: 用户输入的查询文本
@@ -151,6 +173,9 @@ class EventVectorStore:
         Side Effects:
             无
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         # 检查查询文本是否为空，空查询无法进行语义匹配
         if not query.strip():
             logger.warning("查询文本为空，无法搜索事件")
@@ -193,9 +218,10 @@ class EventVectorStore:
         添加用户表达到向量库（数据飞轮）
 
         业务逻辑：
-        1. 为用户表达生成唯一 ID
-        2. 构建元数据，记录事件关联信息和统计数据
-        3. 将用户表达文本转换为向量并存入 Collection
+        1. 确保向量存储已初始化（延迟加载）
+        2. 为用户表达生成唯一 ID
+        3. 构建元数据，记录事件关联信息和统计数据
+        4. 将用户表达文本转换为向量并存入 Collection
 
         Args:
             event_id: 关联的事件 ID
@@ -210,6 +236,9 @@ class EventVectorStore:
             - 向 feeding_events Collection 添加一条新记录
             - 新记录的 match_count 和 success_count 初始为 0
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         # 生成唯一的向量记录 ID，使用 uuid4 确保全局唯一
         vector_id = f"user_{uuid.uuid4().hex}"
 
@@ -248,9 +277,10 @@ class EventVectorStore:
         递增向量记录的匹配次数
 
         业务逻辑：
-        1. 根据 vector_id 获取当前记录的元数据
-        2. 将 match_count 加 1
-        3. 更新记录的元数据
+        1. 确保向量存储已初始化（延迟加载）
+        2. 根据 vector_id 获取当前记录的元数据
+        3. 将 match_count 加 1
+        4. 更新记录的元数据
 
         Args:
             vector_id: 向量记录 ID
@@ -261,6 +291,9 @@ class EventVectorStore:
         Side Effects:
             - 修改指定记录的 match_count 元数据值
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         # 根据 ID 获取记录的元数据
         result = self._collection.get(
             ids=[vector_id],  # 目标记录 ID
@@ -292,9 +325,10 @@ class EventVectorStore:
         递增向量记录的成功次数
 
         业务逻辑：
-        1. 根据 vector_id 获取当前记录的元数据
-        2. 将 success_count 加 1
-        3. 更新记录的元数据
+        1. 确保向量存储已初始化（延迟加载）
+        2. 根据 vector_id 获取当前记录的元数据
+        3. 将 success_count 加 1
+        4. 更新记录的元数据
 
         Args:
             vector_id: 向量记录 ID
@@ -305,6 +339,9 @@ class EventVectorStore:
         Side Effects:
             - 修改指定记录的 success_count 元数据值
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         # 根据 ID 获取记录的元数据
         result = self._collection.get(
             ids=[vector_id],  # 目标记录 ID
@@ -336,10 +373,11 @@ class EventVectorStore:
         删除向量记录
 
         业务逻辑：
-        1. 检查记录是否存在
-        2. 验证记录来源是否为用户表达（source="user"）
-        3. 仅允许删除用户表达记录，标准记录禁止删除
-        4. 执行删除操作
+        1. 确保向量存储已初始化（延迟加载）
+        2. 检查记录是否存在
+        3. 验证记录来源是否为用户表达（source="user"）
+        4. 仅允许删除用户表达记录，标准记录禁止删除
+        5. 执行删除操作
 
         Args:
             vector_id: 向量记录 ID
@@ -350,6 +388,9 @@ class EventVectorStore:
         Side Effects:
             - 从 feeding_events Collection 中永久删除指定记录
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         # 根据 ID 获取记录的元数据，用于验证来源
         result = self._collection.get(
             ids=[vector_id],  # 目标记录 ID
@@ -383,9 +424,10 @@ class EventVectorStore:
         同步事件字典变更到向量库
 
         业务逻辑：
-        1. 处理新增事件：为每个新事件生成标准条目和动作变体条目
-        2. 处理删除事件：删除标准条目及关联的用户表达
-        3. 处理修改事件：更新标准条目的内容和元数据
+        1. 确保向量存储已初始化（延迟加载）
+        2. 处理新增事件：为每个新事件生成标准条目和动作变体条目
+        3. 处理删除事件：删除标准条目及关联的用户表达
+        4. 处理修改事件：更新标准条目的内容和元数据
 
         Args:
             event_dictionary: 完整的事件字典列表
@@ -400,6 +442,9 @@ class EventVectorStore:
             - 向 feeding_events Collection 添加/删除/更新记录
             - 删除事件时同时删除关联的用户表达记录
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         # 处理新增事件
         for event in added_events:
             # 获取事件 ID 和名称
@@ -577,9 +622,10 @@ class EventVectorStore:
         从事件字典初始化喂养事件向量库
 
         业务逻辑：
-        1. 清除所有现有的标准数据（保留用户表达数据）
-        2. 遍历事件字典，为每个事件生成标准条目和动作变体
-        3. 批量写入向量库
+        1. 确保向量存储已初始化（延迟加载）
+        2. 清除所有现有的标准数据（保留用户表达数据）
+        3. 遍历事件字典，为每个事件生成标准条目和动作变体
+        4. 批量写入向量库
 
         Args:
             event_dictionary: 事件字典列表，每个元素包含 id 和 name 字段
@@ -591,6 +637,9 @@ class EventVectorStore:
             - 清除所有 source="standard" 的记录
             - 向 feeding_events Collection 添加所有事件的标准条目和动作变体
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         # 记录初始化开始日志
         logger.info(f"开始初始化喂养事件向量库，事件数量: {len(event_dictionary)}")
 
@@ -629,10 +678,11 @@ class EventVectorStore:
         检查向量库记录数量并清理低质量用户表达
 
         业务逻辑：
-        1. 检查记录总数是否超过阈值
-        2. 获取所有用户表达记录
-        3. 计算每条记录的质量分数（质量分 = 准确率 × 置信度）
-        4. 按质量分数排序，删除最低的 cleanup_ratio 比例记录
+        1. 确保向量存储已初始化（延迟加载）
+        2. 检查记录总数是否超过阈值
+        3. 获取所有用户表达记录
+        4. 计算每条记录的质量分数（质量分 = 准确率 × 置信度）
+        5. 按质量分数排序，删除最低的 cleanup_ratio 比例记录
 
         Args:
             max_records: 最大记录数阈值，默认 10000
@@ -644,6 +694,9 @@ class EventVectorStore:
         Side Effects:
             - 从 feeding_events Collection 中删除低质量的用户表达记录
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         # 获取当前记录总数
         total_count = self._collection.count()
 
@@ -716,7 +769,8 @@ class EventVectorStore:
         获取喂养事件向量库中的记录总数
 
         业务逻辑：
-        返回 feeding_events Collection 中的记录总数
+        1. 确保向量存储已初始化（延迟加载）
+        2. 返回 feeding_events Collection 中的记录总数
 
         Args:
             无
@@ -727,6 +781,9 @@ class EventVectorStore:
         Side Effects:
             无
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         # 获取 Collection 中的记录总数
         count = self._collection.count()
         # 记录日志

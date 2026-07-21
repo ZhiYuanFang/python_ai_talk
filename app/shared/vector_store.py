@@ -55,54 +55,77 @@ class VectorStore:
 
     def __init__(self):
         """
-        初始化向量存储服务
+        初始化向量存储服务（轻量初始化，延迟加载模型和数据库）
 
         业务逻辑：
-        1. 加载 BGE-small-zh-v1.5 Embedding 模型
-        2. 初始化 Chroma 客户端
-        3. 创建或获取母婴知识 Collection
+        1. 仅设置初始化标记和线程锁，不加载模型和数据库
+        2. 实际初始化在第一次调用公共方法时通过 _ensure_initialized() 执行
+        3. 延迟初始化的目的：避免 import 阶段加载模型，提升服务启动健壮性
         """
         # 防止重复初始化
         if hasattr(self, '_initialized'):
             return
 
-        # 记录初始化开始日志
-        logger.info("开始初始化向量存储服务...")
+        # 初始化标记（False 表示尚未初始化）
+        self._initialized = False
 
-        # 创建数据目录（如果不存在）
-        os.makedirs(settings.chroma_persist_dir, exist_ok=True)
+        # 线程锁，确保并发安全的延迟初始化
+        import threading
+        self._init_lock = threading.Lock()
 
-        # 加载 Embedding 模型
-        # BGE-small-zh-v1.5 是一个轻量级的中文 Embedding 模型，效果好且体积小
-        logger.info(f"加载 Embedding 模型: {settings.embedding_model}")
-        self._embedding_model = SentenceTransformer(
-            settings.embedding_model,
-            cache_folder=os.path.join("data", "models"),  # 模型缓存目录
-        )
+    def _ensure_initialized(self):
+        """
+        确保向量存储已初始化（延迟加载）
 
-        # 初始化 Chroma 客户端
-        # 使用本地文件系统存储，支持持久化
-        logger.info(f"初始化 Chroma 客户端，数据目录: {settings.chroma_persist_dir}")
-        self._chroma_client = chromadb.PersistentClient(
-            path=settings.chroma_persist_dir,
-            settings=Settings(
-                anonymized_telemetry=False,  # 禁用匿名遥测
-                allow_reset=False,  # 禁止重置
-            ),
-        )
+        业务逻辑：
+        第一次调用时执行实际的初始化工作（加载模型、初始化 ChromaDB 等）。
+        使用双重检查锁定确保并发安全。
+        """
+        # 第一次检查：无锁快速路径
+        if self._initialized:
+            return
 
-        # 创建或获取母婴知识 Collection
-        # Collection 是 Chroma 中存储向量数据的基本单位
-        self._collection = self._chroma_client.get_or_create_collection(
-            name="mother_baby_knowledge",  # Collection 名称
-            metadata={"description": "母婴喂养知识向量库"},  # 描述信息
-        )
+        # 获取锁
+        with self._init_lock:
+            # 第二次检查：确保只有一个线程执行初始化
+            if not self._initialized:
+                # 记录初始化开始日志
+                logger.info("开始初始化向量存储服务...")
 
-        # 标记初始化完成
-        self._initialized = True
+                # 创建数据目录（如果不存在）
+                os.makedirs(settings.chroma_persist_dir, exist_ok=True)
 
-        # 记录初始化完成日志
-        logger.info("向量存储服务初始化完成")
+                # 加载 Embedding 模型
+                # BGE-small-zh-v1.5 是一个轻量级的中文 Embedding 模型，效果好且体积小
+                logger.info(f"加载 Embedding 模型: {settings.embedding_model}")
+                self._embedding_model = SentenceTransformer(
+                    settings.embedding_model,
+                    cache_folder=os.path.join("data", "models"),  # 模型缓存目录
+                )
+
+                # 初始化 Chroma 客户端
+                # 使用本地文件系统存储，支持持久化
+                logger.info(f"初始化 Chroma 客户端，数据目录: {settings.chroma_persist_dir}")
+                self._chroma_client = chromadb.PersistentClient(
+                    path=settings.chroma_persist_dir,
+                    settings=Settings(
+                        anonymized_telemetry=False,  # 禁用匿名遥测
+                        allow_reset=False,  # 禁止重置
+                    ),
+                )
+
+                # 创建或获取母婴知识 Collection
+                # Collection 是 Chroma 中存储向量数据的基本单位
+                self._collection = self._chroma_client.get_or_create_collection(
+                    name="mother_baby_knowledge",  # Collection 名称
+                    metadata={"description": "母婴喂养知识向量库"},  # 描述信息
+                )
+
+                # 标记初始化完成
+                self._initialized = True
+
+                # 记录初始化完成日志
+                logger.info("向量存储服务初始化完成")
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
         """
@@ -127,14 +150,18 @@ class VectorStore:
         添加文档到向量库
 
         业务逻辑：
-        1. 提取文档内容和元数据
-        2. 将文档内容转换为向量
-        3. 将向量和元数据写入 Chroma
-        4. 支持扩展元数据字段（source、quality_score、match_count、helpful_count 等）
+        1. 确保向量存储已初始化（延迟加载）
+        2. 提取文档内容和元数据
+        3. 将文档内容转换为向量
+        4. 将向量和元数据写入 Chroma
+        5. 支持扩展元数据字段（source、quality_score、match_count、helpful_count 等）
 
         Args:
             documents: 文档列表，每个文档包含 "content"、"metadata" 和可选的 "id" 字段
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         if not documents:
             logger.warning("尝试添加空文档列表")
             return
@@ -189,10 +216,11 @@ class VectorStore:
         检索相似文档
 
         业务逻辑：
-        1. 将查询文本转换为向量
-        2. 在 Chroma 中检索相似向量
-        3. 返回检索结果，包含文档内容和相似度分数
-        4. 更新被匹配文档的 match_count
+        1. 确保向量存储已初始化（延迟加载）
+        2. 将查询文本转换为向量
+        3. 在 Chroma 中检索相似向量
+        4. 返回检索结果，包含文档内容和相似度分数
+        5. 更新被匹配文档的 match_count
 
         Args:
             query: 查询文本
@@ -201,6 +229,9 @@ class VectorStore:
         Returns:
             检索结果列表，每个结果包含 "content"、"metadata" 和 "score" 字段
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         if not query.strip():
             logger.warning("查询文本为空")
             return []
@@ -286,6 +317,7 @@ class VectorStore:
         根据用户反馈更新知识质量分
 
         业务逻辑：
+        - 确保向量存储已初始化（延迟加载）
         - 👍（feedback=1）：quality_score += 0.1，helpful_count += 1
         - 👎（feedback=-1）：quality_score -= 0.2
         - 同时更新 match_count 和 updated_at
@@ -294,6 +326,9 @@ class VectorStore:
             doc_id: 文档 ID
             feedback: 反馈值，1=👍，-1=👎
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         try:
             # 获取文档当前元数据
             existing_data = self._collection.get(ids=[doc_id], include=["metadatas"])
@@ -328,11 +363,15 @@ class VectorStore:
         获取向量库中文档数量
 
         业务逻辑：
-        返回 Chroma Collection 中的文档总数
+        1. 确保向量存储已初始化（延迟加载）
+        2. 返回 Chroma Collection 中的文档总数
 
         Returns:
             文档数量
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         count = self._collection.count()
         logger.debug(f"向量库文档数量: {count}")
         return count
@@ -342,8 +381,12 @@ class VectorStore:
         清空向量库
 
         业务逻辑：
-        删除 Chroma Collection 中的所有文档
+        1. 确保向量存储已初始化（延迟加载）
+        2. 删除 Chroma Collection 中的所有文档
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         logger.warning("开始清空向量库")
         self._collection.delete(ids=self._collection.get()["ids"])
         logger.warning("向量库已清空")
@@ -353,12 +396,16 @@ class VectorStore:
         重建向量库
 
         业务逻辑：
-        1. 清空现有向量库
-        2. 添加新文档
+        1. 确保向量存储已初始化（延迟加载）
+        2. 清空现有向量库
+        3. 添加新文档
 
         Args:
             documents: 新文档列表
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         logger.info("开始重建向量库...")
         self.clear()
         self.add_documents(documents)
@@ -369,7 +416,8 @@ class VectorStore:
         根据 doc_id 获取所有相关文档（同一原始文档的所有 chunks）
 
         业务逻辑：
-        使用 Chroma 的 where 子句查询所有具有相同 doc_id 的文档
+        1. 确保向量存储已初始化（延迟加载）
+        2. 使用 Chroma 的 where 子句查询所有具有相同 doc_id 的文档
 
         Args:
             doc_id: 原始文档 ID
@@ -377,6 +425,9 @@ class VectorStore:
         Returns:
             文档列表
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         try:
             results = self._collection.get(
                 where={"doc_id": doc_id},
@@ -401,11 +452,15 @@ class VectorStore:
         根据 doc_id 删除所有相关文档（同一原始文档的所有 chunks）
 
         业务逻辑：
-        使用 Chroma 的 delete 方法，通过 where 子句删除所有具有相同 doc_id 的文档
+        1. 确保向量存储已初始化（延迟加载）
+        2. 使用 Chroma 的 delete 方法，通过 where 子句删除所有具有相同 doc_id 的文档
 
         Args:
             doc_id: 原始文档 ID
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         try:
             # 先获取所有相关文档的 ID
             results = self._collection.get(where={"doc_id": doc_id}, include=[])
@@ -422,7 +477,8 @@ class VectorStore:
         获取所有文档（支持按分类筛选）
 
         业务逻辑：
-        返回向量库中的所有文档，支持按 category 筛选
+        1. 确保向量存储已初始化（延迟加载）
+        2. 返回向量库中的所有文档，支持按 category 筛选
 
         Args:
             category: 分类名称，可选
@@ -430,6 +486,9 @@ class VectorStore:
         Returns:
             文档列表
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         try:
             where = {"category": category} if category else None
             results = self._collection.get(
@@ -455,11 +514,15 @@ class VectorStore:
         获取所有知识分类及其文档数量
 
         业务逻辑：
-        查询向量库中所有不同的 category，并统计每个分类的文档数量
+        1. 确保向量存储已初始化（延迟加载）
+        2. 查询向量库中所有不同的 category，并统计每个分类的文档数量
 
         Returns:
             分类列表，每个分类包含 name 和 count
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         try:
             # 获取所有文档的元数据
             results = self._collection.get(include=["metadatas"])
@@ -485,11 +548,15 @@ class VectorStore:
         获取向量库统计信息
 
         业务逻辑：
-        返回文档总数、向量总数、分类数量等统计信息
+        1. 确保向量存储已初始化（延迟加载）
+        2. 返回文档总数、向量总数、分类数量等统计信息
 
         Returns:
             统计信息字典
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         try:
             total_count = self.get_document_count()
             categories = self.get_categories()
@@ -517,11 +584,15 @@ class VectorStore:
         清理低质量用户知识
 
         业务逻辑：
-        删除 source=user 且 quality_score < threshold 的知识
+        1. 确保向量存储已初始化（延迟加载）
+        2. 删除 source=user 且 quality_score < threshold 的知识
 
         Args:
             threshold: 质量分阈值，默认 0.3
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         try:
             # 查询所有 source=user 的文档
             results = self._collection.get(
@@ -549,9 +620,13 @@ class VectorStore:
         确保向量库中所有文档的元数据完整
 
         业务逻辑：
-        遍历所有文档，为缺失的扩展元数据字段添加默认值
-        用于服务启动时补全旧数据的元数据
+        1. 确保向量存储已初始化（延迟加载）
+        2. 遍历所有文档，为缺失的扩展元数据字段添加默认值
+        3. 用于服务启动时补全旧数据的元数据
         """
+        # 确保向量存储已初始化（延迟加载）
+        self._ensure_initialized()
+
         try:
             # 获取所有文档的 ID 和元数据
             results = self._collection.get(include=["metadatas", "ids"])

@@ -21,7 +21,6 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from pydantic import BaseModel, Field
 
 from app.config.settings import settings
-from app.shared.redis_gate import RedisGate
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -57,6 +56,7 @@ class LLMClient:
     业务说明：
     提供统一的 LLM 调用接口，支持 DeepSeek 和 Zhipu 双提供商。
     包含并发控制（Redis 闸门）和错误处理。
+    采用延迟初始化模式，import 阶段不连接 Redis，第一次调用时才初始化。
     """
 
     def __init__(self):
@@ -64,11 +64,40 @@ class LLMClient:
         初始化 LLM 客户端
 
         业务逻辑：
-        1. 初始化 Redis 闸门控制器，用于并发控制
+        1. 延迟初始化 Redis 闸门控制器（第一次调用时才创建）
         2. 创建不同提供商的客户端缓存
+        3. 使用线程锁确保并发安全
         """
-        self.redis_gate = RedisGate()
+        # Redis 闸门控制器（延迟初始化，第一次调用时才创建）
+        self._redis_gate = None
+        # LLM 客户端缓存
         self._clients: Dict[str, ChatOpenAI] = {}
+        # 线程锁，用于延迟初始化的并发安全
+        import threading
+        self._init_lock = threading.Lock()
+
+    def _get_redis_gate(self):
+        """
+        获取 Redis 闸门控制器（延迟初始化）
+
+        业务逻辑：
+        第一次调用时创建 RedisGate 实例，使用双重检查锁定确保并发安全。
+        延迟初始化的目的是避免 import 阶段连接外部依赖，提升服务启动健壮性。
+
+        Returns:
+            RedisGate 实例
+        """
+        # 第一次检查：无锁快速路径
+        if self._redis_gate is None:
+            # 获取锁
+            with self._init_lock:
+                # 第二次检查：确保只有一个线程创建实例
+                if self._redis_gate is None:
+                    # 延迟导入，避免循环依赖
+                    from app.shared.redis_gate import RedisGate
+                    logger.info("延迟初始化 Redis 闸门控制器")
+                    self._redis_gate = RedisGate()
+        return self._redis_gate
 
     def _get_client(self, provider: str, model_name: str) -> ChatOpenAI:
         """
@@ -146,7 +175,7 @@ class LLMClient:
             LLMResponse 响应结果
         """
         # 获取 Redis 闸门许可，控制并发数
-        async with self.redis_gate.acquire(model_config.name, model_config.max_in_flight):
+        async with self._get_redis_gate().acquire(model_config.name, model_config.max_in_flight):
             try:
                 # 获取对应的 LLM 客户端
                 client = self._get_client(model_config.provider, model_config.name)
@@ -209,7 +238,7 @@ class LLMClient:
             LLMResponse 响应结果（流式返回）
         """
         # 获取 Redis 闸门许可，控制并发数
-        async with self.redis_gate.acquire(model_config.name, model_config.max_in_flight):
+        async with self._get_redis_gate().acquire(model_config.name, model_config.max_in_flight):
             try:
                 # 获取对应的 LLM 客户端
                 client = self._get_client(model_config.provider, model_config.name)

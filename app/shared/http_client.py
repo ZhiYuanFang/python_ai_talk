@@ -30,32 +30,61 @@ class HttpClient:
     业务说明：
     提供对 go_ai_talk 兄弟仓服务的 HTTP 调用能力。
     封装历史服务和设备服务的常用 API。
+    采用延迟初始化模式，import 阶段不创建连接，第一次调用时才初始化。
     """
 
     def __init__(self):
         """
-        初始化 HTTP 客户端
+        初始化 HTTP 客户端（轻量初始化，延迟创建连接）
 
         业务逻辑：
-        1. 创建 httpx.AsyncClient 实例
-        2. 配置超时时间和连接池
+        1. 仅设置初始化标记和线程锁，不创建 httpx 客户端
+        2. 实际初始化在第一次调用公共方法时通过 _ensure_initialized() 执行
+        3. 延迟初始化的目的：避免 import 阶段创建连接，提升服务启动健壮性
         """
-        # 创建 httpx 异步客户端
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0),  # 请求超时时间
-            limits=httpx.Limits(
-                max_connections=10,  # 最大连接数
-                max_keepalive_connections=5,  # 最大长连接数
-            ),
-            follow_redirects=True,  # 自动跟随重定向
-        )
+        # 初始化标记（False 表示尚未初始化）
+        self._initialized = False
+
+        # 线程锁，确保并发安全的延迟初始化
+        import threading
+        self._init_lock = threading.Lock()
+
+    def _ensure_initialized(self):
+        """
+        确保 HTTP 客户端已初始化（延迟创建）
+
+        业务逻辑：
+        第一次调用时创建 httpx.AsyncClient 实例。
+        使用双重检查锁定确保并发安全。
+        """
+        # 第一次检查：无锁快速路径
+        if self._initialized:
+            return
+
+        # 获取锁
+        with self._init_lock:
+            # 第二次检查：确保只有一个线程执行初始化
+            if not self._initialized:
+                # 创建 httpx 异步客户端
+                self._client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(30.0),  # 请求超时时间
+                    limits=httpx.Limits(
+                        max_connections=10,  # 最大连接数
+                        max_keepalive_connections=5,  # 最大长连接数
+                    ),
+                    follow_redirects=True,  # 自动跟随重定向
+                )
+
+                # 标记初始化完成
+                self._initialized = True
 
     async def get_event_dictionary(self) -> List[Dict[str, Any]]:
         """
         获取事件字典列表
 
         业务逻辑：
-        调用 history-service 的事件字典 API，获取所有可用的事件类型。
+        1. 确保 HTTP 客户端已初始化（延迟创建）
+        2. 调用 history-service 的事件字典 API，获取所有可用的事件类型。
         用于意图分析时匹配事件名称。
 
         Returns:
@@ -64,6 +93,9 @@ class HttpClient:
         Raises:
             httpx.HTTPError: HTTP 请求失败
         """
+        # 确保 HTTP 客户端已初始化（延迟创建）
+        self._ensure_initialized()
+
         # 构建请求 URL
         url = f"{settings.history_service_url}/api/events/dictionary"
 
@@ -93,7 +125,8 @@ class HttpClient:
         获取历史事件列表
 
         业务逻辑：
-        调用 history-service 的历史记录 API，获取指定设备的历史事件。
+        1. 确保 HTTP 客户端已初始化（延迟创建）
+        2. 调用 history-service 的历史记录 API，获取指定设备的历史事件。
         支持时间范围和数量限制。
 
         Args:
@@ -108,6 +141,9 @@ class HttpClient:
         Raises:
             httpx.HTTPError: HTTP 请求失败
         """
+        # 确保 HTTP 客户端已初始化（延迟创建）
+        self._ensure_initialized()
+
         # 构建请求 URL
         url = f"{settings.history_service_url}/api/events/list"
 
@@ -151,7 +187,8 @@ class HttpClient:
         按条件筛选历史记录
 
         业务逻辑：
-        调用 history-service 的筛选 API，按事件ID列表和时间范围筛选历史记录。
+        1. 确保 HTTP 客户端已初始化（延迟创建）
+        2. 调用 history-service 的筛选 API，按事件ID列表和时间范围筛选历史记录。
         事件ID是稳定标识（事件名会变但ID不变），因此使用 event_ids 而非 event_names。
         支持不传 event_ids（返回所有事件类型）、不传时间范围（不限制时间）。
 
@@ -168,6 +205,9 @@ class HttpClient:
         Raises:
             httpx.HTTPError: HTTP 请求失败
         """
+        # 确保 HTTP 客户端已初始化（延迟创建）
+        self._ensure_initialized()
+
         # 构建请求 URL
         url = f"{settings.history_service_url}/device/history/api/filter"
 
@@ -214,7 +254,8 @@ class HttpClient:
         获取宝宝画像信息
 
         业务逻辑：
-        调用 device-service 的宝宝画像 API，获取指定设备对应的宝宝信息。
+        1. 确保 HTTP 客户端已初始化（延迟创建）
+        2. 调用 device-service 的宝宝画像 API，获取指定设备对应的宝宝信息。
         主要用于获取宝宝生日，计算宝宝年龄。
 
         Args:
@@ -226,6 +267,9 @@ class HttpClient:
         Raises:
             httpx.HTTPError: HTTP 请求失败
         """
+        # 确保 HTTP 客户端已初始化（延迟创建）
+        self._ensure_initialized()
+
         # 构建请求 URL
         url = f"{settings.device_service_url}/api/device/{device_no}/baby"
 
@@ -254,9 +298,11 @@ class HttpClient:
         关闭 HTTP 客户端
 
         业务逻辑：
-        关闭 httpx 客户端连接，释放资源
+        关闭 httpx 客户端连接，释放资源。
+        如果客户端未初始化则不执行任何操作。
         """
-        await self._client.aclose()
+        if self._initialized:
+            await self._client.aclose()
 
 
 # 创建全局 HTTP 客户端实例

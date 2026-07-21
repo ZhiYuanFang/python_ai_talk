@@ -15,9 +15,10 @@ Redis 闸门控制模块
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-import redis
-from redis.cluster import RedisCluster
+from urllib.parse import urlparse
+
 import redis.asyncio as redis
+from redis.asyncio.cluster import RedisCluster
 
 from app.config.settings import settings
 
@@ -39,39 +40,55 @@ class RedisGate:
         初始化 Redis 闸门控制器
 
         业务逻辑：
-        1. 创建 Redis 连接客户端
+        1. 创建 Redis 连接客户端（支持单机和集群模式）
         2. 定义 Lua 脚本用于原子性操作
+
+        集群模式 URL 格式示例：
+        redis://host1:7001,host2:7002,host3:7003/0
+        （逗号分隔多个节点地址）
         """
         # 创建 Redis 连接客户端
-        # 判断是否是集群模式
-        if "," in settings.redis_url:  # 包含逗号说明是多节点集群
-            self._redis = RedisCluster.from_url(
-                settings.redis_url,
-                decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5,
-            )
-            # 手动解析多个节点地址
+        # 判断是否是集群模式（包含逗号说明是多节点集群）
+        if "," in settings.redis_url:
+            # 手动解析多个节点地址，构建 startup_nodes 列表
             nodes = settings.redis_url.split(",")
             startup_nodes = []
+            # 从第一个节点 URL 中解析密码和 db 等公共参数
+            first_parsed = urlparse(nodes[0])
+            password = first_parsed.password
+            db = 0
+            if first_parsed.path and len(first_parsed.path) > 1:
+                try:
+                    db = int(first_parsed.path.lstrip("/"))
+                except ValueError:
+                    db = 0
+
             for node in nodes:
-                # 去掉 redis:// 前缀
-                clean_node = node.replace("redis://", "")
-                host, port = clean_node.split(":")
-                startup_nodes.append({"host": host, "port": int(port)})
+                # 解析每个节点的 host 和 port
+                parsed = urlparse(node)
+                if parsed.hostname and parsed.port:
+                    startup_nodes.append({"host": parsed.hostname, "port": parsed.port})
+
+            # 使用异步集群客户端
             self._redis = RedisCluster(
                 startup_nodes=startup_nodes,
+                password=password,
                 decode_responses=True,
                 socket_timeout=5,
                 socket_connect_timeout=5,
             )
+            # 标记为集群模式
+            self._is_cluster = True
         else:
+            # 单机模式，使用异步 Redis 客户端
             self._redis = redis.Redis.from_url(
                 settings.redis_url,
                 decode_responses=True,
                 socket_timeout=5,
                 socket_connect_timeout=5,
             )
+            # 标记为单机模式
+            self._is_cluster = False
 
         # Lua 脚本：尝试获取许可
         # 如果当前并发数 < max_in_flight，则增加计数器并返回 1（成功）

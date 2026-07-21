@@ -4,6 +4,7 @@ FastAPI 应用主入口
 业务说明：
 本文件是 Python AI 服务的启动入口，负责初始化 FastAPI 应用、加载配置、注册路由。
 包含知识飞轮的定期清理任务，自动清理低质量知识。
+采用延迟初始化 + 后台预热策略，确保服务快速启动并响应健康检查。
 
 设计思路：
 1. 使用 FastAPI 创建高性能的异步 Web 服务
@@ -12,6 +13,7 @@ FastAPI 应用主入口
 4. 支持跨域请求（CORS）
 5. 提供优雅的启动和关闭钩子
 6. 启动后台定时任务，定期清理低质量知识（知识飞轮）
+7. 向量存储采用后台预热，不阻塞服务启动
 """
 
 import asyncio
@@ -29,6 +31,8 @@ from app.shared.vector_store import vector_store
 
 # 后台任务取消对象
 _cleanup_task = None
+_warmup_task = None
+
 
 async def _periodic_cleanup():
     """
@@ -49,6 +53,77 @@ async def _periodic_cleanup():
 
         # 等待 24 小时后再次执行
         await asyncio.sleep(24 * 60 * 60)
+
+
+async def _warmup_vector_stores():
+    """
+    后台预热向量存储的任务
+
+    业务逻辑：
+    1. 在后台线程中初始化知识向量存储（加载 Embedding 模型和 ChromaDB）
+    2. 检查并构建向量库（如果为空）
+    3. 初始化喂养事件向量库
+    4. 不阻塞服务启动，健康检查可正常响应
+    """
+    try:
+        logger.info("开始后台预热向量存储...")
+
+        # 初始化知识向量存储服务
+        # 这会加载 BGE-small-zh-v1.5 模型并初始化 Chroma 客户端
+        # 如果是第一次启动，可能需要下载模型（约 90MB）
+        logger.info("初始化知识向量存储服务...")
+        doc_count = vector_store.get_document_count()
+
+        # 检查向量库是否为空，如果为空则尝试构建
+        if doc_count == 0:
+            logger.warning("向量库为空，尝试自动构建...")
+            try:
+                # 尝试从知识库目录加载文档并构建向量库
+                from scripts.build_vector_db import build_vector_db
+                build_vector_db()
+                logger.info("向量库构建完成")
+            except Exception as e:
+                logger.error(f"向量库自动构建失败: {str(e)}", exc_info=True)
+        else:
+            # 向量库已有数据，补全旧数据的扩展元数据字段（用于知识飞轮）
+            logger.info("向量库已有数据，检查并补全扩展元数据...")
+            vector_store.ensure_metadata_completeness()
+
+        # 初始化喂养事件向量库
+        # 延迟导入，避免循环依赖
+        from app.feeding.services.event_vector_store import event_vector_store
+        from app.feeding.services.event_cache import event_cache
+
+        # 触发事件向量存储的初始化（加载 Embedding 模型和 ChromaDB Collection）
+        logger.info("初始化喂养事件向量存储...")
+        event_count = event_vector_store.get_event_count()
+
+        # 检查喂养事件向量库是否为空
+        # 如果为空，则需要从兄弟仓获取事件字典并初始化
+        if event_count == 0:
+            logger.warning("喂养事件向量库为空，尝试从兄弟仓获取事件字典并初始化...")
+            try:
+                # 通过事件缓存获取事件字典（自动处理缓存和 API 调用）
+                event_dictionary = await event_cache.get_event_dictionary()
+                # 检查获取的事件字典是否有效
+                if event_dictionary:
+                    logger.info(f"成功获取事件字典，包含 {len(event_dictionary)} 个事件，开始初始化向量库...")
+                    # 调用 initialize_events 方法初始化喂养事件向量库
+                    # 该方法会为每个事件生成标准条目和动作变体
+                    event_vector_store.initialize_events(event_dictionary)
+                    logger.info("喂养事件向量库初始化完成")
+                else:
+                    logger.warning("获取到的事件字典为空，跳过喂养事件向量库初始化")
+            except Exception as e:
+                logger.error(f"喂养事件向量库自动初始化失败: {str(e)}", exc_info=True)
+        else:
+            # 喂养事件向量库已有数据，记录当前记录数
+            logger.info(f"喂养事件向量库已有 {event_count} 条记录，跳过初始化")
+
+        logger.info("向量存储后台预热完成")
+
+    except Exception as e:
+        logger.error(f"向量存储后台预热失败: {str(e)}", exc_info=True)
 
 
 # 配置日志系统
@@ -110,72 +185,18 @@ def create_app() -> FastAPI:
 
         业务逻辑：
         1. 记录启动日志
-        2. 初始化向量存储服务（加载模型）
-        3. 检查并构建向量库（如果为空）
-        4. 初始化喂养事件向量库（如果为空则从兄弟仓获取事件字典并初始化）
+        2. 启动向量存储后台预热任务（不阻塞服务启动）
+        3. 启动知识飞轮后台任务（定期清理低质量知识）
+        4. 服务可立即响应健康检查请求
         """
         logger.info("Python AI Talk Service 启动中...")
 
-        # 初始化向量存储服务
-        # 这会加载 BGE-small-zh-v1.5 模型并初始化 Chroma 客户端
-        # 如果是第一次启动，可能需要下载模型（约 90MB）
-        logger.info("初始化向量存储服务...")
-        _ = vector_store
-
-        # 检查向量库是否为空，如果为空则尝试构建
-        doc_count = vector_store.get_document_count()
-        if doc_count == 0:
-            logger.warning("向量库为空，尝试自动构建...")
-            try:
-                # 尝试从知识库目录加载文档并构建向量库
-                from scripts.build_vector_db import build_vector_db
-                # 修复: build_vector_db 是同步函数，不能用 await
-                build_vector_db()
-                logger.info("向量库构建完成")
-            except Exception as e:
-                # 修复: 用 error 级别 + exc_info 记录完整 traceback，避免静默失败
-                logger.error(f"向量库自动构建失败: {str(e)}", exc_info=True)
-        else:
-            # 向量库已有数据，补全旧数据的扩展元数据字段（用于知识飞轮）
-            logger.info("向量库已有数据，检查并补全扩展元数据...")
-            vector_store.ensure_metadata_completeness()
-
-        # 初始化喂养事件向量库
-        # 延迟导入，避免循环依赖
-        from app.feeding.services.event_vector_store import event_vector_store
-        from app.feeding.services.event_cache import event_cache
-
-        # 触发事件向量存储的初始化（加载 Embedding 模型和 ChromaDB Collection）
-        logger.info("初始化喂养事件向量存储...")
-        _ = event_vector_store
-
-        # 检查喂养事件向量库是否为空
-        # 如果为空，则需要从兄弟仓获取事件字典并初始化
-        event_count = event_vector_store.get_event_count()
-        if event_count == 0:
-            # 记录喂养事件向量库为空的警告日志
-            logger.warning("喂养事件向量库为空，尝试从兄弟仓获取事件字典并初始化...")
-            try:
-                # 通过事件缓存获取事件字典（自动处理缓存和 API 调用）
-                event_dictionary = await event_cache.get_event_dictionary()
-                # 检查获取的事件字典是否有效
-                if event_dictionary:
-                    # 记录获取成功日志
-                    logger.info(f"成功获取事件字典，包含 {len(event_dictionary)} 个事件，开始初始化向量库...")
-                    # 调用 initialize_events 方法初始化喂养事件向量库
-                    # 该方法会为每个事件生成标准条目和动作变体
-                    event_vector_store.initialize_events(event_dictionary)
-                    # 记录初始化完成日志
-                    logger.info("喂养事件向量库初始化完成")
-                else:
-                    # 记录事件字典为空的警告
-                    logger.warning("获取到的事件字典为空，跳过喂养事件向量库初始化")
-            except Exception as e:
-                # 记录初始化失败日志，包含完整异常信息
-                logger.error(f"喂养事件向量库自动初始化失败: {str(e)}", exc_info=True)
-        else:
-            # 喂养事件向量库已有数据，记录当前记录数
-            logger.info(f"喂养事件向量库已有 {event_count} 条记录，跳过初始化")
+        # 启动向量存储后台预热任务
+        # 预热在后台执行，不阻塞服务启动
+        # 这样健康检查可以立即响应，而向量库在后台慢慢初始化
+        global _warmup_task
+        _warmup_task = asyncio.create_task(_warmup_vector_stores())
+        logger.info("向量存储后台预热任务已启动")
 
         # 启动知识飞轮后台任务（定期清理低质量知识）
         global _cleanup_task
@@ -192,11 +213,22 @@ def create_app() -> FastAPI:
         应用关闭钩子
 
         业务逻辑：
-        1. 取消后台任务（知识飞轮定期清理）
-        2. 关闭 HTTP 客户端连接
-        3. 记录关闭日志
+        1. 取消后台预热任务
+        2. 取消后台任务（知识飞轮定期清理）
+        3. 关闭 HTTP 客户端连接
+        4. 记录关闭日志
         """
         logger.info("Python AI Talk Service 关闭中...")
+
+        # 取消后台预热任务
+        global _warmup_task
+        if _warmup_task:
+            _warmup_task.cancel()
+            try:
+                await _warmup_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("向量存储后台预热任务已取消")
 
         # 取消后台任务（知识飞轮定期清理）
         global _cleanup_task
