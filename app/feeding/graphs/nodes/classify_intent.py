@@ -19,14 +19,14 @@ from typing import Any, Dict, Optional
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.feeding.config.settings import settings
+from app.config.settings import settings
 from app.feeding.graphs.nodes.prompts.intent_classification import (
     build_intent_classification_system_prompt,
     build_intent_classification_user_message,
 )
 from app.feeding.schemas.intent import IntentResponse
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
-from app.utils.llm_client import LLMClient
+from app.shared.llm_client import LLMClient
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)

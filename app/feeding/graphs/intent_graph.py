@@ -18,7 +18,7 @@ from typing import Any, Dict
 
 from langgraph.graph import StateGraph, START, END
 
-from app.feeding.config.settings import settings
+from app.config.settings import settings
 from app.feeding.graphs.nodes.classify_intent import classify_intent
 from app.feeding.graphs.nodes.match_event_by_vector import match_event_by_vector
 
