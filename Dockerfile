@@ -11,9 +11,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml ./
 
-RUN pip install poetry && \
+# 1. 先安装 CPU-only PyTorch（避免安装 CUDA 库，节省 ~400MB）
+# 2. 安装 poetry 并通过 poetry 安装项目依赖
+# 3. 同层卸载 onnxruntime（ChromaDB 默认 EF 依赖，但项目使用自定义 BGE Embedding）
+#    如果 chromadb import 成功 → onnxruntime 不进入镜像层（节省 ~200MB）
+#    如果 chromadb import 失败 → 重新安装 onnxruntime（不影响功能）
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir poetry && \
     poetry config virtualenvs.create false && \
-    poetry install --no-interaction --without dev
+    poetry install --no-interaction --without dev && \
+    pip uninstall -y onnxruntime && \
+    python -c "import chromadb" 2>/dev/null && \
+    echo "onnxruntime safely removed" || \
+    (echo "onnxruntime required by chromadb, reinstalling" && pip install --no-cache-dir onnxruntime)
 
 # 预下载 BGE-small-zh-v1.5 Embedding 模型到 data/models 目录
 # 避免容器启动时从 HuggingFace 下载（国内网络不稳定）

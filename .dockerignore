@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# 前端（与 Python 服务无关）
+frontend
+
+# OpenSpec 变更文档
+openspec
+
+# 文档
+docs
+*.md
+!data/knowledge/**/*.md
+
+# Python 缓存
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+.mypy_cache
+
+# 环境配置
+.env
+.env.*
+*.local
+
+# Docker 编排文件
+docker-compose*.yml
+
+# IDE
+.trae
+.vscode
+.idea
+
+# 临时脚本（保留 build_vector_db.py）
+scripts/*
+!scripts/build_vector_db.py
+
+# 运行时数据（构建时不需要，容器内自动创建）
+data/chroma_db
+data/models
+
+# 日志
+*.log
+logs
