@@ -17,7 +17,7 @@ import logging
 from typing import Any, Dict, List, Optional, AsyncGenerator
 
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from pydantic import BaseModel, Field
 
 from app.config.settings import settings
