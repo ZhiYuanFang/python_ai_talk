@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # 服务配置
     server_port: int = 8000  # 服务端口
-    log_level: str = "INFO"  # 日志级别
+    log_level: str = "WARNING"  # 日志级别
 
     # LLM 配置 - DeepSeek
     deepseek_api_key: str = ""  # DeepSeek API Key

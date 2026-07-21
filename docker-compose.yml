@@ -34,5 +34,7 @@ services:
       timeout: 3s
       retries: 6
     volumes:
+      # ChromaDB 持久化目录，包含 knowledge 和 feeding_events 等多个集合
+      # feeding_events 集合在服务启动后首次获取事件字典时自动创建
       - ./data/chroma_db:/app/data/chroma_db
       - ./data/models:/app/data/models

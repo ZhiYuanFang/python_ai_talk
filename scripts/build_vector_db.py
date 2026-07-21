@@ -306,6 +306,80 @@ def build_vector_db(data_dir: str = None, output_dir: str = None, force: bool = 
         return False
 
 
+def build_feeding_events_vector_db(event_dictionary=None) -> bool:
+    """
+    构建喂养事件向量数据库
+
+    业务逻辑：
+    1. 如果未传入事件字典，则通过 HTTP API 从兄弟仓获取事件字典
+    2. 调用 event_vector_store.initialize_events 初始化喂养事件向量库
+    3. 将事件字典中的每个事件生成标准条目和动作变体，写入 ChromaDB 的 feeding_events Collection
+    4. 验证初始化结果，确保事件向量库中有数据
+
+    Args:
+        event_dictionary: 事件字典列表，每个元素包含 id 和 name 字段。
+                          如果为 None，则从兄弟仓 HTTP API 获取
+
+    Returns:
+        构建是否成功
+    """
+    # 如果未传入事件字典，则从兄弟仓 HTTP API 获取
+    if event_dictionary is None:
+        # 记录获取开始日志
+        logger.info("未传入事件字典，从兄弟仓 HTTP API 获取...")
+        try:
+            # 导入 HTTP 客户端，用于调用兄弟仓 API
+            from app.shared.http_client import http_client
+            # 使用 asyncio 运行异步获取方法（脚本环境为同步调用）
+            import asyncio
+            # 通过 HTTP 客户端异步获取事件字典
+            event_dictionary = asyncio.run(http_client.get_event_dictionary())
+            # 记录获取成功日志
+            logger.info(f"成功从兄弟仓获取事件字典，包含 {len(event_dictionary)} 个事件")
+        except Exception as e:
+            # 记录获取失败日志
+            logger.error(f"从兄弟仓获取事件字典失败: {str(e)}")
+            # 返回构建失败
+            return False
+
+    # 检查事件字典是否为空
+    if not event_dictionary:
+        # 记录事件字典为空的警告日志
+        logger.error("事件字典为空，无法构建喂养事件向量库")
+        # 返回构建失败
+        return False
+
+    # 记录构建开始日志
+    logger.info(f"开始构建喂养事件向量数据库，事件数量: {len(event_dictionary)}")
+
+    try:
+        # 导入喂养事件向量存储模块
+        from app.feeding.services.event_vector_store import event_vector_store
+
+        # 调用 initialize_events 方法初始化喂养事件向量库
+        # 该方法会清除旧的标准数据，然后为每个事件生成标准条目和动作变体
+        event_vector_store.initialize_events(event_dictionary)
+
+        # 验证初始化结果，获取事件向量库中的记录总数
+        event_count = event_vector_store.get_event_count()
+        # 检查记录数是否大于 0
+        if event_count > 0:
+            # 记录验证通过日志
+            logger.info(f"喂养事件向量库构建完成！共有 {event_count} 条记录")
+        else:
+            # 记录验证失败警告
+            logger.warning("喂养事件向量库构建后记录数为 0，可能存在问题")
+
+        # 返回构建成功
+        return True
+
+    except Exception as e:
+        # 记录构建失败日志
+        logger.error(f"喂养事件向量数据库构建失败: {str(e)}")
+        # 返回构建失败
+        return False
+
+
 def main():
     """
     主函数
@@ -341,15 +415,27 @@ def main():
     # 解析参数
     args = parser.parse_args()
 
-    # 调用构建函数
+    # 调用知识向量库构建函数
     success = build_vector_db(
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         force=args.force,
     )
 
-    # 根据构建结果返回退出码
-    exit(0 if success else 1)
+    # 调用喂养事件向量库构建函数
+    # 在知识向量库构建之后执行，确保向量存储服务已初始化
+    event_success = build_feeding_events_vector_db()
+
+    # 记录喂养事件向量库构建结果日志
+    if event_success:
+        # 记录构建成功日志
+        logger.info("喂养事件向量库构建成功")
+    else:
+        # 记录构建失败警告
+        logger.warning("喂养事件向量库构建失败")
+
+    # 根据构建结果返回退出码（任一失败则返回 1）
+    exit(0 if success and event_success else 1)
 
 
 if __name__ == "__main__":

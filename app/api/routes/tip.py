@@ -26,10 +26,10 @@ from typing import Any, Dict, AsyncGenerator
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.graphs.tip_graph import tip_graph
-from app.graphs.nodes.stream_tip_response import stream_tip_response
-from app.graphs.nodes.thinking_messages import get_thinking_message
-from app.schemas.tip import TipRequest, TipStreamResponse
+from app.clinic.graphs.tip_graph import tip_graph
+from app.clinic.graphs.nodes.stream_tip_response import stream_tip_response
+from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
+from app.clinic.schemas.tip import TipRequest, TipStreamResponse
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)

@@ -41,6 +41,9 @@ COPY . .
 COPY --from=builder /app/data/models /app/data/models
 
 # 确保向量数据库目录存在（运行时持久化用，建议挂载 volume）
+# 注意：ChromaDB 目录下包含多个集合（knowledge、feeding_events 等）
+# feeding_events 集合依赖 HTTP API 获取事件字典，Docker 构建阶段无法调用外部 API
+# 因此 feeding_events 集合将在服务启动后、首次获取事件字典时自动初始化构建
 RUN mkdir -p data/chroma_db
 
 EXPOSE 8000

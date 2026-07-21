@@ -21,8 +21,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.config.settings import settings
-from app.services.http_client import http_client
-from app.services.vector_store import vector_store
+from app.shared.http_client import http_client
+from app.shared.vector_store import vector_store
 
 # 配置日志系统
 # 设置日志级别（DEBUG < INFO < WARNING < ERROR < CRITICAL）
@@ -85,6 +85,7 @@ def create_app() -> FastAPI:
         1. 记录启动日志
         2. 初始化向量存储服务（加载模型）
         3. 检查并构建向量库（如果为空）
+        4. 初始化喂养事件向量库（如果为空则从兄弟仓获取事件字典并初始化）
         """
         logger.info("Python AI Talk Service 启动中...")
 
@@ -107,6 +108,43 @@ def create_app() -> FastAPI:
             except Exception as e:
                 # 修复: 用 error 级别 + exc_info 记录完整 traceback，避免静默失败
                 logger.error(f"向量库自动构建失败: {str(e)}", exc_info=True)
+
+        # 初始化喂养事件向量库
+        # 延迟导入，避免循环依赖
+        from app.feeding.services.event_vector_store import event_vector_store
+        from app.feeding.services.event_cache import event_cache
+
+        # 触发事件向量存储的初始化（加载 Embedding 模型和 ChromaDB Collection）
+        logger.info("初始化喂养事件向量存储...")
+        _ = event_vector_store
+
+        # 检查喂养事件向量库是否为空
+        # 如果为空，则需要从兄弟仓获取事件字典并初始化
+        event_count = event_vector_store.get_event_count()
+        if event_count == 0:
+            # 记录喂养事件向量库为空的警告日志
+            logger.warning("喂养事件向量库为空，尝试从兄弟仓获取事件字典并初始化...")
+            try:
+                # 通过事件缓存获取事件字典（自动处理缓存和 API 调用）
+                event_dictionary = await event_cache.get_event_dictionary()
+                # 检查获取的事件字典是否有效
+                if event_dictionary:
+                    # 记录获取成功日志
+                    logger.info(f"成功获取事件字典，包含 {len(event_dictionary)} 个事件，开始初始化向量库...")
+                    # 调用 initialize_events 方法初始化喂养事件向量库
+                    # 该方法会为每个事件生成标准条目和动作变体
+                    event_vector_store.initialize_events(event_dictionary)
+                    # 记录初始化完成日志
+                    logger.info("喂养事件向量库初始化完成")
+                else:
+                    # 记录事件字典为空的警告
+                    logger.warning("获取到的事件字典为空，跳过喂养事件向量库初始化")
+            except Exception as e:
+                # 记录初始化失败日志，包含完整异常信息
+                logger.error(f"喂养事件向量库自动初始化失败: {str(e)}", exc_info=True)
+        else:
+            # 喂养事件向量库已有数据，记录当前记录数
+            logger.info(f"喂养事件向量库已有 {event_count} 条记录，跳过初始化")
 
         logger.info("Python AI Talk Service 启动完成")
 

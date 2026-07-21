@@ -33,6 +33,10 @@ PYTHON_AI_TALK_DEEPSEEK_API_KEY   → DEEPSEEK_API_KEY
 
 - [1. 概述](#1-概述)
 - [2. 目录结构说明](#2-目录结构说明)
+  - [2.1 喂养事件向量库部署说明](#21-喂养事件向量库部署说明)
+  - [2.2 确认流程部署说明](#22-确认流程部署说明)
+  - [2.3 目录结构变更说明](#23-目录结构变更说明)
+  - [2.4 意图分析流式接口说明](#24-意图分析流式接口说明)
 - [3. 环境准备](#3-环境准备)
 - [4. 本地开发环境部署](#4-本地开发环境部署)
 - [5. 测试环境部署](#5-测试环境部署)
@@ -127,8 +131,25 @@ python_ai_talk/
 ├── app/                            # 应用代码
 │   ├── main.py                     # FastAPI 入口
 │   ├── api/                        # API 路由
-│   ├── services/                   # 业务服务（LLM、向量库、HTTP 客户端等）
-│   └── config.py                   # 配置管理
+│   │   └── routes/                 # 路由模块
+│   │       ├── intent.py           # 意图分析路由（含确认接口）
+│   │       ├── clinic.py           # 诊疗问答路由
+│   │       ├── health.py           # 健康检查路由
+│   │       └── tip.py              # 小贴士路由
+│   ├── feeding/                    # 喂养动作相关代码
+│   │   ├── graphs/                 # LangGraph 状态图和节点
+│   │   ├── schemas/                # 数据模型
+│   │   └── services/               # 事件缓存、事件向量存储
+│   ├── clinic/                     # 喂养建议相关代码
+│   │   ├── graphs/                 # LangGraph 状态图和节点
+│   │   ├── schemas/                # 数据模型
+│   │   └── services/               # 知识向量存储
+│   ├── shared/                     # 共享服务
+│   │   ├── http_client.py          # HTTP 客户端
+│   │   ├── llm_client.py           # LLM 客户端
+│   │   ├── redis_gate.py           # Redis 门控
+│   │   └── vector_store.py         # 通用向量存储
+│   └── config/                     # 配置管理
 │
 ├── scripts/                        # 工具脚本
 │   └── build_vector_db.py          # 向量数据库构建脚本
@@ -166,6 +187,253 @@ python_ai_talk/
 环境变量 (.env.*)
   └── 完整定义所有 ${VAR} 的实际值
 ```
+
+---
+
+## 2.1 喂养事件向量库部署说明
+
+### 2.1.1 概述
+
+喂养事件向量库使用独立的 ChromaDB Collection（`feeding_events`）存储事件向量，与母婴知识向量库（`mother_baby_knowledge`）物理隔离。
+
+### 2.1.2 自动创建机制
+
+- `feeding_events` Collection 在服务启动时自动创建，无需手动执行构建脚本
+- 服务启动时 `EventVectorStore` 初始化会调用 `get_or_create_collection`，如果 Collection 不存在则自动创建
+- 向量库的 Embedding 模型与知识向量库相同（`BAAI/bge-small-zh-v1.5`），共享模型缓存
+
+### 2.1.3 事件字典依赖
+
+- 喂养事件向量库依赖事件字典 API（通过 HTTP 从 `history-service` 获取）
+- 事件字典由 `EventCache` 管理，TTL 为 24 小时
+- **首次启动需要等待事件字典获取完成后才能使用向量匹配**，否则向量库中没有标准事件数据
+- 首次获取事件字典时会自动初始化向量库（`initialize_events`），为所有事件生成标准条目和动作变体
+
+### 2.1.4 ChromaDB Volume 挂载路径
+
+| 环境 | 容器内路径 | 宿主机挂载 |
+|------|-----------|-----------|
+| 本地开发 | `/app/data/chroma_db` | 项目 `data/chroma_db/` 目录 |
+| 测试环境 | `/app/data/chroma_db` | Docker Volume |
+| 生产环境 | `/app/data/chroma_db` | Docker Volume |
+
+> **注意**：`feeding_events` 和 `mother_baby_knowledge` 共用同一个 ChromaDB 持久化目录（`CHROMA_PERSIST_DIR`），通过 Collection 名称隔离。数据备份和恢复时需同时包含两个 Collection。
+
+---
+
+## 2.2 确认流程部署说明
+
+### 2.2.1 新增接口
+
+| 接口 | 方法 | 路径 | 说明 |
+|------|------|------|------|
+| 意图分析 | POST | `/v1/analyze/intent` | 原有接口，新增 `need_confirm` 和 `confirm_message` 响应字段 |
+| 意图分析（流式） | POST | `/v1/analyze/intent/stream` | **新增**，SSE 流式返回思考进度和最终结果 |
+| 意图确认反馈 | POST | `/v1/analyze/intent/confirm` | **新增**，接收用户确认/否定反馈 |
+
+### 2.2.2 确认流程说明
+
+当意图分析结果需要用户确认时，流程如下：
+
+1. 用户发送消息，调用 `/v1/analyze/intent`
+2. 服务返回 `need_confirm=true` 和 `confirm_message`（如"您是想记录喂奶吗？"）
+3. 客户端展示确认话术，用户点击确认或否定
+4. 客户端调用 `/v1/analyze/intent/confirm`，传入 `conversation_id` 和 `user_feedback`（`confirm` 或 `reject`）
+5. 服务恢复中断的图执行，返回最终意图结果
+
+### 2.2.3 go_ai_talk 配合要求
+
+- 需要go_ai_talk配合实现用户确认UI，包括：
+  - 展示确认话术（`confirm_message` 字段）
+  - 提供确认/否定按钮
+  - 调用确认接口时传入 `conversation_id`（从意图分析响应中获取）
+  - 传入 `user_feedback` 为 `"confirm"` 或 `"reject"`
+
+### 2.2.4 状态管理
+
+- 确认流程使用 **LangGraph MemorySaver** 进行状态管理
+- MemorySaver 是内存级检查点，服务重启后中断的确认会话会丢失
+- `conversation_id` 作为 LangGraph 的 `thread_id`，用于恢复检查点
+- 如需持久化检查点，可替换为数据库存储的 Checkpointer（如 PostgreSQL）
+
+---
+
+## 2.3 目录结构变更说明
+
+近期项目结构进行了模块化重构，新增了以下目录：
+
+```
+app/
+├── feeding/                    # 喂养动作相关代码
+│   ├── graphs/                 # LangGraph 状态图
+│   │   ├── intent_graph.py     # 意图分析图（含向量匹配、确认流程）
+│   │   ├── nodes/              # 图节点
+│   │   │   ├── classify_intent.py       # LLM 意图分类
+│   │   │   ├── match_event_by_vector.py # 向量匹配
+│   │   │   ├── prepare_confirm.py       # 准备确认
+│   │   │   ├── handle_feedback.py       # 处理用户反馈
+│   │   │   └── prompts/                 # LLM 提示词
+│   │   └── states/            # 图状态定义
+│   │       └── intent_state.py          # 意图分析状态
+│   ├── schemas/                # 数据模型
+│   │   └── intent.py           # 意图分析请求/响应模型
+│   └── services/               # 业务服务
+│       ├── event_cache.py      # 事件字典缓存（24h TTL）
+│       └── event_vector_store.py # 喂养事件向量存储
+│
+├── clinic/                     # 喂养建议相关代码
+│   ├── graphs/                 # LangGraph 状态图
+│   │   ├── clinic_graph.py     # 诊疗问答图
+│   │   ├── tip_graph.py        # 小贴士图
+│   │   ├── nodes/              # 图节点
+│   │   └── states/             # 图状态定义
+│   ├── schemas/                # 数据模型
+│   └── services/               # 业务服务
+│       └── knowledge_vector_store.py # 知识向量存储
+│
+└── shared/                     # 共享服务
+    ├── http_client.py          # HTTP 客户端（调用兄弟仓 API）
+    ├── llm_client.py           # LLM 客户端（DeepSeek/GLM）
+    ├── redis_gate.py           # Redis 门控
+    └── vector_store.py         # 通用向量存储服务
+```
+
+**与旧目录的对应关系**：
+
+| 旧目录 | 新目录 | 说明 |
+|--------|--------|------|
+| `app/services/` | `app/shared/` | 共享服务迁入 shared |
+| `app/graphs/intent_graph.py` | `app/feeding/graphs/intent_graph.py` | 意图图迁入 feeding |
+| `app/graphs/states/intent_state.py` | `app/feeding/graphs/states/intent_state.py` | 意图状态迁入 feeding |
+| `app/services/event_cache.py` | `app/feeding/services/event_cache.py` | 事件缓存迁入 feeding |
+| - | `app/feeding/services/event_vector_store.py` | 新增：事件向量存储 |
+| - | `app/clinic/services/knowledge_vector_store.py` | 知识向量从 services 迁入 clinic |
+
+---
+
+## 2.4 意图分析流式接口说明
+
+### 2.4.1 概述
+
+意图分析流式接口 `/v1/analyze/intent/stream` 通过 SSE（Server-Sent Events）协议返回意图分析过程和结果，让前端实时感知 LangGraph 节点的思考进度，提升用户交互体验。
+
+该接口与 `/v1/analyze/intent`（非流式）功能等价，区别仅在于响应格式：
+- **非流式**：等待全部节点执行完毕后一次性返回 JSON 响应
+- **流式**：每个节点完成时推送 `thinking` 事件，最后推送 `answer` 事件
+
+### 2.4.2 请求参数
+
+请求体与 `/v1/analyze/intent` 完全一致（`stream` 字段在流式端点中被忽略，始终以流式方式返回）：
+
+```json
+{
+  "text": "开始母乳",
+  "deviceNo": "DEVICE_001",
+  "model": {
+    "provider": "deepseek",
+    "name": "deepseek-chat",
+    "max_in_flight": 3
+  },
+  "stream": true
+}
+```
+
+### 2.4.3 SSE 响应格式
+
+响应 Content-Type 为 `text/event-stream`，包含三类事件：
+
+#### 1. thinking 事件（节点思考进度）
+
+每个 LangGraph 节点完成时推送一条 `thinking` 事件：
+
+```
+data: {"type": "thinking", "content": "正在匹配喂养事件...", "node": "match_event_by_vector"}
+
+```
+
+| 字段 | 说明 |
+|------|------|
+| `type` | 固定为 `"thinking"` |
+| `content` | 节点对应的中文思考文案 |
+| `node` | 节点名称（如 `match_event_by_vector`、`classify_intent` 等） |
+
+**节点思考文案映射**：
+
+| 节点名 | 思考文案 |
+|--------|----------|
+| `match_event_by_vector` | 正在匹配喂养事件... |
+| `classify_intent` | 正在分析意图... |
+| `prepare_confirm` | 正在生成确认话术... |
+| `handle_feedback` | 正在处理用户反馈... |
+| `call_clinic_agent` | 正在获取喂养建议... |
+| `judge_data_requirement` | 正在判断数据需求... |
+| `fetch_history` | 正在拉取历史记录... |
+| `search_vectors` | 正在检索相关知识... |
+| `fetch_baby_profile` | 正在获取宝宝画像... |
+| `generate_response` | 正在生成回答... |
+
+#### 2. answer 事件（最终意图结果）
+
+全部节点完成后推送一条 `answer` 事件，包含完整意图分析结果：
+
+```
+data: {"type": "answer", "content": "{\"target_type\":\"feeding\",\"action\":\"start\",\"event_name\":\"母乳\",\"need_confirm\":true,\"confirm_message\":\"您是要开始记录「母乳」吗？...\"}"}
+
+```
+
+`content` 字段为 IntentResponse 的 JSON 字符串，字段说明：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `target_type` | string | 目标类型：feeding, history, suggest, conversation, exit |
+| `action` | string | 动作类型：start, end, one, search, suggestion, reply, exit |
+| `event_name` | string | 事件名称（喂养场景） |
+| `keywords` | string[] | 匹配的关键词列表 |
+| `content` | string | 回答内容（对话场景） |
+| `need_confirm` | boolean | 是否需要用户确认 |
+| `confirm_message` | string | 确认话术（need_confirm=true 时返回） |
+| `conversation_id` | string | 会话ID（用于调用 confirm 接口） |
+
+#### 3. [DONE] 结束标记
+
+流式传输结束时推送：
+
+```
+data: [DONE]
+
+```
+
+### 2.4.4 完整响应示例
+
+```
+data: {"type": "thinking", "content": "正在匹配喂养事件...", "node": "match_event_by_vector"}
+
+data: {"type": "thinking", "content": "正在生成确认话术...", "node": "prepare_confirm"}
+
+data: {"type": "answer", "content": "{\"target_type\":\"feeding\",\"action\":\"start\",\"event_name\":\"母乳\",\"keywords\":[\"母乳\"],\"need_confirm\":true,\"confirm_message\":\"您是要开始记录「母乳」吗？请回复「确认」或「取消」。\"}"}
+
+data: [DONE]
+
+```
+
+### 2.4.5 conversation/suggest 意图内部调用 clinic agent
+
+当意图被识别为 `conversation`（对话）或 `suggest`（建议）时，意图图内部的 `call_clinic_agent` 节点会直接调用 `clinic_graph` 获取回答，前端无需发起第二次 HTTP 请求：
+
+- `clinic_graph` 完成数据准备（判断数据需求→拉取历史→向量检索→获取宝宝画像）
+- 复用 `generate_response` 节点调用 LLM 生成回答
+- 失败时返回兜底文案"抱歉，我暂时无法回答您的问题，请稍后再试。"
+- 最终以 `conversation` 类型、`reply` 动作返回
+
+### 2.4.6 前端接入注意事项
+
+1. **SSE 客户端**：前端需使用 SSE 客户端（如 EventSource 或 fetch + ReadableStream）接收流式响应
+2. **事件解析**：每条事件以 `data: ` 开头，以 `\n\n` 分隔，需解析 JSON 内容
+3. **结束判断**：收到 `data: [DONE]` 表示流结束，应关闭连接
+4. **thinking 展示**：thinking 事件可实时展示在 UI 上，让用户感知 AI 思考过程
+5. **answer 处理**：answer 事件的 content 字段需 JSON.parse 后使用，包含完整意图结果
+6. **确认流程**：若 answer 中 `need_confirm=true`，应展示确认话术并调用 `/v1/analyze/intent/confirm` 接口
+7. **超时处理**：流式请求可能耗时较长（LLM 调用），前端应设置合理的超时时间（建议 60 秒）
 
 ---
 
