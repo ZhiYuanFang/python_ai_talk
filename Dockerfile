@@ -12,14 +12,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml ./
 
 # 1. 先安装 CPU-only PyTorch（避免安装 CUDA 库，节省 ~400MB）
-# 2. 安装 poetry 并通过 poetry 安装项目依赖
+#    使用 pip 而非 poetry，避免 poetry 从 PyPI 覆盖 CPU 版 torch
+# 2. 用 pip 安装项目依赖（等价于 poetry install --without dev）
 # 3. 同层卸载 onnxruntime（ChromaDB 默认 EF 依赖，但项目使用自定义 BGE Embedding）
 #    如果 chromadb import 成功 → onnxruntime 不进入镜像层（节省 ~200MB）
 #    如果 chromadb import 失败 → 重新安装 onnxruntime（不影响功能）
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir poetry && \
-    poetry config virtualenvs.create false && \
-    poetry install --no-interaction --without dev && \
+    pip install --no-cache-dir \
+        fastapi==0.115.* \
+        uvicorn==0.32.* \
+        httpx==0.27.* \
+        langgraph==0.2.* \
+        langchain-openai==0.2.* \
+        chromadb==0.4.* \
+        sentence-transformers==3.* \
+        cachetools==5.* \
+        pydantic-settings==2.* \
+        redis==5.* \
+        python-dotenv==1.* \
+        tqdm==4.* && \
     pip uninstall -y onnxruntime && \
     python -c "import chromadb" 2>/dev/null && \
     echo "onnxruntime safely removed" || \
