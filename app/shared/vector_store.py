@@ -246,7 +246,7 @@ class VectorStore:
         results = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
-            include=["documents", "metadatas", "distances", "ids"],
+            include=["documents", "metadatas", "distances"],
         )
 
         # 处理检索结果
@@ -431,7 +431,7 @@ class VectorStore:
         try:
             results = self._collection.get(
                 where={"doc_id": doc_id},
-                include=["documents", "metadatas", "ids"],
+                include=["documents", "metadatas"],
             )
 
             formatted_results = []
@@ -493,7 +493,7 @@ class VectorStore:
             where = {"category": category} if category else None
             results = self._collection.get(
                 where=where,
-                include=["documents", "metadatas", "ids"],
+                include=["documents", "metadatas"],
             )
 
             formatted_results = []
@@ -597,7 +597,7 @@ class VectorStore:
             # 查询所有 source=user 的文档
             results = self._collection.get(
                 where={"source": "user"},
-                include=["metadatas", "ids"],
+                include=["metadatas"],
             )
 
             # 筛选出质量分低于阈值的文档
@@ -629,7 +629,7 @@ class VectorStore:
 
         try:
             # 获取所有文档的 ID 和元数据
-            results = self._collection.get(include=["metadatas", "ids"])
+            results = self._collection.get(include=["metadatas"])
 
             # 检查并更新元数据
             updated_ids = []
