@@ -19,7 +19,7 @@ import logging
 import re
 from typing import Any, Dict, List
 
-from app.clinic.graphs.nodes.prompts.data_requirement import (
+from app.shared.graphs.nodes.prompts.data_requirement import (
     build_data_requirement_system_prompt,
     build_data_requirement_user_message,
 )

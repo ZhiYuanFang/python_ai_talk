@@ -28,10 +28,10 @@ from typing import Any, Dict
 from langgraph.graph import StateGraph, END
 
 from app.clinic.graphs.states.clinic_state import ClinicState
-from app.clinic.graphs.nodes.judge_data_requirement import judge_data_requirement
-from app.clinic.graphs.nodes.fetch_history import fetch_history
-from app.clinic.graphs.nodes.search_vectors import search_vectors
-from app.clinic.graphs.nodes.fetch_baby_profile import fetch_baby_profile
+from app.shared.graphs.nodes.judge_data_requirement import judge_data_requirement
+from app.shared.graphs.nodes.fetch_history import fetch_history
+from app.shared.graphs.nodes.search_vectors import search_vectors
+from app.shared.graphs.nodes.fetch_baby_profile import fetch_baby_profile
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)

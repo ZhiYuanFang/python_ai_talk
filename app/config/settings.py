@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # 模型配置：指定配置文件路径
     model_config = SettingsConfigDict(
-        env_file=".env",  # 开发环境从 .env 文件加载
+        env_file="env/.env.local",  # 本地开发环境文件加载
         env_file_encoding="utf-8",
         extra="ignore",  # 忽略未定义的环境变量
     )

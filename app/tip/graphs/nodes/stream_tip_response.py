@@ -22,7 +22,7 @@
 import logging
 from typing import Any, AsyncGenerator, Dict
 
-from app.clinic.graphs.nodes.prompts.tip_answer import build_tip_answer_system_prompt, build_tip_answer_user_message
+from app.tip.graphs.nodes.prompts.tip_answer import build_tip_answer_system_prompt, build_tip_answer_user_message
 from app.shared.llm_client import LLMModelConfig, LLMResponse, llm_client
 
 # 初始化日志记录器

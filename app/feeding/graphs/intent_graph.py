@@ -194,3 +194,8 @@ def build_intent_graph() -> StateGraph:
     logger.info("意图分析图构建完成")
 
     return graph.compile()
+
+
+# 模块级单例：构建并导出意图分析图实例
+# 供 api/routes/intent.py 等模块直接 import 使用
+intent_graph = build_intent_graph()

@@ -31,10 +31,10 @@ from typing import Any, Dict, AsyncGenerator
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 
-from app.clinic.graphs.tip_graph import tip_graph
-from app.clinic.graphs.nodes.stream_tip_response import stream_tip_response
+from app.tip.graphs.tip_graph import tip_graph
+from app.tip.graphs.nodes.stream_tip_response import stream_tip_response
 from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
-from app.clinic.schemas.tip import TipRequest, TipStreamResponse
+from app.tip.schemas.tip import TipRequest, TipStreamResponse
 from app.shared.vector_store import vector_store
 
 # 初始化日志记录器
