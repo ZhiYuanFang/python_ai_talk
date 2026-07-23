@@ -19,6 +19,7 @@ COPY pyproject.toml ./
 #    如果 chromadb import 失败 → 重新安装 onnxruntime（不影响功能）
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir \
+        "numpy<2.0" \
         fastapi==0.115.* \
         uvicorn==0.32.* \
         httpx==0.27.* \
