@@ -40,6 +40,18 @@ logger = logging.getLogger(__name__)
 STANDARD_ACTIONS = ["开始", "结束", "记录"]
 
 
+def _resolve_event_id_name(event: Dict[str, Any]) -> tuple:
+    """
+    从事件字典条目解析 event_id / event_name。
+
+    优先使用 http_client 归一化后的 event_id / event_name，
+    兼容遗留 id / name 字段。
+    """
+    event_id = event.get("event_id", "") or event.get("id", "")
+    event_name = event.get("event_name", "") or event.get("name", "")
+    return event_id, event_name
+
+
 class EventVectorStore:
     """
     喂养事件向量存储类
@@ -448,9 +460,11 @@ class EventVectorStore:
 
         # 处理新增事件
         for event in added_events:
-            # 获取事件 ID 和名称
-            event_id = event.get("id", "")
-            event_name = event.get("name", "")
+            # 解析事件 ID 和名称（event_id/event_name 优先，兼容 id/name）
+            event_id, event_name = _resolve_event_id_name(event)
+            if not event_id or not event_name:
+                logger.warning(f"跳过无效新增事件: missing id/name, event={event}")
+                continue
 
             # 为事件生成标准条目，包含动作变体
             self._add_standard_event(event_id=event_id, event_name=event_name)
@@ -468,9 +482,11 @@ class EventVectorStore:
 
         # 处理修改事件
         for event in modified_events:
-            # 获取事件 ID 和名称
-            event_id = event.get("id", "")
-            event_name = event.get("name", "")
+            # 解析事件 ID 和名称（event_id/event_name 优先，兼容 id/name）
+            event_id, event_name = _resolve_event_id_name(event)
+            if not event_id or not event_name:
+                logger.warning(f"跳过无效修改事件: missing id/name, event={event}")
+                continue
 
             # 先删除旧的标准条目
             self._remove_standard_entries_by_event_id(event_id)
@@ -629,7 +645,7 @@ class EventVectorStore:
         4. 批量写入向量库
 
         Args:
-            event_dictionary: 事件字典列表，每个元素包含 id 和 name 字段
+            event_dictionary: 事件字典列表，元素含 event_id/event_name（兼容 id/name）
 
         Returns:
             无
@@ -659,13 +675,12 @@ class EventVectorStore:
 
         # 遍历事件字典，为每个事件添加标准条目和动作变体
         for event in event_dictionary:
-            # 获取事件 ID 和名称
-            event_id = event.get("id", "")
-            event_name = event.get("name", "")
+            # 解析事件 ID 和名称（event_id/event_name 优先，兼容 id/name）
+            event_id, event_name = _resolve_event_id_name(event)
 
             # 跳过缺少关键字段的事件
             if not event_id or not event_name:
-                logger.warning(f"跳过无效事件: event={event}")
+                logger.warning(f"跳过无效事件: missing id/name, event={event}")
                 continue
 
             # 为事件生成标准条目和动作变体
