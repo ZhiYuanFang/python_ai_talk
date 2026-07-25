@@ -6,14 +6,18 @@
 与诊疗提示词不同，小贴士针对"单次事件触发"场景，输出当下总结和下一步注意事项。
 
 设计思路：
-1. 结合当前触发事件、当前时间、宝宝月龄作为核心上下文
-2. 融合知识库同月龄宝宝参考和近期喂养历史记录参考
+1. 结合当前触发事件、Asia/Shanghai 当前时间、自算宝宝月龄作为核心上下文
+2. 融合知识库参考和近期喂养历史记录参考
 3. 输出针对当前事件的当下总结和下一步注意事项
 4. 篇幅精炼（比诊疗短），适合小贴士组件 200px 高度展示
+5. 无月龄时文案为「未知」，不得写成「0 个月」伪装
 """
 
 import json
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
+
+from app.tip.graphs.nodes.derive_baby_age import shanghai_now
 
 
 def build_tip_answer_system_prompt() -> str:
@@ -41,6 +45,7 @@ def build_tip_answer_system_prompt() -> str:
 3. 语气温暖、鼓励，避免让家长焦虑
 4. 建议要具体可操作，基于提供的历史和知识
 5. 不要给出药物剂量或处方建议
+6. 若月龄为「未知」，不要假设新生儿或 0 个月
 
 输出格式：
 ## 当下总结
@@ -53,10 +58,28 @@ def build_tip_answer_system_prompt() -> str:
 """
 
 
+def format_tip_age_text(baby_age_months: Optional[int]) -> str:
+    """
+    将内部月龄表示转为提示词文案。
+
+    业务逻辑：
+    - None → 「宝宝月龄：未知」
+    - 非负整数（含算出的 0）→ 「宝宝月龄：{n} 个月」
+
+    Args:
+        baby_age_months: 自算月龄，或 None 表示未知
+
+    Returns:
+        提示词用月龄行
+    """
+    if baby_age_months is None:
+        return "宝宝月龄：未知"
+    return f"宝宝月龄：{baby_age_months} 个月"
+
+
 def build_tip_answer_user_message(
     event_info: Dict[str, Any],
-    current_time: int,
-    baby_age_months: int,
+    baby_age_months: Optional[int],
     history_events: List[Dict[str, Any]],
     knowledge_results: List[Dict[str, Any]],
     baby_profile: Dict[str, Any],
@@ -65,15 +88,14 @@ def build_tip_answer_user_message(
     构建小贴士回答的用户消息
 
     业务逻辑：
-    将当前事件、时间、月龄、历史记录和知识库参考组合成用户消息。
-    与诊疗用户消息的区别：以"事件"为中心而非以"问题"为中心。
+    将当前事件、上海时区时间、月龄、历史记录和知识库参考组合成用户消息。
+    当前时间在本函数内用 Asia/Shanghai 生成，不依赖请求体。
 
     Args:
         event_info: 触发事件信息，包含 event_id 和 event_name
-        current_time: 当前触发时间（unix 秒）
-        baby_age_months: 宝宝月龄
+        baby_age_months: 自算月龄；None 表示未知
         history_events: 近期喂养历史记录列表
-        knowledge_results: 向量检索结果列表（同月龄宝宝参考知识）
+        knowledge_results: 向量检索结果列表
         baby_profile: 宝宝画像信息
 
     Returns:
@@ -88,19 +110,24 @@ def build_tip_answer_user_message(
 - 事件ID：{event_id}
 """
 
-    # 格式化时间和月龄
+    # 写提示词时生成 Asia/Shanghai 可读时间，并附 Unix 秒
+    now = shanghai_now()
+    local_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    unix_sec = int(time.time())
+    age_line = format_tip_age_text(baby_age_months)
     time_age_text = f"""
-当前时间：{current_time}（unix 秒）
-宝宝月龄：{baby_age_months} 个月
+当前时间：{local_str}（Asia/Shanghai）
+当前时间 Unix 秒：{unix_sec}
+{age_line}
 """
 
-    # 格式化宝宝画像
+    # 格式化宝宝画像（性别字段兼容 sex / gender）
     baby_info = ""
     if baby_profile:
         baby_info = f"""
 宝宝信息：
 - 生日：{baby_profile.get("birthday", "未知")}
-- 性别：{baby_profile.get("gender", "未知")}
+- 性别：{baby_profile.get("sex") or baby_profile.get("gender", "未知")}
 """
 
     # 格式化历史记录（只取最近 5 条，小贴士不需要太多历史）
@@ -112,12 +139,17 @@ def build_tip_answer_user_message(
 {json.dumps(recent_events, ensure_ascii=False, indent=2)}
 """
 
-    # 格式化知识库参考
+    # 格式化知识库参考（当前检索不按月龄过滤；未知月龄时文案不写「同月龄」以免误导）
     knowledge_info = ""
     if knowledge_results:
         knowledge_texts = [f"- {r['content']}" for r in knowledge_results]
+        knowledge_label = (
+            "知识库参考（同月龄宝宝）"
+            if baby_age_months is not None
+            else "知识库参考（不限月龄）"
+        )
         knowledge_info = f"""
-知识库参考（同月龄宝宝）：
+{knowledge_label}：
 {"\n".join(knowledge_texts)}
 """
 

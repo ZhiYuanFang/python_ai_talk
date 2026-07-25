@@ -126,7 +126,7 @@ async def analyze_intent(request: IntentRequest):
     6. history/suggest 意图的回答从 state.response 中获取
 
     Args:
-        request: 意图分析请求，包含 text、deviceNo、model、stream
+        request: 意图分析请求，包含 text、device_no、model、stream（内部 snake；可过渡双收 camel）
 
     Returns:
         IntentResponse 意图分析结果
@@ -234,7 +234,7 @@ async def analyze_intent_stream(request: IntentRequest):
     6. 推送 [DONE] 结束标记
 
     Args:
-        request: 意图分析请求，包含 text、deviceNo、model
+        request: 意图分析请求，包含 text、device_no、model（内部 snake；可过渡双收 camel）
 
     Returns:
         SSE 流式响应，包含 thinking（节点思考进度）和 answer（最终意图结果）两种事件类型

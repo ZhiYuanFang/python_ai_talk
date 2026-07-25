@@ -35,10 +35,12 @@ from app.tip.graphs.tip_graph import tip_graph
 from app.tip.graphs.nodes.stream_tip_response import stream_tip_response
 from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
 from app.tip.schemas.tip import TipRequest, TipStreamResponse
+from app.shared.schemas.feedback import FeedbackRequest
 from app.shared.vector_store import vector_store
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
+
 
 # 创建路由实例
 router = APIRouter(prefix="/tip", tags=["小贴士"])
@@ -58,7 +60,7 @@ async def tip_stream(request: TipRequest):
     小贴士生成流式接口
 
     业务逻辑：
-    1. 接收触发事件信息、设备编号、宝宝月龄、当前时间和模型配置
+    1. 接收触发事件信息、设备编号和模型配置（月龄/时间由服务端派生，请求不传）
     2. 构建 TipState 初始状态
     3. 使用 tip_graph.astream() 流式执行数据准备节点，每个节点推送 thinking 事件
     4. 节点全部完成后，推送 "正在生成回答..." thinking 事件
@@ -66,7 +68,7 @@ async def tip_stream(request: TipRequest):
     6. 将流式结果包装为 SSE 事件返回
 
     Args:
-        request: 小贴士请求，包含 event_id、event_name、deviceNo、babyAgeMonths、currentTime、model
+        request: 小贴士请求，含 event_id、event_name、device_no、model（内部 snake；可过渡双收 camel）
 
     Returns:
         SSE 流式响应，包含 thinking（节点思考进度）和 answer（LLM 小贴士内容）两种事件类型
@@ -76,15 +78,13 @@ async def tip_stream(request: TipRequest):
         f"小贴士请求: device_no={request.device_no}, event_name={request.event_name}"
     )
 
-    # 1. 构建初始状态
+    # 1. 构建初始状态（不含月龄/时间：月龄由 derive_baby_age 写入，时间在写 prompt 时生成）
     initial_state: Dict[str, Any] = {
         "event_info": {
             "event_id": request.event_id,
             "event_name": request.event_name,
         },
         "device_no": request.device_no,
-        "current_time": request.current_time,
-        "baby_age_months": request.baby_age_months,
         "model_config": {
             "provider": request.model.provider,
             "name": request.model.name,
@@ -121,7 +121,7 @@ async def _stream_tip_response(
     6. 推送 done 事件（包含 answerId）
 
     Args:
-        initial_state: 初始状态字典（含 event_info、device_no、current_time、baby_age_months、model_config）
+        initial_state: 初始状态字典（含 event_info、device_no、model_config；月龄由图内派生）
 
     Yields:
         SSE 格式的字符串
@@ -242,47 +242,39 @@ def _check_feedback_limit(answer_id: str) -> bool:
 
 
 @router.post("/feedback", summary="小贴士反馈")
-async def tip_feedback(answer_id: str, feedback: int):
+async def tip_feedback(request: FeedbackRequest):
     """
     小贴士反馈接口
 
     业务逻辑：
-    1. 验证反馈参数（feedback 必须为 1 或 -1）
+    1. 验证反馈参数（feedback 必须为 1 或 -1，由 Pydantic validator 校验）
     2. 检查反馈频率限制
     3. 根据 answer_id 更新相关知识的质量分
     4. 返回反馈结果
 
     Args:
-        answer_id: 回答 ID（由流式响应的 done 事件返回）
-        feedback: 反馈值，1=👍，-1=👎
+        request: 反馈请求，包含 answer_id 和 feedback 字段
 
     Returns:
         包含反馈结果的 JSON 响应
     """
-    # 验证反馈参数
-    if feedback not in [1, -1]:
-        raise HTTPException(status_code=400, detail="反馈值必须为 1（👍）或 -1（👎）")
-
-    # 检查频率限制
-    if not _check_feedback_limit(answer_id):
+    if not _check_feedback_limit(request.answer_id):
         raise HTTPException(
             status_code=429,
             detail=f"该回答的反馈次数已达上限（{MAX_FEEDBACK_PER_ANSWER}次/{FEEDBACK_TIME_WINDOW_MINUTES}分钟）",
         )
 
     try:
-        # 更新质量分（answer_id 格式为：tip_{uuid}）
-        # 需要从 answer_id 中提取相关的文档 ID 并更新
-        vector_store.update_quality_score(answer_id, feedback)
+        vector_store.update_quality_score(request.answer_id, request.feedback)
 
-        logger.info(f"小贴士反馈成功: answer_id={answer_id}, feedback={feedback}")
+        logger.info(f"小贴士反馈成功: answer_id={request.answer_id}, feedback={request.feedback}")
 
         return JSONResponse(content={
             "code": 0,
             "message": "反馈成功",
             "data": {
-                "answer_id": answer_id,
-                "feedback": feedback,
+                "answer_id": request.answer_id,
+                "feedback": request.feedback,
             },
         })
     except Exception as e:

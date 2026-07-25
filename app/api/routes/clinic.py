@@ -35,10 +35,12 @@ from app.clinic.graphs.clinic_graph import clinic_graph
 from app.clinic.graphs.nodes.stream_response import stream_response
 from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
 from app.feeding.schemas.intent import ClinicRequest, ClinicStreamResponse
+from app.shared.schemas.feedback import FeedbackRequest
 from app.shared.vector_store import vector_store
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
+
 
 # 创建路由实例
 router = APIRouter(prefix="/clinic", tags=["胖宝诊疗"])
@@ -66,7 +68,7 @@ async def clinic_stream(request: ClinicRequest):
     6. 将流式结果包装为 SSE 事件返回
 
     Args:
-        request: 诊疗请求，包含 question、deviceNo、model
+        request: 诊疗请求，包含 question、device_no、model（内部 snake；可过渡双收 camel）
 
     Returns:
         SSE 流式响应，包含 thinking（节点思考进度）和 answer（LLM 回答）两种事件类型
@@ -232,43 +234,39 @@ def _check_feedback_limit(answer_id: str) -> bool:
 
 
 @router.post("/feedback", summary="诊疗反馈")
-async def clinic_feedback(answer_id: str, feedback: int):
+async def clinic_feedback(request: FeedbackRequest):
     """
     诊疗反馈接口
 
     业务逻辑：
-    1. 验证反馈参数（feedback 必须为 1 或 -1）
+    1. 验证反馈参数（feedback 必须为 1 或 -1，由 Pydantic validator 校验）
     2. 检查反馈频率限制
     3. 根据 answer_id 更新相关知识的质量分
     4. 返回反馈结果
 
     Args:
-        answer_id: 回答 ID（由流式响应的 done 事件返回）
-        feedback: 反馈值，1=👍，-1=👎
+        request: 反馈请求，包含 answer_id 和 feedback 字段
 
     Returns:
         包含反馈结果的 JSON 响应
     """
-    if feedback not in [1, -1]:
-        raise HTTPException(status_code=400, detail="反馈值必须为 1（👍）或 -1（👎）")
-
-    if not _check_feedback_limit(answer_id):
+    if not _check_feedback_limit(request.answer_id):
         raise HTTPException(
             status_code=429,
             detail=f"该回答的反馈次数已达上限（{MAX_FEEDBACK_PER_ANSWER}次/{FEEDBACK_TIME_WINDOW_MINUTES}分钟）",
         )
 
     try:
-        vector_store.update_quality_score(answer_id, feedback)
+        vector_store.update_quality_score(request.answer_id, request.feedback)
 
-        logger.info(f"诊疗反馈成功: answer_id={answer_id}, feedback={feedback}")
+        logger.info(f"诊疗反馈成功: answer_id={request.answer_id}, feedback={request.feedback}")
 
         return JSONResponse(content={
             "code": 0,
             "message": "反馈成功",
             "data": {
-                "answer_id": answer_id,
-                "feedback": feedback,
+                "answer_id": request.answer_id,
+                "feedback": request.feedback,
             },
         })
     except Exception as e:

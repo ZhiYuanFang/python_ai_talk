@@ -22,8 +22,10 @@ NODE_THINKING_MESSAGES = {
     "fetch_history": "正在拉取最近的喂养记录...",
     # 向量检索节点：从 Chroma 向量库中检索与当前问题相关的母婴知识
     "search_vectors": "正在检索知识库中的相关知识...",
-    # 宝宝画像获取节点：调用设备服务获取宝宝基本信息（月龄、性别等）
+    # 宝宝画像获取节点：调用设备服务获取宝宝基本信息（生日、性别等）
     "fetch_baby_profile": "正在获取宝宝画像信息...",
+    # tip 专用：画像拉取后按 birthday 自算月龄（Asia/Shanghai）
+    "derive_baby_age": "正在根据生日计算宝宝月龄...",
     # LLM 回答开始标记：数据准备完成，开始调用 LLM 生成回答
     "llm_start": "正在生成回答...",
 }

@@ -6,14 +6,14 @@
 
 设计思路：
 1. 使用 Pydantic 定义数据模型，提供类型安全
-2. 请求模型与 Go 项目的调用格式保持一致
+2. Go↔Python 内部请求 JSON 以 snake_case 为权威（如 device_no）；camel 仅为过渡双收
 3. 响应模型与 Go 项目的 deepSeekUnifiedIntent 结构体保持一致
 4. 支持流式响应（SSE）和用户确认机制
 """
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class ModelConfig(BaseModel):
@@ -33,11 +33,24 @@ class IntentRequest(BaseModel):
     意图分析请求模型
 
     业务说明：
-    封装意图分析接口的请求参数，与 Go 项目的调用格式保持一致。
+    封装意图分析接口的请求参数，与 Go PythonAIClient 的调用格式保持一致。
     支持流式和非流式两种模式。
+
+    设计思路：
+    Go↔Python 内部契约以 snake_case 为准（device_no）；
+    过渡期通过 AliasChoices 双收 camel（deviceNo），避免旧调用方瞬时断裂。
+    禁止要求 Go 客户端改为 camel。
     """
+    # 允许按字段名（snake）或 alias（camel）入站反序列化
+    model_config = ConfigDict(populate_by_name=True)
+
     text: str = Field(..., description="用户输入的自然语言文本")
-    device_no: str = Field(..., alias="deviceNo", description="设备编号")
+    # 权威键 device_no；过渡双收 deviceNo
+    device_no: str = Field(
+        ...,
+        validation_alias=AliasChoices("device_no", "deviceNo"),
+        description="设备编号（内部契约 snake_case，可过渡双收 camel）",
+    )
     model: ModelConfig = Field(..., description="模型配置")
     # 流式返回开关，默认 false（非流式），true 时通过 SSE 返回 thinking 事件
     stream: Optional[bool] = Field(default=False, description="是否流式返回，默认false")
@@ -122,10 +135,23 @@ class ClinicRequest(BaseModel):
     胖宝诊疗请求模型
 
     业务说明：
-    封装胖宝诊疗接口的请求参数。
+    封装胖宝诊疗接口的请求参数，与 Go PythonAIClient 调用格式保持一致。
+
+    设计思路：
+    Go↔Python 内部契约以 snake_case 为准（device_no）；
+    过渡期通过 AliasChoices 双收 camel（deviceNo）。
+    禁止要求 Go 客户端改为 camel。
     """
+    # 允许按字段名（snake）或 alias（camel）入站反序列化
+    model_config = ConfigDict(populate_by_name=True)
+
     question: str = Field(..., description="用户的诊疗问题")
-    device_no: str = Field(..., alias="deviceNo", description="设备编号")
+    # 权威键 device_no；过渡双收 deviceNo
+    device_no: str = Field(
+        ...,
+        validation_alias=AliasChoices("device_no", "deviceNo"),
+        description="设备编号（内部契约 snake_case，可过渡双收 camel）",
+    )
     model: ModelConfig = Field(..., description="模型配置")
 
 

@@ -3,14 +3,15 @@
 
 业务说明：
 使用 LangGraph StateGraph 构建小贴士生成流程图。
-包含数据需求判断→按需拉取历史→向量检索→宝宝画像→流式回答完整链路。
+包含数据需求判断→按需拉取历史→向量检索→宝宝画像→自算月龄→流式回答完整链路。
 与 clinic_graph、intent_graph 共享 judge_data_requirement、fetch_history、search_vectors、fetch_baby_profile 节点。
 
 设计思路：
-1. 使用 TipState 定义状态（包含 event_info、baby_age_months、current_time 等小贴士特有字段）
-2. 线性流程：judge → fetch_history → search_vectors → fetch_baby_profile
+1. 使用 TipState 定义状态（event_info；月龄由 derive_baby_age 自算，非请求传入）
+2. 线性流程：judge → fetch_history → search_vectors → fetch_baby_profile → derive_baby_age
 3. 流式回答在路由层直接调用 stream_tip_response 生成器函数
 4. 编译后导出 tip_graph 实例供路由层调用
+5. 当前 tip 向量检索不按月龄过滤；若日后加月龄过滤，未知月龄 MUST 宽检索，不得用 0 冒充
 
 流式思考支持（astream 模式）：
 本图支持 LangGraph 的 astream() 流式执行模式，路由层可调用 graph.astream() 获取每个节点的执行 chunk。
@@ -22,7 +23,6 @@
 """
 
 import logging
-from typing import Any, Dict
 
 from langgraph.graph import StateGraph, END
 
@@ -31,6 +31,7 @@ from app.shared.graphs.nodes.judge_data_requirement import judge_data_requiremen
 from app.shared.graphs.nodes.fetch_history import fetch_history
 from app.shared.graphs.nodes.search_vectors import search_vectors
 from app.shared.graphs.nodes.fetch_baby_profile import fetch_baby_profile
+from app.tip.graphs.nodes.derive_baby_age import derive_baby_age
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -42,13 +43,13 @@ def build_tip_graph() -> StateGraph:
 
     业务逻辑：
     1. 创建 StateGraph，使用 TipState
-    2. 添加数据准备节点：judge_data_requirement, fetch_history, search_vectors, fetch_baby_profile
+    2. 添加数据准备节点：judge → history → vectors → baby_profile → derive_baby_age
     3. 线性连接所有节点
     4. 编译并返回
 
     注意：
     流式回答生成不包含在 graph 中，由路由层直接调用 stream_tip_response 生成器。
-    graph 只负责准备上下文数据（历史、知识、宝宝画像）。
+    graph 只负责准备上下文数据（历史、知识、宝宝画像、自算月龄）。
 
     Returns:
         编译后的 LangGraph 图实例
@@ -56,11 +57,12 @@ def build_tip_graph() -> StateGraph:
     # 创建 StateGraph
     workflow = StateGraph(TipState)
 
-    # 添加节点（复用共享节点）
+    # 添加节点（复用共享节点 + tip 月龄派生）
     workflow.add_node("judge_data_requirement", judge_data_requirement)
     workflow.add_node("fetch_history", fetch_history)
     workflow.add_node("search_vectors", search_vectors)
     workflow.add_node("fetch_baby_profile", fetch_baby_profile)
+    workflow.add_node("derive_baby_age", derive_baby_age)
 
     # 设置入口点
     workflow.set_entry_point("judge_data_requirement")
@@ -69,7 +71,8 @@ def build_tip_graph() -> StateGraph:
     workflow.add_edge("judge_data_requirement", "fetch_history")
     workflow.add_edge("fetch_history", "search_vectors")
     workflow.add_edge("search_vectors", "fetch_baby_profile")
-    workflow.add_edge("fetch_baby_profile", END)
+    workflow.add_edge("fetch_baby_profile", "derive_baby_age")
+    workflow.add_edge("derive_baby_age", END)
 
     # 编译图
     graph = workflow.compile()

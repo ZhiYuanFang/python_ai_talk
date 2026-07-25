@@ -96,8 +96,8 @@ class HttpClient:
         # 确保 HTTP 客户端已初始化（延迟创建）
         self._ensure_initialized()
 
-        # 构建请求 URL
-        url = f"{settings.history_service_url}/api/events/dictionary"
+        # 构建请求 URL（对齐 go_ai_talk 的 history-service 实际接口）
+        url = f"{settings.history_service_url}/device/history/api/event/options"
 
         try:
             # 发起 GET 请求
@@ -106,8 +106,23 @@ class HttpClient:
             # 检查响应状态码
             response.raise_for_status()
 
-            # 返回解析后的 JSON 数据
-            return response.json()
+            # 从 data["list"] 提取列表（go 侧外层包装）
+            data = response.json()
+            raw_list = data.get("list", [])
+
+            # 将 go 侧 camelCase 字段转换为 Python 侧 snake_case
+            result = []
+            for item in raw_list:
+                result.append({
+                    "event_id": item.get("id"),
+                    "event_name": item.get("name"),
+                    "event_type": item.get("eventType"),
+                    "unit": item.get("unit"),
+                    "extra_names": item.get("extraNames"),
+                    "parent_id": item.get("parentId"),
+                })
+
+            return result
 
         except httpx.HTTPError as e:
             # 记录错误日志
@@ -144,10 +159,10 @@ class HttpClient:
         # 确保 HTTP 客户端已初始化（延迟创建）
         self._ensure_initialized()
 
-        # 构建请求 URL
-        url = f"{settings.history_service_url}/api/events/list"
+        # 构建请求 URL（对齐 go_ai_talk 的 history-service 实际接口）
+        url = f"{settings.history_service_url}/device/history/api/v2/list"
 
-        # 构建查询参数
+        # 构建查询参数（go 侧用 query 参数）
         params: Dict[str, Any] = {
             "deviceNo": device_no,
         }
@@ -167,8 +182,9 @@ class HttpClient:
             # 检查响应状态码
             response.raise_for_status()
 
-            # 返回解析后的 JSON 数据
-            return response.json()
+            # 从 data["list"] 提取列表（go 侧外层包装）
+            data = response.json()
+            return data.get("list", [])
 
         except httpx.HTTPError as e:
             # 记录错误日志
@@ -270,12 +286,16 @@ class HttpClient:
         # 确保 HTTP 客户端已初始化（延迟创建）
         self._ensure_initialized()
 
-        # 构建请求 URL
-        url = f"{settings.device_service_url}/api/device/{device_no}/baby"
+        # 构建请求 URL（对齐 go_ai_talk 的 history-service 实际接口）
+        # 使用 history-service 的 birthday 接口，deviceNo 以 query 参数传递
+        url = f"{settings.history_service_url}/device/history/api/birthday"
+
+        # 构建 query 参数（go 侧用 query 方式传 deviceNo）
+        params = {"deviceNo": device_no}
 
         try:
             # 发起 GET 请求
-            response = await self._client.get(url)
+            response = await self._client.get(url, params=params)
 
             # 检查响应状态码
             if response.status_code == 404:
@@ -285,7 +305,7 @@ class HttpClient:
 
             response.raise_for_status()
 
-            # 返回解析后的 JSON 数据
+            # 返回解析后的 JSON 数据（go 侧直接返回对象，无 list 外层）
             return response.json()
 
         except httpx.HTTPError as e:
