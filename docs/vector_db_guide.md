@@ -187,13 +187,13 @@ Chroma 是一个开源的向量数据库，专为 AI 应用设计。
 
 **Windows**：
 1. 访问 [Python 官网](https://www.python.org/downloads/)
-2. 下载 Python 3.11 或更高版本
+2. 下载 Python 3.12（推荐与 Docker 运行时一致）
 3. 安装时勾选 "Add Python to PATH"
 
 **验证安装**：
 ```bash
 python --version
-# 输出：Python 3.11.x
+# 输出：Python 3.12.x
 ```
 
 ### 4.2 依赖安装

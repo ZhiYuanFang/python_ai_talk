@@ -51,7 +51,7 @@
 
 ## 二、技术栈
 
-- **语言**：Python 3.11+
+- **语言**：Python 3.12
 - **Web 框架**：FastAPI
 - **图编排**：LangGraph
 - **向量数据库**：Chroma（BGE-small-zh-v1.5 嵌入模型）
