@@ -223,10 +223,12 @@ class RedisGate:
             # 循环尝试获取许可
             while asyncio.get_event_loop().time() < deadline:
                 # 执行 Lua 脚本获取许可
+                # redis-py 签名为 eval(script, numkeys, *keys_and_args)，不支持 keys=/args= 关键字
                 result = await self._redis.eval(
                     self._acquire_script,
-                    keys=[key],
-                    args=[max_in_flight],
+                    1,
+                    key,
+                    max_in_flight,
                 )
 
                 # 如果获取成功，返回上下文
@@ -259,10 +261,11 @@ class RedisGate:
             key: Redis Key
         """
         try:
+            # redis-py：eval(script, numkeys, *keys_and_args)；本脚本仅 1 个 KEY，无 ARGV
             await self._redis.eval(
                 self._release_script,
-                keys=[key],
-                args=[],
+                1,
+                key,
             )
             # 记录释放许可日志
             current = await self._redis.get(key)

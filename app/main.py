@@ -24,8 +24,10 @@ import os
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routes import router
 from app.config.settings import settings
@@ -194,6 +196,26 @@ def create_app() -> FastAPI:
     # 注册 API 路由
     # 将路由模块中的所有接口注册到应用中
     app.include_router(router)
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ):
+        """
+        请求体/查询参数校验失败（422）时记录摘要，便于区分缺字段与别名问题。
+
+        业务说明：
+        不改变 FastAPI 默认 422 响应结构，仅额外打 WARNING 日志。
+        """
+        # 截断错误列表，避免日志过长
+        errors = exc.errors()[:8]
+        logger.warning(
+            f"请求校验失败 422: path={request.url.path}, errors={errors}"
+        )
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors()},
+        )
 
     # 添加启动钩子
     # 在应用启动前执行初始化操作
