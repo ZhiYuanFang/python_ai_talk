@@ -94,7 +94,8 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         更新后的状态字典，包含向量匹配结果和置信度
     """
-    text = state.get("text", "")
+    # 业务说明：路由注入的是 user_input；兼容旧字段 text 作 fallback
+    text = state.get("user_input") or state.get("text", "")
 
     # 获取事件向量存储实例
     vector_store = EventVectorStore()

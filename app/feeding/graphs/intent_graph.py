@@ -2,31 +2,37 @@
 意图分析图定义
 
 业务说明：
-使用 LangGraph 定义意图分析的状态图，协调向量匹配、意图分类、用户确认等节点。
+使用 LangGraph 定义意图分析的状态图，协调向量匹配、意图分类、用户确认、
+历史查询短链与 clinic agent 调用等节点。
 
 设计思路：
-1. 定义图的状态结构（State）
-2. 添加向量匹配节点（match_event_by_vector）
-3. 添加意图分类节点（classify_intent）
-4. 添加用户确认节点（prepare_confirm）
-5. 添加确认处理节点（handle_confirm_feedback）
-6. 根据向量匹配结果进行条件路由
+1. 向量匹配 → 按置信度路由（高置信 END / 中置信确认 / 低置信 LLM）
+2. LLM 分类后按 target_type 分支：feeding 确认、history 短链、conversation/suggest clinic、exit END
+3. 真实 prepare_confirm（interrupt）→ handle_feedback → END
+4. MemorySaver 检查点支持 Command(resume) 恢复确认流
 """
 
 import logging
 from typing import Any, Dict
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, START, END
 
-from app.config.settings import settings
+from app.clinic.graphs.nodes.generate_response import generate_response
+from app.feeding.graphs.nodes.call_clinic_agent import call_clinic_agent
 from app.feeding.graphs.nodes.classify_intent import classify_intent
+from app.feeding.graphs.nodes.handle_feedback import handle_feedback
 from app.feeding.graphs.nodes.match_event_by_vector import match_event_by_vector
+from app.feeding.graphs.nodes.prepare_confirm import prepare_confirm
+from app.feeding.graphs.states.intent_state import IntentState
+from app.shared.graphs.nodes.fetch_history import fetch_history
+from app.shared.graphs.nodes.judge_data_requirement import judge_data_requirement
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
 
-# 定义图的状态类型
-State = Dict[str, Any]
+# 使用 IntentState TypedDict，确保 conversation_id / user_input 等通道在检查点中保留
+State = IntentState
 
 
 def _route_after_vector_match(state: State) -> str:
@@ -63,80 +69,36 @@ def _route_after_vector_match(state: State) -> str:
         return "end"
 
 
-def _route_after_confirm(state: State) -> str:
+def _route_after_classify(state: State) -> str:
     """
-    用户确认后的路由决策
+    意图分类后的路由决策
 
     业务逻辑：
-    1. 检查用户反馈状态
-    2. 根据反馈决定是继续执行还是结束
+    按 intent_result.target_type 进入后处理：
+    - feeding（含 multi）：进入确认
+    - history：历史短链
+    - conversation / suggest：clinic agent
+    - exit / 其他：直接结束
 
     Args:
         state: 当前图状态
 
     Returns:
-        下一个节点的名称（"classify_intent" 或 "end"）
+        下一跳路由键
     """
-    user_feedback = state.get("user_feedback", "")
+    intent_result = state.get("intent_result") or {}
+    target_type = intent_result.get("target_type", "conversation")
 
-    logger.info(f"用户确认后路由决策: user_feedback={user_feedback}")
+    logger.info(f"意图分类后路由决策: target_type={target_type}")
 
-    if user_feedback == "confirm":
-        return "end"
-    else:
-        # 用户拒绝，降级至 LLM 分类
-        return "classify_intent"
-
-
-async def prepare_confirm(state: State) -> State:
-    """
-    准备用户确认
-
-    业务逻辑：
-    1. 从状态中读取确认消息
-    2. 设置确认状态，准备中断图执行等待用户反馈
-    3. 返回包含确认消息的状态
-
-    Args:
-        state: 当前图状态
-
-    Returns:
-        更新后的状态，包含确认消息和确认状态
-    """
-    confirm_message = state.get("confirm_message", "请确认此操作")
-
-    logger.info(f"准备用户确认: message={confirm_message}")
-
-    return {
-        **state,
-        "need_confirm": True,
-        "confirm_message": confirm_message,
-    }
-
-
-async def handle_confirm_feedback(state: State) -> State:
-    """
-    处理用户确认反馈
-
-    业务逻辑：
-    1. 从状态中读取用户反馈
-    2. 根据反馈更新确认状态
-    3. 返回更新后的状态
-
-    Args:
-        state: 当前图状态
-
-    Returns:
-        更新后的状态，包含用户反馈处理结果
-    """
-    user_feedback = state.get("user_feedback", "")
-
-    logger.info(f"处理用户确认反馈: user_feedback={user_feedback}")
-
-    return {
-        **state,
-        "need_confirm": False,
-    }
+    if target_type == "feeding":
+        return "prepare_confirm"
+    if target_type == "history":
+        return "judge_data_requirement"
+    if target_type in ("conversation", "suggest"):
+        return "call_clinic_agent"
+    # exit 及其他未知类型直接结束
+    return "end"
 
 
 def build_intent_graph() -> StateGraph:
@@ -144,10 +106,12 @@ def build_intent_graph() -> StateGraph:
     构建意图分析图
 
     业务逻辑：
-    1. 创建 StateGraph 实例
-    2. 添加所有节点
-    3. 添加边和条件路由
-    4. 编译图
+    1. 创建 StateGraph 实例并注册全部节点
+    2. 向量匹配条件路由 + classify 后按 target_type 分支
+    3. 确认边：prepare_confirm → handle_feedback → END
+    4. history 短链：judge → fetch_history → generate_response → END
+    5. conversation/suggest：call_clinic_agent → END
+    6. 使用 MemorySaver 编译以支持 interrupt/resume
 
     Returns:
         编译后的 StateGraph 实例
@@ -159,9 +123,13 @@ def build_intent_graph() -> StateGraph:
     graph.add_node("match_event_by_vector", match_event_by_vector)
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("prepare_confirm", prepare_confirm)
-    graph.add_node("handle_confirm_feedback", handle_confirm_feedback)
+    graph.add_node("handle_feedback", handle_feedback)
+    graph.add_node("judge_data_requirement", judge_data_requirement)
+    graph.add_node("fetch_history", fetch_history)
+    graph.add_node("generate_response", generate_response)
+    graph.add_node("call_clinic_agent", call_clinic_agent)
 
-    # 添加边
+    # 添加入口边
     graph.add_edge(START, "match_event_by_vector")
 
     # 向量匹配后的条件路由
@@ -175,25 +143,34 @@ def build_intent_graph() -> StateGraph:
         },
     )
 
-    # 确认准备后的条件路由
+    # 意图分类后按 target_type 分支
     graph.add_conditional_edges(
-        "prepare_confirm",
-        _route_after_confirm,
+        "classify_intent",
+        _route_after_classify,
         {
-            "classify_intent": "classify_intent",
+            "prepare_confirm": "prepare_confirm",
+            "judge_data_requirement": "judge_data_requirement",
+            "call_clinic_agent": "call_clinic_agent",
             "end": END,
         },
     )
 
-    # 确认处理后的路由
-    graph.add_edge("handle_confirm_feedback", END)
+    # 确认流：interrupt 恢复后始终进入反馈处理再结束
+    graph.add_edge("prepare_confirm", "handle_feedback")
+    graph.add_edge("handle_feedback", END)
 
-    # 意图分类后直接结束
-    graph.add_edge("classify_intent", END)
+    # history 短链
+    graph.add_edge("judge_data_requirement", "fetch_history")
+    graph.add_edge("fetch_history", "generate_response")
+    graph.add_edge("generate_response", END)
 
-    logger.info("意图分析图构建完成")
+    # conversation / suggest
+    graph.add_edge("call_clinic_agent", END)
 
-    return graph.compile()
+    logger.info("意图分析图构建完成（含 MemorySaver 检查点）")
+
+    # 编译时挂载内存检查点，使 interrupt()/Command(resume) 可按 thread_id 恢复
+    return graph.compile(checkpointer=MemorySaver())
 
 
 # 模块级单例：构建并导出意图分析图实例

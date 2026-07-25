@@ -15,15 +15,89 @@ Redis 闸门控制模块
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import redis.asyncio as redis
-from redis.asyncio.cluster import RedisCluster
+from redis.asyncio.cluster import ClusterNode, RedisCluster
 
 from app.config.settings import settings
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
+
+
+def _parse_node_host_port(node: str) -> Optional[Tuple[str, int]]:
+    """
+    解析单个集群节点地址为 (host, port)
+
+    业务说明：
+    生产 URL 形如 redis://host1:7001,host2:7002,host3:7003
+    逗号拆分后，首段带 scheme，后续段常为裸 host:port（无 redis://）。
+    redis-py 5.x 要求 startup_nodes 为 ClusterNode，不能传 dict。
+
+    Args:
+        node: 单个节点字符串（可含 scheme、密码、/db 后缀）
+
+    Returns:
+        (hostname, port)；无法解析时返回 None
+    """
+    # 去掉首尾空白，避免配置中空格导致解析失败
+    node = node.strip()
+    if not node:
+        return None
+
+    # 带 scheme（或 //host:port）时走 urlparse
+    if "://" in node or node.startswith("//"):
+        parsed = urlparse(node if "://" in node else f"redis:{node}")
+        if parsed.hostname and parsed.port:
+            return parsed.hostname, parsed.port
+        return None
+
+    # 无 scheme：host:port 或 host:port/db
+    hostport = node.split("/", 1)[0]
+    if ":" not in hostport:
+        return None
+    host, port_str = hostport.rsplit(":", 1)
+    if not host:
+        return None
+    try:
+        return host, int(port_str)
+    except ValueError:
+        return None
+
+
+def _build_cluster_startup_nodes(redis_url: str) -> Tuple[List[ClusterNode], Optional[str]]:
+    """
+    从逗号分隔的集群 URL 构建 ClusterNode 列表与共享密码
+
+    解析规则：
+    1. 按逗号拆分多节点
+    2. 密码仅从首段 URL 的 userinfo 读取，供整个集群客户端使用
+    3. 每段用 _parse_node_host_port 得到 host/port，包装为 ClusterNode
+
+    Args:
+        redis_url: 含逗号的集群 Redis URL
+
+    Returns:
+        (startup_nodes, password)
+    """
+    nodes = redis_url.split(",")
+    # 从第一个节点 URL 解析密码（后续裸 host:port 通常不含密码）
+    first_parsed = urlparse(nodes[0].strip())
+    password = first_parsed.password
+
+    startup_nodes: List[ClusterNode] = []
+    for node in nodes:
+        host_port = _parse_node_host_port(node)
+        if host_port is None:
+            logger.warning(f"跳过无法解析的 Redis 集群节点段: {node!r}")
+            continue
+        host, port = host_port
+        # redis-py 5.x：必须传 ClusterNode，dict 会触发 AttributeError: 'dict' has no attribute 'host'
+        startup_nodes.append(ClusterNode(host, port))
+
+    return startup_nodes, password
 
 
 class RedisGate:
@@ -45,31 +119,17 @@ class RedisGate:
 
         集群模式 URL 格式示例：
         redis://host1:7001,host2:7002,host3:7003/0
-        （逗号分隔多个节点地址）
+        （逗号分隔多个节点地址；后续节点可省略 redis://）
         """
         # 创建 Redis 连接客户端
         # 判断是否是集群模式（包含逗号说明是多节点集群）
         if "," in settings.redis_url:
-            # 手动解析多个节点地址，构建 startup_nodes 列表
-            nodes = settings.redis_url.split(",")
-            startup_nodes = []
-            # 从第一个节点 URL 中解析密码和 db 等公共参数
-            first_parsed = urlparse(nodes[0])
-            password = first_parsed.password
-            db = 0
-            if first_parsed.path and len(first_parsed.path) > 1:
-                try:
-                    db = int(first_parsed.path.lstrip("/"))
-                except ValueError:
-                    db = 0
+            # 手动解析多节点，得到 ClusterNode 列表与可选密码
+            startup_nodes, password = _build_cluster_startup_nodes(settings.redis_url)
+            if not startup_nodes:
+                raise ValueError(f"Redis 集群 URL 未解析出任何节点: {settings.redis_url!r}")
 
-            for node in nodes:
-                # 解析每个节点的 host 和 port
-                parsed = urlparse(node)
-                if parsed.hostname and parsed.port:
-                    startup_nodes.append({"host": parsed.hostname, "port": parsed.port})
-
-            # 使用异步集群客户端
+            # 使用异步集群客户端（decode_responses / 超时与单机保持一致）
             self._redis = RedisCluster(
                 startup_nodes=startup_nodes,
                 password=password,

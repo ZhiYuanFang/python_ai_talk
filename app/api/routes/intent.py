@@ -30,6 +30,7 @@ from typing import Any, AsyncGenerator, Dict
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+from langgraph.types import Command
 
 from app.feeding.graphs.intent_graph import intent_graph
 # 导入意图分析请求和响应模型
@@ -39,6 +40,17 @@ from app.feeding.schemas.intent import ConfirmFeedbackRequest
 from app.feeding.services.event_cache import event_cache
 # 导入意图分析节点的思考文案映射
 from app.feeding.graphs.nodes.thinking_messages import get_thinking_message
+
+
+def _run_config(thread_id: str) -> Dict[str, Any]:
+    """
+    构建 LangGraph RunnableConfig
+
+    业务说明：
+    checkpointer 要求通过 config.configurable.thread_id 关联会话，
+    不得使用 ainvoke/astream 顶层关键字参数 thread_id=。
+    """
+    return {"configurable": {"thread_id": thread_id}}
 
 
 def _extract_interrupt_info(final_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -164,15 +176,17 @@ async def analyze_intent(request: IntentRequest):
     # 传给 interrupt()，客户端通过 interrupt_info 拿到 conversation_id
     initial_state["conversation_id"] = thread_id
 
-    # 4. 调用 LangGraph 执行意图分析流程，传入 thread_id 支持中断恢复
+    # 4. 调用 LangGraph 执行意图分析流程，经 config 传入 thread_id 支持中断恢复
     # 业务说明：
     # - 第一步：向量匹配（优先使用向量数据库匹配喂养事件）
     # - 第二步：意图分类（向量匹配失败时调用 LLM）
-    # - feeding/conversation/exit：直接返回或调用 clinic agent
+    # - feeding：进入确认 interrupt
+    # - conversation/suggest：调用 clinic agent
     # - history：判断数据需求→拉取历史→生成回答
-    # - suggest：判断数据需求→拉取历史→向量检索→宝宝画像→生成建议
     # - prepare_confirm 调用 interrupt() 时，图执行暂停，ainvoke 返回中断状态
-    final_state = await intent_graph.ainvoke(initial_state, thread_id=thread_id)
+    final_state = await intent_graph.ainvoke(
+        initial_state, config=_run_config(thread_id)
+    )
 
     # 5. 检查是否被 interrupt 中断（用户需要确认喂养意图）
     # 业务说明：如果图被 interrupt，从 __interrupt__ 字段提取确认信息
@@ -198,12 +212,12 @@ async def analyze_intent(request: IntentRequest):
         # 业务说明：优先用 interrupt_info 中的 conversation_id，回退到路由层生成的 thread_id
         response.conversation_id = interrupt_info.get("conversation_id", thread_id)
 
-    # 9. 如果是 history 或 suggest 意图，将 LLM 生成的回答填入 content
+    # 9. history/suggest/conversation：优先用 state.response 填充 content
     # 业务说明：
-    # - history/suggest 意图走了后处理链路，回答在 state.response 中
-    # - 其他意图的 content 已经在 intent_result 中（如 conversation 兜底文案）
+    # - history 短链与 clinic agent 都会把回答写入 state.response
+    # - intent_result.content 作为已有兜底
     target_type = intent_result.get("target_type", "")
-    if target_type in ("history", "suggest"):
+    if target_type in ("history", "suggest", "conversation"):
         llm_response = final_state.get("response", "")
         if llm_response:
             response.content = llm_response
@@ -320,8 +334,10 @@ async def _stream_intent_response(
     # LangGraph 0.2.x 的 updates 模式 chunk 格式为 {node_name: node_output}（字典）
     # 某些版本或子图场景下可能为 (namespace, {node_name: node_output})（元组）
     # 传入 thread_id 支持中断恢复（prepare_confirm 调用 interrupt 时状态保存到检查点）
+    # 经 config 传入 thread_id，支持 interrupt 检查点
+    run_config = _run_config(thread_id)
     async for chunk in intent_graph.astream(
-        initial_state, stream_mode="updates", thread_id=thread_id
+        initial_state, config=run_config, stream_mode="updates"
     ):
         # 统一解析为 {node_name: node_output} 形式的更新字典
         # 业务说明：无论 chunk 是 dict 还是 tuple，最终都归一化为节点更新字典
@@ -363,8 +379,26 @@ async def _stream_intent_response(
     response = _build_intent_response(intent_result)
 
     # 4. 检查是否被 interrupt 中断（用户需要确认喂养意图）
-    # 业务说明：astream 遇到 interrupt 会自然停止 yield，遍历结束后检查 __interrupt__ 字段
+    # 业务说明：updates 流未必带上 __interrupt__，回退读取检查点状态
     interrupt_info = _extract_interrupt_info(final_state)
+    if not interrupt_info:
+        try:
+            checkpoint_state = await intent_graph.aget_state(run_config)
+            # aget_state 返回 StateSnapshot；中断值在 tasks/interrupts 或 values 中
+            snapshot_values = getattr(checkpoint_state, "values", None) or {}
+            interrupt_info = _extract_interrupt_info(snapshot_values)
+            if not interrupt_info:
+                # 从 snapshot.tasks 中的 interrupts 提取
+                for task in getattr(checkpoint_state, "tasks", ()) or ():
+                    for intr in getattr(task, "interrupts", ()) or ():
+                        value = getattr(intr, "value", None)
+                        if isinstance(value, dict):
+                            interrupt_info = value
+                            break
+                    if interrupt_info:
+                        break
+        except Exception as e:
+            logger.warning(f"读取检查点中断信息失败: {e}")
     if interrupt_info:
         # 设置确认标记和确认话术
         response.need_confirm = True
@@ -372,9 +406,9 @@ async def _stream_intent_response(
         # 设置会话 ID，优先用 interrupt_info 中的，回退到路由层生成的 thread_id
         response.conversation_id = interrupt_info.get("conversation_id", thread_id)
 
-    # 5. 如果是 history 或 suggest 意图，将 LLM 回答填入 content
+    # 5. history/suggest/conversation：优先用 state.response 填充 content
     target_type = intent_result.get("target_type", "")
-    if target_type in ("history", "suggest"):
+    if target_type in ("history", "suggest", "conversation"):
         llm_response = final_state.get("response", "")
         if llm_response:
             response.content = llm_response
@@ -413,13 +447,12 @@ async def confirm_intent(request: ConfirmFeedbackRequest):
         f"user_feedback={request.user_feedback}"
     )
 
-    # 1. 调用意图图的 confirm_intent 方法恢复中断的执行
-    # 业务说明：使用 conversation_id（等同于 thread_id）从 MemorySaver 检查点恢复图状态
-    # confirm_intent 内部用 Command(resume=user_feedback) 恢复 prepare_confirm 中的 interrupt
-    # 图从 prepare_confirm 处继续执行，经过 handle_feedback 节点处理数据飞轮/删除向量
-    final_state = await intent_graph.confirm_intent(
-        conversation_id=request.conversation_id,
-        user_feedback=request.user_feedback,
+    # 1. 用 Command(resume=...) 从 MemorySaver 检查点恢复中断的图执行
+    # 业务说明：conversation_id 即 thread_id；图从 prepare_confirm 的 interrupt 处继续，
+    # 经 handle_feedback 处理数据飞轮/删除向量后结束
+    final_state = await intent_graph.ainvoke(
+        Command(resume=request.user_feedback),
+        config=_run_config(request.conversation_id),
     )
 
     # 2. 从最终状态提取意图结果
@@ -429,10 +462,9 @@ async def confirm_intent(request: ConfirmFeedbackRequest):
     # 多事件场景：将 events 列表填入响应
     response = _build_intent_response(intent_result)
 
-    # 4. 如果是 history 或 suggest 意图，将 LLM 生成的回答填入 content
-    # 业务说明：确认后可能路由到 history/suggest 后处理链路
+    # 4. history/suggest/conversation：优先用 state.response 填充 content
     target_type = intent_result.get("target_type", "")
-    if target_type in ("history", "suggest"):
+    if target_type in ("history", "suggest", "conversation"):
         # 从状态中获取 LLM 生成的回答
         llm_response = final_state.get("response", "")
         if llm_response:

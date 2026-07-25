@@ -55,16 +55,16 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     3. 通过 ainvoke 同进程异步调用 clinic_graph 完成数据准备（历史/知识/宝宝画像）
     4. 将 clinic 返回的数据准备结果合并到意图状态中，补充 user_input 和 intent_result
     5. 调用 generate_response 节点，基于完整上下文生成 LLM 回答
-    6. 从 generate_response 返回中提取 response 字段作为回答内容
-    7. 成功时填充 intent_result（conversation/reply/clinic 回答）
-    8. 失败时填充兜底文案，保证 intent_result 结构完整
-    9. 全程记录调用日志和结果日志，便于排查问题
+6. 从 generate_response 返回中提取 response 字段作为回答内容
+7. 成功时保留原 target_type，将回答写入 intent_result.content 与 response
+8. 失败时仍保留原 target_type，写入兜底文案
+9. 全程记录调用日志和结果日志，便于排查问题
 
     Args:
         state: 当前意图图状态，包含 user_input、device_no、model_config、intent_result 等字段
 
     Returns:
-        需要更新的 State 字段字典，包含 intent_result（target_type/action/content）
+        需要更新的 State 字段字典，包含 intent_result 与 response
 
     Side Effects:
         - 同进程内异步调用 clinic_graph，可能产生向量检索、数据库查询等副作用
@@ -130,31 +130,28 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
             f"诊疗 Agent 调用成功，response={clinic_response[:50]}"
         )
 
-        # 成功时填充 intent_result：conversation 类型、reply 动作、clinic 回答
+        # 成功：保留原 target_type（suggest 不得被改写成 conversation）
+        # 业务说明：仅补充回答内容，供路由填入 content；同时写 response 字段
+        preserved = dict(intent_result) if isinstance(intent_result, dict) else {}
+        preserved["action"] = preserved.get("action") or "reply"
+        preserved["content"] = clinic_response
         return {
-            "intent_result": {
-                # 目标类型为对话（conversation/suggest 都归为对话回复）
-                "target_type": "conversation",
-                # 动作为直接回复
-                "action": "reply",
-                # 回复内容：诊疗 Agent 生成的回答
-                "content": clinic_response,
-            }
+            "intent_result": preserved,
+            "response": clinic_response,
         }
 
     except Exception as e:
         # 记录错误日志：诊疗 Agent 调用失败，包含异常信息
         logger.error(f"诊疗 Agent 调用失败: {str(e)}", exc_info=True)
 
-        # 失败时填充 intent_result：conversation 类型、reply 动作、兜底文案
+        # 失败时仍保留原 target_type，仅写入兜底文案
         # 业务说明：即使调用失败也返回结构化响应，避免前端拿到空数据
+        preserved = dict(intent_result) if isinstance(intent_result, dict) else {}
+        preserved["action"] = preserved.get("action") or "reply"
+        preserved["content"] = CLINIC_FALLBACK
+        if not preserved.get("target_type"):
+            preserved["target_type"] = "conversation"
         return {
-            "intent_result": {
-                # 目标类型为对话
-                "target_type": "conversation",
-                # 动作为直接回复
-                "action": "reply",
-                # 回复内容：兜底文案
-                "content": CLINIC_FALLBACK,
-            }
+            "intent_result": preserved,
+            "response": CLINIC_FALLBACK,
         }

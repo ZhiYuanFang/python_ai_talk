@@ -22,7 +22,13 @@ NODE_THINKING_MESSAGES = {
     "prepare_confirm": "正在生成确认话术...",
     # 用户反馈处理节点：处理用户对确认话术的反馈（确认/修改/取消）
     "handle_feedback": "正在处理用户反馈...",
-    # 喂养建议调用节点：转交 clinic agent 获取专业的喂养建议
+    # 数据需求判断：history 短链判断需拉取的事件范围与时间窗
+    "judge_data_requirement": "正在判断数据需求...",
+    # 历史拉取：按 data_requirement 拉取喂养历史
+    "fetch_history": "正在拉取历史记录...",
+    # 同步回答生成：基于历史上下文生成回答
+    "generate_response": "正在生成回答...",
+    # conversation/suggest：转交 clinic agent 获取带上下文的回答
     "call_clinic_agent": "正在获取喂养建议...",
     # LLM 回答开始标记：上下文准备完成，开始调用 LLM 生成最终回答
     "llm_start": "正在生成回答...",

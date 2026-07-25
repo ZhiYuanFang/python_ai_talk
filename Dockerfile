@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
         langgraph==0.2.* \
         langchain-openai==0.2.* \
         chromadb==0.4.* \
+        "posthog>=2.4.0,<6.0.0" \
         sentence-transformers==3.* \
         cachetools==5.* \
         pydantic-settings==2.* \

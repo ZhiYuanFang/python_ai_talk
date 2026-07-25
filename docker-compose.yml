@@ -16,7 +16,8 @@ services:
     container_name: python-ai-talk
     restart: on-failure:1
     environment:
-      CHROMA_TELEMETRY: false
+      # chromadb 官方遥测开关（勿使用无效的 CHROMA_TELEMETRY）
+      ANONYMIZED_TELEMETRY: "False"
       TZ: Asia/Shanghai
       # --- 兄弟仓服务地址 ---
       HISTORY_SERVICE_URL: "${HISTORY_SERVICE_URL:-}"

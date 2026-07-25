@@ -124,12 +124,15 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         更新后的状态字典，包含意图分类结果
     """
-    text = state.get("text", "")
+    # 业务说明：路由注入 user_input / model_config，与 IntentState 对齐；兼容旧字段 text / model
+    text = state.get("user_input") or state.get("text", "")
     event_dictionary = state.get("event_dictionary", [])
     device_no = state.get("device_no", "")
 
-    # 获取模型配置
-    model_config = state.get("model", {"provider": "deepseek", "name": "deepseek-chat"})
+    # 获取模型配置（优先 model_config，兼容旧字段 model）
+    model_config = state.get("model_config") or state.get(
+        "model", {"provider": "deepseek", "name": "deepseek-chat"}
+    )
 
     logger.info(
         f"开始意图分类: device_no={device_no}, "
@@ -198,6 +201,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
                 logger.info(f"本地提取数量成功: quantity={extracted_quantity}")
 
         # 确保所有字段都有默认值
+        # 业务说明：feeding/multi 进入 prepare_confirm 时依赖 action/event_name/events 生成确认话术
         intent_result.setdefault("target_type", "conversation")
         intent_result.setdefault("action", "reply")
         intent_result.setdefault("event_name", "")
@@ -210,6 +214,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         intent_result.setdefault("match_confidence", 1.0)
         intent_result.setdefault("keywords", [])
         intent_result.setdefault("content", "")
+        intent_result.setdefault("events", [])
 
         # 多事件场景处理
         if intent_result.get("action") == "multi" and intent_result.get("events"):

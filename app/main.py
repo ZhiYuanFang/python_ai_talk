@@ -19,7 +19,10 @@ FastAPI 应用主入口
 import asyncio
 import logging
 import os
-os.environ["CHROMA_TELEMETRY"] = "false"
+
+# 在导入 chromadb 之前设置官方认可的遥测开关（CHROMA_TELEMETRY 无效，勿再依赖）
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -147,6 +150,10 @@ class _HealthCheckAccessFilter(logging.Filter):
 
 # 挂到 uvicorn.access，覆盖 python -m app.main 与 Docker uvicorn CMD 两条启动路径
 logging.getLogger("uvicorn.access").addFilter(_HealthCheckAccessFilter())
+
+# 静音 chromadb 与 posthog≥6 不兼容产生的 telemetry ERROR 刷屏
+# Settings(anonymized_telemetry=False) 仍可能触发失败路径并打 ERROR，故抬高该 logger
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
