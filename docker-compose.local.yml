@@ -14,7 +14,7 @@ name: python-ai-talk-local
 services:
   python-ai-talk:
     image: go-ai-talk/python-ai-talk:local
-    container_name: go-ai-talk-python-ai-talk
+    container_name: python-ai-talk
     ports:
       - "8000:8000"
     extra_hosts:

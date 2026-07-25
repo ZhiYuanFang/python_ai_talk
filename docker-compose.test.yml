@@ -15,7 +15,7 @@ name: python-ai-talk-test
 services:
   python-ai-talk:
     image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
-    container_name: go-ai-talk-python-ai-talk-test
+    container_name: python-ai-talk-test
     ports:
       - "18000:8000"
     networks: [go-ai-talk-test-net]

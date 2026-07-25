@@ -938,7 +938,7 @@ docker pull crpi-lff3xynwzvqxxxjk-vpc.cn-hangzhou.personal.cr.aliyuncs.com/pangb
 
 ```bash
 # 1. 进入容器内部检查
- docker exec -it go-ai-talk-python-ai-talk sh
+ docker exec -it python-ai-talk sh
 
 # 2. 在容器内测试健康检查接口
 wget -q -O - http://127.0.0.1:8000/health
@@ -1019,7 +1019,7 @@ docker compose --env-file env/.env.local \
 | 生产启动 | `docker compose --env-file env/.env.prod -f docker-compose.yml -f docker-compose.prod.yml pull && up -d --no-build` |
 | 查看日志 | `docker compose --env-file env/.env.xxx -f docker-compose.yml -f docker-compose.xxx.yml logs -f python-ai-talk` |
 | 查看状态 | `docker compose --env-file env/.env.xxx -f docker-compose.yml -f docker-compose.xxx.yml ps` |
-| 进入容器 | `docker exec -it go-ai-talk-python-ai-talk sh` |
+| 进入容器 | `docker exec -it python-ai-talk sh` |
 | 查看配置 | `docker compose --env-file env/.env.xxx -f docker-compose.yml -f docker-compose.xxx.yml config` |
 
 ### 9.2 参考链接
