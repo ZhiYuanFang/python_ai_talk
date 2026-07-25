@@ -15,6 +15,7 @@ services:
       dockerfile: Dockerfile
     container_name: python-ai-talk
     environment:
+      CHROMA_TELEMETRY: false
       TZ: Asia/Shanghai
       # --- 兄弟仓服务地址 ---
       HISTORY_SERVICE_URL: "${HISTORY_SERVICE_URL:-}"
