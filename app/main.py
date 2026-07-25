@@ -19,7 +19,7 @@ FastAPI 应用主入口
 import asyncio
 import logging
 import os
-
+os.environ["CHROMA_TELEMETRY"] = "false"
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -135,6 +135,18 @@ logging.basicConfig(
         logging.StreamHandler(),  # 输出到控制台
     ],
 )
+
+
+class _HealthCheckAccessFilter(logging.Filter):
+    """过滤健康检查路径的 uvicorn access log，避免 Docker healthcheck 刷屏。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn 默认格式形如：'127.0.0.1:12345 - "GET /v1/health HTTP/1.1" 200'
+        return "/v1/health" not in record.getMessage()
+
+
+# 挂到 uvicorn.access，覆盖 python -m app.main 与 Docker uvicorn CMD 两条启动路径
+logging.getLogger("uvicorn.access").addFilter(_HealthCheckAccessFilter())
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)

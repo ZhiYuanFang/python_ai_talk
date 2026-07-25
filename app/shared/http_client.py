@@ -78,6 +78,50 @@ class HttpClient:
                 # 标记初始化完成
                 self._initialized = True
 
+    @staticmethod
+    def _unwrap_go_data(body: Any) -> Any:
+        """
+        解包 GoFrame 标准响应中的 data 载荷
+
+        业务逻辑：
+        Go 侧 HTTP 响应一般为 { "code", "message", "data": <payload> }。
+        业务字段在 data 内；若根对象无 data 键，则将根对象视为载荷（兼容非标准响应）。
+
+        Args:
+            body: response.json() 得到的根对象
+
+        Returns:
+            业务载荷（通常为 dict 或 list）
+        """
+        if isinstance(body, dict) and "data" in body:
+            return body.get("data")
+        return body
+
+    @classmethod
+    def _extract_go_list(cls, body: Any) -> List[Any]:
+        """
+        从 GoFrame 响应中提取 list 字段
+
+        业务逻辑：
+        1. 先解包 data 载荷
+        2. 若载荷为 dict，取其中的 list
+        3. 若载荷本身为 list，直接返回
+        4. 否则返回空列表
+
+        Args:
+            body: response.json() 得到的根对象
+
+        Returns:
+            业务列表
+        """
+        payload = cls._unwrap_go_data(body)
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            raw_list = payload.get("list", [])
+            return raw_list if isinstance(raw_list, list) else []
+        return []
+
     async def get_event_dictionary(self) -> List[Dict[str, Any]]:
         """
         获取事件字典列表
@@ -106,9 +150,8 @@ class HttpClient:
             # 检查响应状态码
             response.raise_for_status()
 
-            # 从 data["list"] 提取列表（go 侧外层包装）
-            data = response.json()
-            raw_list = data.get("list", [])
+            # 从 GoFrame 包装的 data.list 提取列表
+            raw_list = self._extract_go_list(response.json())
 
             # 将 go 侧 camelCase 字段转换为 Python 侧 snake_case
             result = []
@@ -182,9 +225,8 @@ class HttpClient:
             # 检查响应状态码
             response.raise_for_status()
 
-            # 从 data["list"] 提取列表（go 侧外层包装）
-            data = response.json()
-            return data.get("list", [])
+            # 从 GoFrame 包装的 data.list 提取列表
+            return self._extract_go_list(response.json())
 
         except httpx.HTTPError as e:
             # 记录错误日志
@@ -253,9 +295,8 @@ class HttpClient:
             # 检查响应状态码
             response.raise_for_status()
 
-            # 返回解析后的 JSON 数据（list 字段）
-            data = response.json()
-            return data.get("list", [])
+            # 从 GoFrame 包装的 data.list 提取列表
+            return self._extract_go_list(response.json())
 
         except httpx.HTTPError as e:
             # 记录错误日志
@@ -305,8 +346,12 @@ class HttpClient:
 
             response.raise_for_status()
 
-            # 返回解析后的 JSON 数据（go 侧直接返回对象，无 list 外层）
-            return response.json()
+            # 返回 GoFrame 包装内的 data 业务对象（含 babyName/birthday/sex 等）
+            payload = self._unwrap_go_data(response.json())
+            if isinstance(payload, dict):
+                return payload
+            logger.warning(f"宝宝画像 data 载荷格式异常: device_no={device_no}")
+            return None
 
         except httpx.HTTPError as e:
             # 记录错误日志

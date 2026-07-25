@@ -14,6 +14,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: python-ai-talk
+    restart: on-failure:1
     environment:
       CHROMA_TELEMETRY: false
       TZ: Asia/Shanghai
