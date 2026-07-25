@@ -223,28 +223,29 @@ poetry shell
 
 ### 4.3 模型下载
 
-首次运行时，BGE-small-zh-v1.5 模型会自动下载：
+Embedding 模型 **不进 Git**（`data/models/` 已 ignore）。获取方式按运行路径区分：
+
+**Docker（推荐 / 正式部署）**：在 `docker build` 时由 Dockerfile 预下载并打入镜像 `/app/data/models`。容器运行时使用本地缓存（`HF_HUB_OFFLINE` / `local_files_only`），**不**在启动时访问 HuggingFace。compose **不得**将宿主机空的 `./data/models` 挂载到该路径。
+
+**本机 Poetry / 脚本（非 Docker）**：首次运行构建脚本时会下载模型：
 
 ```bash
-# 运行构建脚本，会自动下载模型
+# 运行构建脚本，会自动下载模型到 data/models/
 python scripts/build_vector_db.py
 ```
 
-**模型存储位置**：
+**模型存储位置（本机缓存或镜像内结构类似）**：
 ```
 python_ai_talk/data/models/
-└── sentence-transformers_BAAI-bge-small-zh-v1.5/
-    ├── config.json
-    ├── pytorch_model.bin
-    ├── tokenizer.json
-    └── ...
+└── （HuggingFace / sentence-transformers 缓存目录布局）
 ```
 
-**手动下载（如果自动下载失败）**：
+**手动下载（本机自动下载失败时）**：
 1. 访问 [Hugging Face](https://huggingface.co/BAAI/bge-small-zh-v1.5)
 2. 下载所有文件
-3. 放入 `data/models/sentence-transformers_BAAI-bge-small-zh-v1.5/` 目录
+3. 放入本机 `data/models/` 对应缓存目录（仅用于非 Docker 开发）
 
+**Docker 构建失败（构建机无法访问 HuggingFace）**：在构建环境配置代理或 `HF_ENDPOINT` 镜像源后重新 `docker build`，不要改为「容器启动时再下载」。
 ---
 
 ## 5. 知识库准备
@@ -727,19 +728,18 @@ cp -r backup/chroma_db_20260715 data/chroma_db
 
 **原因**：网络问题或 Hugging Face 访问受限
 
-**解决方案**：
-1. **手动下载**：
-   - 访问 [BGE-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5)
-   - 下载所有文件
-   - 放入 `data/models/sentence-transformers_BAAI-bge-small-zh-v1.5/` 目录
+**按路径处理**：
 
-2. **使用代理**：
+1. **Docker 构建失败**：在**构建机**配置代理或 HuggingFace 镜像源（如 `HF_ENDPOINT`）后重新 build。正式策略是构建时打入镜像，不要指望容器启动时再下载。
+2. **本机 Poetry / 脚本失败**：
+   - 手动下载：[BGE-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5) 全量文件放入本机 `data/models/` 缓存目录
+   - 或使用代理后重跑：
    ```bash
    export http_proxy=http://your-proxy:port
    export https_proxy=http://your-proxy:port
    python scripts/build_vector_db.py
    ```
-
+3. **容器启动仍访问 huggingface.co**：检查是否错误挂载了空的 `./data/models` 覆盖镜像内模型；基线 compose 应只挂 `chroma_db`。
 ### Q2: 构建速度慢怎么办？
 
 **原因**：文档数量多或 CPU 性能不足

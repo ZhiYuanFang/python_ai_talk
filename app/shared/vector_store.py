@@ -100,7 +100,8 @@ class VectorStore:
                 logger.info(f"加载 Embedding 模型: {settings.embedding_model}")
                 self._embedding_model = SentenceTransformer(
                     settings.embedding_model,
-                    cache_folder=os.path.join("data", "models"),  # 模型缓存目录
+                    cache_folder=os.path.join("data", "models"),  # 模型缓存目录（镜像内预下载）
+                    local_files_only=True,  # 禁止访问 HuggingFace Hub，仅使用本地缓存
                 )
 
                 # 初始化 Chroma 客户端

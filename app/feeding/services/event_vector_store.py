@@ -105,7 +105,8 @@ class EventVectorStore:
                 logger.info(f"加载 Embedding 模型: {settings.embedding_model}")
                 self._embedding_model = SentenceTransformer(
                     settings.embedding_model,  # 使用配置中的模型名称
-                    cache_folder=os.path.join("data", "models"),  # 模型缓存目录
+                    cache_folder=os.path.join("data", "models"),  # 模型缓存目录（镜像内预下载）
+                    local_files_only=True,  # 禁止访问 HuggingFace Hub，仅使用本地缓存
                 )
 
                 # 初始化 ChromaDB 客户端

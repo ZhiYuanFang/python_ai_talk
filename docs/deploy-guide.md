@@ -155,8 +155,10 @@ python_ai_talk/
 │   └── build_vector_db.py          # 向量数据库构建脚本
 │
 ├── data/                           # 数据目录（不提交到 Git）
-│   ├── chroma_db/                  # Chroma 向量库存储
-│   └── models/                     # Embedding 模型缓存
+│   ├── chroma_db/                  # Chroma 向量库存储（compose 挂载持久化）
+│   └── models/                     # Embedding 模型缓存（仅本地非 Docker 开发用；
+│                                   # Docker 路径下模型在镜像构建时预下载打入镜像，
+│                                   # 切勿将空的 ./data/models 挂载进容器）
 │
 └── pyproject.toml                  # Python 依赖管理（Poetry）
 ```
@@ -642,21 +644,26 @@ nano env/.env.local
 ### 4.3 构建向量数据库（首次运行）
 
 ```bash
-# 创建数据目录
-mkdir -p data/chroma_db data/models
+# 创建 Chroma 持久化目录（models 不必在 Docker 路径下预置）
+mkdir -p data/chroma_db
 
-# 构建向量数据库（需要先安装 Python 依赖）
+# 可选：仅当用本机 Poetry 跑 scripts/build_vector_db.py 时需要 models 目录
+# mkdir -p data/models
+
+# 构建向量数据库（需要先安装 Python 依赖；非 Docker 路径会下载 Embedding 模型）
 poetry install
 poetry shell
 python scripts/build_vector_db.py
 ```
 
-> **注意**：如果已有构建好的向量数据库，可以直接复制到 `data/chroma_db/` 目录。
+> **注意**：
+> - 如果已有构建好的向量数据库，可以直接复制到 `data/chroma_db/` 目录。
+> - **Docker 部署**：Embedding 模型在 `docker build` 时下载并打入镜像的 `/app/data/models`，运行时离线加载。基线 compose **不要**挂载宿主机 `./data/models`（空目录会覆盖镜像内模型，导致访问 huggingface.co 失败）。
 
 ### 4.4 启动服务
 
 ```bash
-# 启动本地开发环境（--build 表示构建镜像）
+# 启动本地开发环境（--build 表示构建镜像；构建阶段会下载 Embedding 模型）
 docker compose --env-file env/.env.local \
   -f docker-compose.yml \
   -f docker-compose.local.yml \

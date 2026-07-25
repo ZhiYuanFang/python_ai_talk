@@ -63,6 +63,11 @@ COPY . .
 # 从 builder 阶段复制预下载的模型（放在 COPY . . 之后，避免被本地空目录覆盖）
 COPY --from=builder /app/data/models /app/data/models
 
+# 运行时禁止访问 HuggingFace Hub（模型已打包进镜像；compose 也不得挂载空的 data/models）
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    SENTENCE_TRANSFORMERS_HOME=/app/data/models
+
 # 确保向量数据库目录存在（运行时持久化用，建议挂载 volume）
 # 注意：ChromaDB 目录下包含多个集合（knowledge、feeding_events 等）
 # feeding_events 集合依赖 HTTP API 获取事件字典，Docker 构建阶段无法调用外部 API

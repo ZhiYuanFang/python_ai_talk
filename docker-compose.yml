@@ -37,4 +37,5 @@ services:
       # ChromaDB 持久化目录，包含 knowledge 和 feeding_events 等多个集合
       # feeding_events 集合在服务启动后首次获取事件字典时自动创建
       - ./data/chroma_db:/app/data/chroma_db
-      - ./data/models:/app/data/models
+      # 注意：不要挂载 ./data/models —— Embedding 模型已在镜像构建时预下载到 /app/data/models
+      # 挂载宿主机空目录会覆盖镜像内模型，导致运行时访问 huggingface.co 失败
