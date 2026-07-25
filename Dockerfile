@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
     pip install --no-cache-dir \
         "numpy<2.0" \
         fastapi==0.115.* \
+        python-multipart==0.0.* \
         uvicorn==0.32.* \
         httpx==0.27.* \
         langgraph==0.2.* \
