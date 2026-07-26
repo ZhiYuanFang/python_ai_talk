@@ -274,6 +274,8 @@ async def analyze_intent_stream(request: IntentRequest):
         "event_dictionary": event_dictionary,
     }
 
+    # 打印入参
+    logger.info(f"初始状态: {initial_state}")
     # 3. 生成 thread_id（等同于 conversation_id）
     # 业务说明：thread_id 用于 LangGraph 的 MemorySaver 检查点，
     # 流式接口同样需要传 thread_id，支持 prepare_confirm 的 interrupt 中断恢复

@@ -128,7 +128,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # 获取模型配置（优先 model_config，兼容旧字段 model）
     model_config = state.get("model_config") or state.get(
-        "model", {"provider": "deepseek", "name": "deepseek-chat"}
+        "model", {"provider": "deepseek", "name": "deepseek-v4-flash"}
     )
 
     logger.info(
@@ -145,7 +145,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         # 对齐 generate_response：模块级 llm_client + LLMModelConfig
         llm_model_config = LLMModelConfig(
             provider=model_config.get("provider", "deepseek"),
-            name=model_config.get("name", "deepseek-chat"),
+            name=model_config.get("name", "deepseek-v4-flash"),
             max_in_flight=model_config.get("max_in_flight", 3),
         )
 
