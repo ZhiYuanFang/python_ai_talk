@@ -23,6 +23,17 @@ from app.config.settings import settings
 logger = logging.getLogger(__name__)
 
 
+def _to_str_id(value: Any) -> str:
+    """
+    将 Go 侧事件/父级 ID 转为字符串。
+
+    None 或缺失映射为空串，禁止产生字面量 \"None\"。
+    """
+    if value is None:
+        return ""
+    return str(value)
+
+
 class HttpClient:
     """
     HTTP 客户端类
@@ -153,16 +164,17 @@ class HttpClient:
             # 从 GoFrame 包装的 data.list 提取列表
             raw_list = self._extract_go_list(response.json())
 
-            # 将 go 侧 camelCase 字段转换为 Python 侧 snake_case
+            # 将 go 侧 camelCase 字段转换为 Python 侧 snake_case；
+            # event_id / parent_id 强制为 str，避免 JSON number 造成下游 int/str 漂移
             result = []
             for item in raw_list:
                 result.append({
-                    "event_id": item.get("id"),
+                    "event_id": _to_str_id(item.get("id")),
                     "event_name": item.get("name"),
                     "event_type": item.get("eventType"),
                     "unit": item.get("unit"),
                     "extra_names": item.get("extraNames"),
-                    "parent_id": item.get("parentId"),
+                    "parent_id": _to_str_id(item.get("parentId")),
                 })
 
             return result
@@ -236,7 +248,7 @@ class HttpClient:
     async def get_filtered_history_events(
         self,
         device_no: str,
-        event_ids: Optional[List[int]] = None,
+        event_ids: Optional[List[str]] = None,
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
         limit: Optional[int] = None,
@@ -252,7 +264,7 @@ class HttpClient:
 
         Args:
             device_no: 设备编号
-            event_ids: 事件ID列表，为空表示所有事件类型
+            event_ids: 事件ID字符串列表，为空表示所有事件类型
             start_time: 开始时间戳（Unix秒，可选）
             end_time: 结束时间戳（Unix秒，可选）
             limit: 返回数量上限（可选，默认100）
@@ -274,7 +286,7 @@ class HttpClient:
             "deviceNo": device_no,
         }
 
-        # 添加事件ID参数（逗号分隔字符串）
+        # 添加事件ID参数（逗号分隔字符串；Go 侧再解析为 int64）
         if event_ids and len(event_ids) > 0:
             params["eventIds"] = ",".join(str(eid) for eid in event_ids)
 

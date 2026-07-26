@@ -12,11 +12,22 @@
 5. 流式响应模型复用 ClinicStreamResponse 的格式（type + content）
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, BeforeValidator, ConfigDict, Field
 
 from app.feeding.schemas.intent import ClinicStreamResponse, ModelConfig
+
+
+def _coerce_event_id_str(value: Any) -> str:
+    """
+    将 tip 入站 event_id 规范为字符串。
+
+    兼容调用方仍发送 JSON number 的过渡场景；None 记为空串。
+    """
+    if value is None:
+        return ""
+    return str(value)
 
 
 class TipRequest(BaseModel):
@@ -31,12 +42,17 @@ class TipRequest(BaseModel):
     设计思路：
     内部契约以 snake_case 为准；过渡期 AliasChoices 双收 camel，
     保证 Go TipStreamRequest snake body 可通过校验。
+    event_id 与 Go EventID string 对齐，权威类型为 str。
     """
 
     # 允许按字段名（snake）或 alias（camel）入站反序列化
     model_config = ConfigDict(populate_by_name=True)
 
-    event_id: int = Field(..., description="触发事件ID")
+    event_id: Annotated[
+        str,
+        BeforeValidator(_coerce_event_id_str),
+        Field(..., description="触发事件ID（字符串，与 Go tip 客户端一致）"),
+    ]
     event_name: str = Field(..., description="触发事件名称")
     # 权威键 device_no；过渡双收 deviceNo（字段级 Annotated，勿用模块级共享别名）
     device_no: Annotated[

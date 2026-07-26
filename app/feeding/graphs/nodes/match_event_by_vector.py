@@ -97,7 +97,8 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
                 "target_type": "feeding",
                 "action": metadata.get("action") or "one",
                 "event_name": metadata["event_name"],
-                "event_id": metadata["event_id"],
+                # 存量 Chroma metadata 可能仍为 int，出站统一为 str
+                "event_id": "" if metadata.get("event_id") is None else str(metadata["event_id"]),
                 "quantity": quantity,
                 "keywords": [metadata.get("action", ""), metadata["event_name"]],
                 "match_source": "vector",
@@ -118,7 +119,7 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
                 "target_type": "feeding",
                 "action": metadata.get("action") or "one",
                 "event_name": metadata["event_name"],
-                "event_id": metadata["event_id"],
+                "event_id": "" if metadata.get("event_id") is None else str(metadata["event_id"]),
                 "quantity": quantity,
                 "keywords": [metadata.get("action", ""), metadata["event_name"]],
                 "match_source": "vector",

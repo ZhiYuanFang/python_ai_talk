@@ -46,9 +46,18 @@ def _resolve_event_id_name(event: Dict[str, Any]) -> tuple:
 
     优先使用 http_client 归一化后的 event_id / event_name，
     兼容遗留 id / name 字段。
+    event_id 一律返回字符串，避免 metadata / where 过滤出现 int/str 不一致。
     """
-    event_id = event.get("event_id", "") or event.get("id", "")
+    raw_id = event.get("event_id")
+    if raw_id is None or raw_id == "":
+        raw_id = event.get("id")
+    # None → ""；禁止 str(None) == "None"
+    event_id = "" if raw_id is None else str(raw_id)
     event_name = event.get("event_name", "") or event.get("name", "")
+    if event_name is None:
+        event_name = ""
+    elif not isinstance(event_name, str):
+        event_name = str(event_name)
     return event_id, event_name
 
 

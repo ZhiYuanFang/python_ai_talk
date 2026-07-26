@@ -171,9 +171,17 @@ class EventCache:
             self._previous_dictionary = new_dictionary
             return
 
-        # 比较新旧数据，检测变化
-        old_ids = {e.get("event_id") for e in self._previous_dictionary}
-        new_ids = {e.get("event_id") for e in new_dictionary}
+        # 比较新旧数据，检测变化（ID 统一为 str，避免 int/str 假差集）
+        old_ids = {
+            str(eid)
+            for e in self._previous_dictionary
+            if (eid := e.get("event_id")) is not None and eid != ""
+        }
+        new_ids = {
+            str(eid)
+            for e in new_dictionary
+            if (eid := e.get("event_id")) is not None and eid != ""
+        }
 
         # 找出新增的事件ID
         added_ids = new_ids - old_ids
@@ -183,21 +191,43 @@ class EventCache:
         common_ids = new_ids & old_ids
 
         # 构建新增事件列表
-        added_events = [e for e in new_dictionary if e.get("event_id") in added_ids]
-        # 构建删除事件ID列表
+        added_events = [
+            e for e in new_dictionary
+            if e.get("event_id") is not None
+            and e.get("event_id") != ""
+            and str(e.get("event_id")) in added_ids
+        ]
+        # 构建删除事件ID列表（字符串列表，供向量库 sync）
         removed_event_ids = list(removed_ids)
 
         # 构建修改事件列表（比较名称和父级ID是否变化）
         modified_events = []
         # 创建旧事件的ID到事件的映射，便于快速查找
-        old_event_map = {e.get("event_id"): e for e in self._previous_dictionary}
+        old_event_map = {
+            str(eid): e
+            for e in self._previous_dictionary
+            if (eid := e.get("event_id")) is not None and eid != ""
+        }
         # 遍历共有的事件ID，检查是否发生变化
         for event_id in common_ids:
             old_event = old_event_map.get(event_id, {})
-            new_event = next((e for e in new_dictionary if e.get("event_id") == event_id), {})
-            # 比较事件名称和父级ID是否变化
-            if (old_event.get("event_name") != new_event.get("event_name") or
-                    old_event.get("parent_id") != new_event.get("parent_id")):
+            new_event = next(
+                (
+                    e for e in new_dictionary
+                    if e.get("event_id") is not None
+                    and str(e.get("event_id")) == event_id
+                ),
+                {},
+            )
+            # 比较事件名称和父级ID是否变化（parent_id 亦按字符串比较）
+            old_parent = old_event.get("parent_id")
+            new_parent = new_event.get("parent_id")
+            old_parent_s = "" if old_parent is None else str(old_parent)
+            new_parent_s = "" if new_parent is None else str(new_parent)
+            if (
+                old_event.get("event_name") != new_event.get("event_name")
+                or old_parent_s != new_parent_s
+            ):
                 # 内容有变化，加入修改列表
                 modified_events.append(new_event)
 

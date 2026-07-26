@@ -17,7 +17,7 @@ LangGraph 节点：调用 LLM 根据用户问题判断需要查询哪些类型�
 import json
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.shared.graphs.nodes.prompts.data_requirement import (
     build_data_requirement_system_prompt,
@@ -148,10 +148,12 @@ def _parse_data_requirement(content: str) -> Dict[str, Any]:
     try:
         parsed = json.loads(json_str)
 
-        # 提取 event_ids
+        # 提取 event_ids（统一为字符串，兼容 LLM 返回 number）
         event_ids = parsed.get("event_ids", [])
         if isinstance(event_ids, list):
-            result["event_ids"] = [int(eid) for eid in event_ids if _is_valid_int(eid)]
+            result["event_ids"] = [
+                sid for eid in event_ids if (sid := _to_event_id_str(eid)) is not None
+            ]
 
         # 提取 time_range
         if "time_range" in parsed:
@@ -167,25 +169,44 @@ def _parse_data_requirement(content: str) -> Dict[str, Any]:
     return result
 
 
-def _extract_valid_event_ids(event_dictionary: list) -> List[int]:
+def _extract_valid_event_ids(event_dictionary: list) -> List[str]:
     """
     从事件字典中提取所有有效的事件ID
 
     业务逻辑：
-    将事件字典中的 event_id 提取为整数列表，用于验证 LLM 返回的 event_ids。
+    将事件字典中的 event_id 提取为字符串列表，用于验证 LLM 返回的 event_ids。
+    比较在字符串空间进行，避免 int/str 漂移导致 membership 静默失败。
 
     Args:
         event_dictionary: 事件字典列表
 
     Returns:
-        有效的事件ID列表
+        有效的事件ID字符串列表
     """
     valid_ids = []
     for event in event_dictionary:
         eid = event.get("event_id", event.get("id"))
-        if eid is not None and _is_valid_int(eid):
-            valid_ids.append(int(eid))
+        sid = _to_event_id_str(eid)
+        if sid is not None:
+            valid_ids.append(sid)
     return valid_ids
+
+
+def _to_event_id_str(value: Any) -> Optional[str]:
+    """
+    将候选事件ID规范为正整数字符串；无效则返回 None。
+
+    兼容 LLM 返回的 number 或 digit 字符串（如 52 / \"52\" → \"52\"）。
+    """
+    if value is None or value == "":
+        return None
+    try:
+        int_val = int(value)
+        if int_val <= 0:
+            return None
+        return str(int_val)
+    except (ValueError, TypeError):
+        return None
 
 
 def _is_valid_int(value: Any) -> bool:

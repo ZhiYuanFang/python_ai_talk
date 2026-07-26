@@ -33,7 +33,7 @@ def build_data_requirement_system_prompt() -> str:
 
 输出格式：
 {{
-    "event_ids": [1, 2],
+    "event_ids": ["1", "2"],
     "time_range": "today",
     "limit": 20
 }}
@@ -46,7 +46,7 @@ time_range 可选值：
 - "custom": 自定义时间范围（需同时提供 start_time 和 end_time）
 
 注意事项：
-1. event_ids 使用事件的数字ID，从可用事件中选择
+1. event_ids 使用事件的字符串ID（如 "1"、"2"），从可用事件中选择
 2. 如果用户问题涉及所有喂养事件，返回所有相关事件的ID
 3. 如果无法确定具体事件，返回空列表（表示拉取所有类型）
 4. limit 字段表示需要返回的记录数量上限，默认20条
@@ -70,11 +70,12 @@ def build_data_requirement_user_message(user_text: str, event_dictionary: List[D
     Returns:
         用户消息字符串
     """
-    # 将事件字典格式化为 id + name 的简化列表
-    events_simple = [
-        {"id": e.get("event_id", e.get("id", "")), "name": e.get("event_name", "")}
-        for e in event_dictionary
-    ]
+    # 将事件字典格式化为 id + name 的简化列表（id 以字符串展示）
+    events_simple = []
+    for e in event_dictionary:
+        raw_id = e.get("event_id", e.get("id", ""))
+        eid = "" if raw_id is None else str(raw_id)
+        events_simple.append({"id": eid, "name": e.get("event_name", "")})
     events_str = json.dumps(events_simple, ensure_ascii=False, indent=2)
 
     return f"""
