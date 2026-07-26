@@ -129,6 +129,13 @@ class EventCache:
             logger.info("事件字典缓存未命中，从兄弟仓获取...")
             event_dictionary = await http_client.get_event_dictionary()
 
+            # 空列表不写入长 TTL，避免一次空结果毒化 24h
+            if not event_dictionary:
+                logger.warning(
+                    "兄弟仓返回事件字典为空，未写入长 TTL 缓存（下次请求将重试拉取）"
+                )
+                return []
+
             # 将数据存入缓存
             self._cache[self._CACHE_KEY] = event_dictionary
 
@@ -235,6 +242,15 @@ class EventCache:
         with self._cache_lock:
             # 从兄弟仓获取事件字典
             event_dictionary = await http_client.get_event_dictionary()
+
+            # 空列表不写入长 TTL（与 get_event_dictionary 一致，避免毒化）
+            if not event_dictionary:
+                # 清除旧缓存，强制下次重新拉取
+                self._cache.pop(self._CACHE_KEY, None)
+                logger.warning(
+                    "手动刷新时兄弟仓返回事件字典为空，未写入长 TTL 缓存"
+                )
+                return
 
             # 更新缓存
             self._cache[self._CACHE_KEY] = event_dictionary

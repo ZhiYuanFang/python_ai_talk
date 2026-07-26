@@ -35,6 +35,7 @@ from app.tip.graphs.tip_graph import tip_graph
 from app.tip.graphs.nodes.stream_tip_response import stream_tip_response
 from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
 from app.tip.schemas.tip import TipRequest, TipStreamResponse
+from app.feeding.services.event_cache import event_cache
 from app.shared.schemas.feedback import FeedbackRequest
 from app.shared.vector_store import vector_store
 
@@ -78,6 +79,9 @@ async def tip_stream(request: TipRequest):
         f"小贴士请求: device_no={request.device_no}, event_name={request.event_name}"
     )
 
+    # tip 图入口为 judge_data_requirement，必须注入事件字典
+    event_dictionary = await event_cache.get_event_dictionary()
+
     # 1. 构建初始状态（不含月龄/时间：月龄由 derive_baby_age 写入，时间在写 prompt 时生成）
     initial_state: Dict[str, Any] = {
         "event_info": {
@@ -90,6 +94,7 @@ async def tip_stream(request: TipRequest):
             "name": request.model.name,
             "max_in_flight": request.model.max_in_flight,
         },
+        "event_dictionary": event_dictionary,
     }
 
     # 2. 生成 SSE 流式响应

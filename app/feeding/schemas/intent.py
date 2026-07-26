@@ -11,18 +11,9 @@
 4. 支持流式响应（SSE）和用户确认机制
 """
 
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
-
-# 设备编号：snake 权威 + camel 过渡双收（Annotated 附着，避免 Field(validation_alias=) 在 schema 生成路径无效警告）
-DeviceNoField = Annotated[
-    str,
-    Field(
-        validation_alias=AliasChoices("device_no", "deviceNo"),
-        description="设备编号（内部契约 snake_case，可过渡双收 camel）",
-    ),
-]
 
 
 class ModelConfig(BaseModel):
@@ -54,8 +45,12 @@ class IntentRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     text: str = Field(..., description="用户输入的自然语言文本")
-    # 权威键 device_no；过渡双收 deviceNo
-    device_no: DeviceNoField
+    # 权威键 device_no；过渡双收 deviceNo（内联 Field，勿用共享 Annotated 别名）
+    device_no: str = Field(
+        ...,
+        validation_alias=AliasChoices("device_no", "deviceNo"),
+        description="设备编号（内部契约 snake_case，可过渡双收 camel）",
+    )
     model: ModelConfig = Field(..., description="模型配置")
     # 流式返回开关，默认 false（非流式），true 时通过 SSE 返回 thinking 事件
     stream: Optional[bool] = Field(default=False, description="是否流式返回，默认false")
@@ -151,8 +146,12 @@ class ClinicRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     question: str = Field(..., description="用户的诊疗问题")
-    # 权威键 device_no；过渡双收 deviceNo
-    device_no: DeviceNoField
+    # 权威键 device_no；过渡双收 deviceNo（内联 Field，勿用共享 Annotated 别名）
+    device_no: str = Field(
+        ...,
+        validation_alias=AliasChoices("device_no", "deviceNo"),
+        description="设备编号（内部契约 snake_case，可过渡双收 camel）",
+    )
     model: ModelConfig = Field(..., description="模型配置")
 
 

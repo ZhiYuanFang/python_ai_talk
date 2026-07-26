@@ -17,16 +17,13 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from langchain_core.messages import SystemMessage, HumanMessage
-
-from app.config.settings import settings
 from app.feeding.graphs.nodes.prompts.intent_classification import (
     build_intent_classification_system_prompt,
     build_intent_classification_user_message,
 )
 from app.feeding.schemas.intent import IntentResponse
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
-from app.shared.llm_client import LLMClient
+from app.shared.llm_client import LLMModelConfig, llm_client
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -145,21 +142,18 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         system_prompt = build_intent_classification_system_prompt(event_dictionary)
         user_message = build_intent_classification_user_message(text, event_dictionary)
 
-        # 创建 LLM 客户端
-        llm_client = LLMClient(
+        # 对齐 generate_response：模块级 llm_client + LLMModelConfig
+        llm_model_config = LLMModelConfig(
             provider=model_config.get("provider", "deepseek"),
-            model_name=model_config.get("name", "deepseek-chat"),
-            temperature=0.0,
-            max_tokens=4096,
+            name=model_config.get("name", "deepseek-chat"),
+            max_in_flight=model_config.get("max_in_flight", 3),
         )
 
-        # 调用 LLM
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_message),
-        ]
-
-        response = await llm_client.invoke(messages)
+        response = await llm_client.invoke(
+            messages=[{"role": "user", "content": user_message}],
+            model_config=llm_model_config,
+            system_prompt=system_prompt,
+        )
 
         # 解析意图结果
         intent_result = _parse_intent_result(response.content)

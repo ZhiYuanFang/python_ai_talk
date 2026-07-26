@@ -79,6 +79,12 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     model_config = state.get("model_config", {})
     # 从意图状态中提取意图分类结果（用于判断 suggest/history 选择对应提示词）
     intent_result = state.get("intent_result", {})
+    # 事件字典：优先复用意图 State，缺失时再从缓存拉取（避免嵌套 clinic 假「字典为空」）
+    event_dictionary = state.get("event_dictionary")
+    if not event_dictionary:
+        from app.feeding.services.event_cache import event_cache
+
+        event_dictionary = await event_cache.get_event_dictionary()
 
     # 记录调用日志：标记开始调用诊疗 Agent
     logger.info(
@@ -94,6 +100,8 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
         "device_no": device_no,
         # 模型配置，透传给 clinic 内部的 LLM 调用
         "model_config": model_config,
+        # 事件字典，供 judge_data_requirement 使用
+        "event_dictionary": event_dictionary or [],
     }
 
     try:

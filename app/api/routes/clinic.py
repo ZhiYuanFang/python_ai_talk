@@ -35,6 +35,7 @@ from app.clinic.graphs.clinic_graph import clinic_graph
 from app.clinic.graphs.nodes.stream_response import stream_response
 from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
 from app.feeding.schemas.intent import ClinicRequest, ClinicStreamResponse
+from app.feeding.services.event_cache import event_cache
 from app.shared.schemas.feedback import FeedbackRequest
 from app.shared.vector_store import vector_store
 
@@ -78,6 +79,9 @@ async def clinic_stream(request: ClinicRequest):
         f"诊疗请求: device_no={request.device_no}, question={request.question[:50]}..."
     )
 
+    # 拉取事件字典，供 judge_data_requirement 按 event_ids 收窄历史（勿漏传导致假「字典为空」）
+    event_dictionary = await event_cache.get_event_dictionary()
+
     # 1. 构建初始状态
     initial_state: Dict[str, Any] = {
         "question": request.question,
@@ -87,6 +91,7 @@ async def clinic_stream(request: ClinicRequest):
             "name": request.model.name,
             "max_in_flight": request.model.max_in_flight,
         },
+        "event_dictionary": event_dictionary,
     }
 
     # 2. 生成 SSE 流式响应

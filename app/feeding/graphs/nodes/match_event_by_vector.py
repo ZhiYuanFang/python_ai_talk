@@ -31,49 +31,6 @@ VECTOR_MATCH_HIGH_CONFIDENCE_THRESHOLD = 0.95
 VECTOR_MATCH_MEDIUM_CONFIDENCE_THRESHOLD = 0.90
 
 
-def _calculate_confidence(score: float) -> float:
-    """
-    计算匹配置信度
-
-    业务逻辑：
-    Milvus 返回的 L2 距离值越小表示越相似。
-    使用一个简单的映射将 L2 距离转换为 0-1 之间的置信度。
-    这里的计算是一个简化的示例，实际应用中可能需要更复杂的转换逻辑。
-
-    Args:
-        score: Milvus 返回的原始分数（L2 距离）
-
-    Returns:
-        转换后的置信度值（0-1之间）
-    """
-    # 假设 L2 距离越小越相似，这里做一个简单的映射
-    # 实际应用中可能需要根据数据分布调整
-    max_distance = 2.0
-    confidence = max(0.0, min(1.0, 1.0 - (score / max_distance)))
-    return round(confidence, 4)
-
-
-def _normalize_milvus_score(raw_score: float) -> float:
-    """
-    归一化 Milvus 原始分数
-
-    业务逻辑：
-    Milvus 返回的原始分数可能是 L2 距离或其他度量值。
-    将其归一化为 0-1 范围，便于设置阈值。
-
-    Args:
-        raw_score: Milvus 返回的原始分数
-
-    Returns:
-        归一化后的分数（0-1之间）
-    """
-    # 这里使用一个简单的线性映射
-    # 实际应用中可能需要根据数据分布调整
-    max_score = 2.0
-    normalized = max(0.0, min(1.0, 1.0 - (raw_score / max_score)))
-    return round(normalized, 4)
-
-
 def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     向量匹配节点
@@ -101,8 +58,8 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
     vector_store = EventVectorStore()
 
     try:
-        # 执行向量搜索
-        results = vector_store.search(text, top_k=1)
+        # 执行向量搜索（search_events 返回已归一化的 0–1 score）
+        results = vector_store.search_events(text, n_results=1)
 
         if not results or len(results) == 0:
             logger.info(f"向量匹配未找到结果: text={text[:20]}...")
@@ -112,9 +69,9 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
                 "match_source": "llm",
             }
 
-        # 获取最相似的结果
+        # 获取最相似的结果；score 已是 0–1 相似度，直接作置信度
         top_result = results[0]
-        confidence = _normalize_milvus_score(top_result["distance"])
+        confidence = float(top_result.get("score", 0.0))
 
         logger.info(
             f"向量匹配结果: text={text[:20]}..., "
