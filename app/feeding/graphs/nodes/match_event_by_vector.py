@@ -18,7 +18,7 @@
 import logging
 from typing import Any, Dict
 
-from app.feeding.services.event_vector_store import EventVectorStore
+from app.feeding.services.event_vector_store import event_vector_store
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
 
 # 初始化日志记录器
@@ -54,12 +54,10 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
     # 业务说明：路由注入的是 user_input；兼容旧字段 text 作 fallback
     text = state.get("user_input") or state.get("text", "")
 
-    # 获取事件向量存储实例
-    vector_store = EventVectorStore()
-
     try:
+        # 复用模块级单例，避免每次请求重新加载 Embedding / Chroma
         # 执行向量搜索（search_events 返回已归一化的 0–1 score）
-        results = vector_store.search_events(text, n_results=1)
+        results = event_vector_store.search_events(text, n_results=1)
 
         if not results or len(results) == 0:
             logger.info(f"向量匹配未找到结果: text={text[:20]}...")
