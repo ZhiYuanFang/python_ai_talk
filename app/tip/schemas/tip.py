@@ -12,6 +12,8 @@
 5. 流式响应模型复用 ClinicStreamResponse 的格式（type + content）
 """
 
+from typing import Annotated
+
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.feeding.schemas.intent import ClinicStreamResponse, ModelConfig
@@ -36,12 +38,14 @@ class TipRequest(BaseModel):
 
     event_id: int = Field(..., description="触发事件ID")
     event_name: str = Field(..., description="触发事件名称")
-    # 权威键 device_no；过渡双收 deviceNo（内联 Field，勿用共享 Annotated 别名）
-    device_no: str = Field(
-        ...,
-        validation_alias=AliasChoices("device_no", "deviceNo"),
-        description="设备编号（内部契约 snake_case，可过渡双收 camel）",
-    )
+    # 权威键 device_no；过渡双收 deviceNo（字段级 Annotated，勿用模块级共享别名）
+    device_no: Annotated[
+        str,
+        Field(
+            validation_alias=AliasChoices("device_no", "deviceNo"),
+            description="设备编号（内部契约 snake_case，可过渡双收 camel）",
+        ),
+    ]
     model: ModelConfig = Field(..., description="模型配置")
 
 

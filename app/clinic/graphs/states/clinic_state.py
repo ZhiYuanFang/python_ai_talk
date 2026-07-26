@@ -26,6 +26,7 @@ class ClinicState(TypedDict, total=False):
     - question: 用户的诊疗问题
     - device_no: 设备编号
     - model_config: 模型配置（provider, name, max_in_flight）
+    - event_dictionary: 事件字典列表（路由注入；须声明否则 LangGraph 静默丢弃）
     - data_requirement: 数据需求判断结果（event_ids, time_range, limit）
     - history_events: 历史记录列表
     - knowledge: 向量检索结果列表
@@ -36,6 +37,7 @@ class ClinicState(TypedDict, total=False):
     question: str                      # 用户的诊疗问题
     device_no: str                     # 设备编号
     model_config: Dict[str, Any]       # 模型配置
+    event_dictionary: List[Dict[str, Any]]  # 事件字典列表（供 judge_data_requirement）
 
     # 中间字段（各节点填充）
     data_requirement: Dict[str, Any]        # 数据需求判断结果

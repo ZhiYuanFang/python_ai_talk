@@ -27,6 +27,7 @@ class TipState(TypedDict, total=False):
     - event_info: 触发小贴士的事件信息（event_id, event_name）
     - device_no: 设备编号
     - model_config: 模型配置（provider, name, max_in_flight）
+    - event_dictionary: 事件字典列表（路由注入；须声明否则 LangGraph 静默丢弃）
     - baby_age_months: 自算月龄；未知时为 None（不得用 0 表示未知）
     - data_requirement: 数据需求判断结果（event_ids, time_range, limit）
     - history_events: 历史记录列表
@@ -39,6 +40,7 @@ class TipState(TypedDict, total=False):
     event_info: Dict[str, Any]          # 触发事件信息，包含 event_id 和 event_name
     device_no: str                      # 设备编号
     model_config: Dict[str, Any]        # 模型配置
+    event_dictionary: List[Dict[str, Any]]  # 事件字典列表（供 judge_data_requirement）
 
     # 派生字段（derive_baby_age 写入；未知为 None）
     baby_age_months: Optional[int]      # 宝宝月龄；None=未知，0=算出的 0 个月
