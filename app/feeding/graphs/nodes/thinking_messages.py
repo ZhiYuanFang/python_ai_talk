@@ -18,10 +18,6 @@ NODE_THINKING_MESSAGES = {
     "match_event_by_vector": "正在匹配喂养事件...",
     # 意图分类节点：LLM 分析用户输入，判断意图类型（记录/查询/确认/反馈等）
     "classify_intent": "正在分析意图...",
-    # 确认话术准备节点：根据识别出的事件生成确认话术，等待用户二次确认
-    "prepare_confirm": "正在生成确认话术...",
-    # 用户反馈处理节点：处理用户对确认话术的反馈（确认/修改/取消）
-    "handle_feedback": "正在处理用户反馈...",
     # 数据需求判断：history 短链判断需拉取的事件范围与时间窗
     "judge_data_requirement": "正在判断数据需求...",
     # 历史拉取：按 data_requirement 拉取喂养历史

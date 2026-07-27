@@ -140,7 +140,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     try:
         # 构建提示词
         system_prompt = build_intent_classification_system_prompt(event_dictionary)
-        user_message = build_intent_classification_user_message(text, event_dictionary)
+        user_message = build_intent_classification_user_message(text)
 
         # 对齐 generate_response：模块级 llm_client + LLMModelConfig
         llm_model_config = LLMModelConfig(
@@ -195,7 +195,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
                 logger.info(f"本地提取数量成功: quantity={extracted_quantity}")
 
         # 确保所有字段都有默认值
-        # 业务说明：feeding/multi 进入 prepare_confirm 时依赖 action/event_name/events 生成确认话术
+        # 业务说明：feeding 结果由路由层做叶子校验 / 父消歧 / 自由文本软确认
         intent_result.setdefault("target_type", "conversation")
         intent_result.setdefault("action", "reply")
         intent_result.setdefault("event_name", "")

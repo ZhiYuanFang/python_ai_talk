@@ -25,10 +25,10 @@ from app.feeding.utils.quantity_extractor import extract_quantity_from_text
 logger = logging.getLogger(__name__)
 
 # 向量匹配的高置信度阈值（≥此值直接匹配，无需 LLM 或确认）
-VECTOR_MATCH_HIGH_CONFIDENCE_THRESHOLD = 0.95
+VECTOR_MATCH_HIGH_CONFIDENCE_THRESHOLD = 0.8
 
 # 向量匹配的中等置信度阈值（<此值降级至 LLM，≥此值但 < 高阈值需要确认）
-VECTOR_MATCH_MEDIUM_CONFIDENCE_THRESHOLD = 0.90
+VECTOR_MATCH_MEDIUM_CONFIDENCE_THRESHOLD = 0.60
 
 
 def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:

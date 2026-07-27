@@ -41,7 +41,8 @@ class IntentState(TypedDict, total=False):
     model_config: Dict[str, Any]       # 模型配置
 
     # 中间字段（各节点填充）
-    event_dictionary: List[Dict[str, Any]]  # 事件字典列表
+    event_dictionary: List[Dict[str, Any]]  # 叶子事件字典（匹配/落库）
+    event_dictionary_full: List[Dict[str, Any]]  # 全量事件树（父名检测/消歧）
     intent_result: Dict[str, Any]           # 意图分类结果
     data_requirement: Dict[str, Any]        # 数据需求判断结果
     history_events: List[Dict[str, Any]]    # 历史记录列表
@@ -56,11 +57,11 @@ class IntentState(TypedDict, total=False):
     match_source: str                  # 匹配来源（"vector"表示向量匹配，"llm"表示LLM分类）
     matched_vector_id: str             # 匹配到的向量记录ID（用于删除操作）
 
-    # 确认相关字段
-    need_confirm: bool                 # 是否需要用户确认
-    confirm_message: str               # 确认话术
-    user_feedback: str                 # 用户反馈（"confirm"表示确认，"reject"表示否定）
-    conversation_id: str               # 会话 ID（等同于 thread_id，用于中断恢复）
+    # 澄清相关字段（同一 /intent 续聊）
+    need_confirm: bool                 # 是否需要用户澄清
+    confirm_type: str                  # parent_disambiguation | leaf_confirm
+    confirm_message: str               # 澄清话术
+    conversation_id: str               # 会话 ID（续聊）
 
     # 数据飞轮相关字段
     should_update_vector: bool         # 是否需要更新向量库

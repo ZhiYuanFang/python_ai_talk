@@ -38,10 +38,6 @@ NODE_THINKING_MESSAGES: Dict[str, str] = {
     "match_event_by_vector": "正在匹配喂养事件...",
     # 意图分类节点：LLM 兜底分类用户意图
     "classify_intent": "正在分析用户意图...",
-    # 准备确认节点：构造用户确认请求并中断图执行
-    "prepare_confirm": "正在准备确认信息...",
-    # 处理反馈节点：处理用户确认或拒绝的反馈
-    "handle_feedback": "正在处理用户反馈...",
     # 数据需求判断节点：判断回答所需的数据范围
     "judge_data_requirement": "正在判断数据需求...",
     # 历史拉取节点：拉取历史喂养记录数据

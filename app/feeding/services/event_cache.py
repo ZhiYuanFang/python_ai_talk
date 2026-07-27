@@ -81,7 +81,7 @@ class EventCache:
                 # 缓存 key
                 self._CACHE_KEY = "event_dictionary"
 
-                # 记录上一次获取的事件字典，用于变化检测
+                # 记录上一次获取的全量事件字典，用于变化检测
                 # 当缓存过期重新获取时，比较新旧数据，同步更新向量库
                 self._previous_dictionary: Optional[List[Dict[str, Any]]] = None
 
@@ -92,40 +92,53 @@ class EventCache:
                 # 标记初始化完成
                 self._initialized = True
 
+    def _leaf_view(self, full: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """从全量树派生叶子视图（排除有子节点的父事件）。"""
+        from app.feeding.services.event_hierarchy import get_leaf_events
+
+        return get_leaf_events(full)
+
+    async def get_full_event_dictionary(self) -> List[Dict[str, Any]]:
+        """
+        获取全量事件字典（含父事件，供父名检测与消歧）。
+
+        Returns:
+            全量事件字典列表
+        """
+        return await self._get_or_load_full_dictionary()
+
     async def get_event_dictionary(self) -> List[Dict[str, Any]]:
         """
-        获取事件字典列表
+        获取叶子事件字典列表（供匹配候选与落库）。
 
         业务逻辑：
         1. 确保缓存已初始化（延迟创建）
-        2. 检查缓存是否命中
-        3. 如果命中，直接返回缓存的数据
-        4. 如果未命中，从兄弟仓获取数据并缓存
-        5. 缓存更新时检测变化并同步向量库
-        6. 使用线程锁确保线程安全
+        2. 获取全量字典（缓存命中或兄弟仓拉取）
+        3. 派生并返回叶子视图
 
         Returns:
-            事件字典列表
+            叶子事件字典列表
         """
+        full = await self._get_or_load_full_dictionary()
+        return self._leaf_view(full)
+
+    async def _get_or_load_full_dictionary(self) -> List[Dict[str, Any]]:
+        """获取或加载全量事件字典（24h TTL）。"""
         # 确保缓存已初始化（延迟创建）
         self._ensure_initialized()
 
         # 检查缓存是否命中
         if self._CACHE_KEY in self._cache:
-            # 缓存命中，直接返回
             logger.debug("事件字典缓存命中")
             return self._cache[self._CACHE_KEY]
 
         # 缓存未命中，获取线程锁
-        # 防止多个线程同时从兄弟仓获取数据
         with self._cache_lock:
-            # 再次检查缓存（双重检查锁定）
-            # 因为在获取锁的过程中，可能已经有其他线程更新了缓存
             if self._CACHE_KEY in self._cache:
                 logger.debug("事件字典缓存命中（双重检查）")
                 return self._cache[self._CACHE_KEY]
 
-            # 从兄弟仓获取事件字典
+            # 从兄弟仓获取全量事件字典
             logger.info("事件字典缓存未命中，从兄弟仓获取...")
             event_dictionary = await http_client.get_event_dictionary()
 
@@ -136,13 +149,16 @@ class EventCache:
                 )
                 return []
 
-            # 将数据存入缓存
+            # 将全量数据存入缓存
             self._cache[self._CACHE_KEY] = event_dictionary
 
-            # 记录获取成功日志
-            logger.info(f"成功获取并缓存事件字典，包含 {len(event_dictionary)} 个事件")
+            leaf_count = len(self._leaf_view(event_dictionary))
+            logger.info(
+                f"成功获取并缓存事件字典，全量 {len(event_dictionary)} 个事件，"
+                f"叶子 {leaf_count} 个"
+            )
 
-            # 检测事件字典变化并同步向量库
+            # 检测事件字典变化并同步向量库（仅同步叶子标准条目）
             await self._sync_vector_store_if_changed(event_dictionary)
 
             return event_dictionary
@@ -160,66 +176,79 @@ class EventCache:
             new_dictionary: 新获取的事件字典列表
         """
         # 延迟导入，避免循环依赖
+        from app.feeding.services.event_hierarchy import get_leaf_events, is_parent_event
         from app.feeding.services.event_vector_store import event_vector_store
 
-        # 如果是首次获取，初始化向量库
+        new_leaves = get_leaf_events(new_dictionary)
+
+        # 如果是首次获取，初始化向量库（仅叶子）
         if self._previous_dictionary is None:
-            logger.info("首次获取事件字典，初始化喂养事件向量库...")
-            # 初始化向量库（创建标准事件和动作变体）
-            event_vector_store.initialize_events(new_dictionary)
-            # 记录当前数据为上一次数据
+            logger.info("首次获取事件字典，初始化喂养事件向量库（仅叶子）...")
+            event_vector_store.initialize_events(new_leaves)
             self._previous_dictionary = new_dictionary
             return
 
-        # 比较新旧数据，检测变化（ID 统一为 str，避免 int/str 假差集）
+        old_leaves = get_leaf_events(self._previous_dictionary)
+
+        # 比较新旧叶子，检测变化（ID 统一为 str）
         old_ids = {
             str(eid)
-            for e in self._previous_dictionary
+            for e in old_leaves
             if (eid := e.get("event_id")) is not None and eid != ""
         }
         new_ids = {
             str(eid)
-            for e in new_dictionary
+            for e in new_leaves
             if (eid := e.get("event_id")) is not None and eid != ""
         }
 
-        # 找出新增的事件ID
+        # 父事件若曾作为标准条目存在，也加入删除集
+        old_full_ids = {
+            str(eid)
+            for e in self._previous_dictionary
+            if (eid := e.get("event_id")) is not None and eid != ""
+        }
+        parent_ids_to_remove = [
+            eid
+            for eid in old_full_ids
+            if is_parent_event(eid, new_dictionary) or (
+                eid not in new_ids and is_parent_event(eid, self._previous_dictionary)
+            )
+        ]
+
         added_ids = new_ids - old_ids
-        # 找出删除的事件ID
         removed_ids = old_ids - new_ids
-        # 找出可能修改的事件ID（新旧都有，但内容可能变化）
         common_ids = new_ids & old_ids
 
-        # 构建新增事件列表
         added_events = [
-            e for e in new_dictionary
+            e for e in new_leaves
             if e.get("event_id") is not None
             and e.get("event_id") != ""
             and str(e.get("event_id")) in added_ids
         ]
-        # 构建删除事件ID列表（字符串列表，供向量库 sync）
+        # 叶子删除走完整删除；父事件仅移除标准条目以保留飞轮
         removed_event_ids = list(removed_ids)
 
-        # 构建修改事件列表（比较名称和父级ID是否变化）
+        for pid in parent_ids_to_remove:
+            event_vector_store.remove_standard_entries_for_event(pid)
+            logger.info(f"移除父事件标准向量: event_id={pid}")
+
         modified_events = []
-        # 创建旧事件的ID到事件的映射，便于快速查找
         old_event_map = {
             str(eid): e
-            for e in self._previous_dictionary
+            for e in old_leaves
             if (eid := e.get("event_id")) is not None and eid != ""
         }
-        # 遍历共有的事件ID，检查是否发生变化
         for event_id in common_ids:
             old_event = old_event_map.get(event_id, {})
             new_event = next(
                 (
-                    e for e in new_dictionary
+                    e for e in new_leaves
                     if e.get("event_id") is not None
                     and str(e.get("event_id")) == event_id
                 ),
                 {},
             )
-            # 比较事件名称和父级ID是否变化（parent_id 亦按字符串比较）
             old_parent = old_event.get("parent_id")
             new_parent = new_event.get("parent_id")
             old_parent_s = "" if old_parent is None else str(old_parent)
@@ -228,28 +257,23 @@ class EventCache:
                 old_event.get("event_name") != new_event.get("event_name")
                 or old_parent_s != new_parent_s
             ):
-                # 内容有变化，加入修改列表
                 modified_events.append(new_event)
 
-        # 只有存在变化时才同步向量库
         if added_events or removed_event_ids or modified_events:
             logger.info(
-                f"检测到事件字典变化：新增 {len(added_events)} 个，"
+                f"检测到事件字典变化：新增 {len(added_events)} 个叶子，"
                 f"删除 {len(removed_event_ids)} 个，"
                 f"修改 {len(modified_events)} 个，同步向量库..."
             )
-            # 调用向量库同步方法
             event_vector_store.sync_events(
-                event_dictionary=new_dictionary,
+                event_dictionary=new_leaves,
                 added_events=added_events,
                 removed_event_ids=removed_event_ids,
                 modified_events=modified_events,
             )
         else:
-            # 无变化，跳过同步
-            logger.debug("事件字典无变化，跳过向量库同步")
+            logger.debug("事件字典叶子视图无变化，跳过向量库同步")
 
-        # 更新上一次数据
         self._previous_dictionary = new_dictionary
 
     async def refresh(self):
@@ -259,9 +283,9 @@ class EventCache:
         业务逻辑：
         1. 确保缓存已初始化（延迟创建）
         2. 清除现有缓存
-        3. 重新从兄弟仓获取事件字典
+        3. 重新从兄弟仓获取全量事件字典
         4. 更新缓存
-        5. 检测变化并同步向量库
+        5. 检测变化并同步向量库（仅叶子）
         """
         # 确保缓存已初始化（延迟创建）
         self._ensure_initialized()
@@ -270,10 +294,10 @@ class EventCache:
 
         # 获取线程锁
         with self._cache_lock:
-            # 从兄弟仓获取事件字典
+            # 从兄弟仓获取全量事件字典
             event_dictionary = await http_client.get_event_dictionary()
 
-            # 空列表不写入长 TTL（与 get_event_dictionary 一致，避免毒化）
+            # 空列表不写入长 TTL（与 get 路径一致，避免毒化）
             if not event_dictionary:
                 # 清除旧缓存，强制下次重新拉取
                 self._cache.pop(self._CACHE_KEY, None)
@@ -282,11 +306,14 @@ class EventCache:
                 )
                 return
 
-            # 更新缓存
+            # 更新全量缓存
             self._cache[self._CACHE_KEY] = event_dictionary
 
-            # 记录刷新成功日志
-            logger.info(f"事件字典缓存刷新成功，包含 {len(event_dictionary)} 个事件")
+            leaf_count = len(self._leaf_view(event_dictionary))
+            logger.info(
+                f"事件字典缓存刷新成功，全量 {len(event_dictionary)} 个事件，"
+                f"叶子 {leaf_count} 个"
+            )
 
             # 检测变化并同步向量库
             await self._sync_vector_store_if_changed(event_dictionary)

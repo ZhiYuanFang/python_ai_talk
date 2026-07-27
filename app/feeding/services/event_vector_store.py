@@ -608,6 +608,11 @@ class EventVectorStore:
             # 记录删除日志
             logger.info(f"删除事件 {event_id} 的所有记录，共 {len(results['ids'])} 条")
 
+    def remove_standard_entries_for_event(self, event_id: str):
+        """对外暴露：仅删除某事件的标准条目，保留用户表达。"""
+        self._ensure_initialized()
+        self._remove_standard_entries_by_event_id(str(event_id))
+
     def _remove_standard_entries_by_event_id(self, event_id: str):
         """
         根据 event_id 仅删除标准条目（不删除用户表达）

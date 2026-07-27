@@ -35,6 +35,7 @@ class IntentRequest(BaseModel):
     业务说明：
     封装意图分析接口的请求参数，与 Go PythonAIClient 的调用格式保持一致。
     支持流式和非流式两种模式。
+    同一输入框续聊时可携带 conversation_id，用于消歧/澄清 pending。
 
     设计思路：
     Go↔Python 内部契约以 snake_case 为准（device_no）；
@@ -56,7 +57,11 @@ class IntentRequest(BaseModel):
     model: ModelConfig = Field(..., description="模型配置")
     # 流式返回开关，默认 false（非流式），true 时通过 SSE 返回 thinking 事件
     stream: Optional[bool] = Field(default=False, description="是否流式返回，默认false")
-
+    # 可选会话 ID：存在 pending 消歧/澄清时带回，用于同一输入框续聊
+    conversation_id: Optional[str] = Field(
+        default=None,
+        description="会话ID；有 pending 澄清时带回以续聊",
+    )
 
 class IntentEvent(BaseModel):
     """
@@ -97,12 +102,31 @@ class IntentResponse(BaseModel):
     match_confidence: Optional[float] = Field(default=None, description="向量匹配置信度（0-1之间）")
     # 匹配来源（vector表示向量匹配，llm表示LLM分类）
     match_source: Optional[str] = Field(default=None, description="匹配来源：vector（向量匹配）或 llm（LLM分类）")
-    # 是否需要用户确认（当向量匹配置信度在90%-95%之间，或LLM解析的喂养意图时为True）
-    need_confirm: Optional[bool] = Field(default=False, description="是否需要用户确认")
-    # 确认话术（当need_confirm为True时返回，供前端展示给用户）
-    confirm_message: Optional[str] = Field(default=None, description="确认话术，当need_confirm为True时返回")
-    # 会话ID（用于恢复中断的图执行，当need_confirm为True时返回）
-    conversation_id: Optional[str] = Field(default=None, description="会话ID，用于恢复中断的图执行")
+    # 是否需要用户澄清/确认（父事件消歧或叶子软确认）
+    need_confirm: Optional[bool] = Field(
+        default=False,
+        description="是否需要用户澄清（同一输入框续聊）",
+    )
+    # 澄清类型：parent_disambiguation | leaf_confirm
+    confirm_type: Optional[str] = Field(
+        default=None,
+        description="澄清类型：parent_disambiguation 或 leaf_confirm",
+    )
+    # 确认/澄清话术（need_confirm 为 True 时返回）
+    confirm_message: Optional[str] = Field(
+        default=None,
+        description="澄清话术，当 need_confirm 为 True 时返回",
+    )
+    # 会话ID（用于同一 /intent 输入框续聊）
+    conversation_id: Optional[str] = Field(
+        default=None,
+        description="会话ID，有 pending 澄清时返回，下一轮请求带回",
+    )
+    # 消歧选项（父事件子类列表等）
+    options: List[IntentEvent] = Field(
+        default_factory=list,
+        description="澄清选项列表（如父事件下的子事件）",
+    )
 
 
 class IntentStreamResponse(BaseModel):
@@ -119,17 +143,6 @@ class IntentStreamResponse(BaseModel):
     content: str = Field("", description="内容（思考文案或回答内容）")
     # 节点名称（仅 thinking 事件，标识当前执行的节点）
     node: Optional[str] = Field(default=None, description="节点名称（thinking事件专用）")
-
-
-class ConfirmFeedbackRequest(BaseModel):
-    """
-    用户确认反馈请求模型
-
-    业务说明：
-    当系统需要用户确认喂养意图时，用户通过此模型提交反馈。
-    """
-    conversation_id: str = Field(..., description="会话ID，用于恢复中断的图执行")
-    user_feedback: str = Field(..., description="用户反馈：confirm（确认）或 reject（否定）")
 
 
 class ClinicRequest(BaseModel):

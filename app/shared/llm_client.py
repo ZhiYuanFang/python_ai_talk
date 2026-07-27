@@ -99,6 +99,45 @@ class LLMClient:
                     self._redis_gate = RedisGate()
         return self._redis_gate
 
+    def _log_request_payload(
+        self,
+        *,
+        mode: str,
+        model_config: LLMModelConfig,
+        system_prompt: Optional[str],
+        messages: List[Dict[str, str]],
+        thinking_enabled: Optional[bool] = None,
+    ) -> None:
+        """
+        以 INFO 全量打印即将发送给 LLM 的载荷，便于调试核对。
+
+        Args:
+            mode: 调用模式（invoke / stream）
+            model_config: 模型配置
+            system_prompt: 系统提示词（可选）
+            messages: 消息列表
+            thinking_enabled: 流式思考开关（仅 stream 时有意义）
+        """
+        thinking_part = (
+            f", thinking_enabled={thinking_enabled}"
+            if thinking_enabled is not None
+            else ""
+        )
+        # 统一前缀便于日志检索
+        logger.info(
+            "--- LLM request payload BEGIN --- "
+            f"mode={mode}, provider={model_config.provider}, "
+            f"model={model_config.name}{thinking_part}"
+        )
+        logger.info(
+            f"--- LLM request system_prompt ---\n{system_prompt if system_prompt else ''}"
+        )
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            logger.info(f"--- LLM request message[{i}] role={role} ---\n{content}")
+        logger.info("--- LLM request payload END ---")
+
     def _get_client(self, provider: str, model_name: str) -> ChatOpenAI:
         """
         获取指定提供商的 LLM 客户端
@@ -199,6 +238,13 @@ class LLMClient:
                     elif role == "assistant":
                         langchain_messages.append(AIMessage(content=content))
 
+                # INFO 全量打印发送载荷，便于核对实际发给模型的内容
+                self._log_request_payload(
+                    mode="invoke",
+                    model_config=model_config,
+                    system_prompt=system_prompt,
+                    messages=messages,
+                )
                 # 调用 LLM
                 logger.info(f"开始调用 LLM: provider={model_config.provider}, model={model_config.name}")
                 response = await client.ainvoke(langchain_messages)
@@ -262,6 +308,14 @@ class LLMClient:
                     elif role == "assistant":
                         langchain_messages.append(AIMessage(content=content))
 
+                # INFO 全量打印发送载荷，便于核对实际发给模型的内容
+                self._log_request_payload(
+                    mode="stream",
+                    model_config=model_config,
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    thinking_enabled=thinking_enabled,
+                )
                 # 开始流式调用
                 logger.info(f"开始流式调用 LLM: provider={model_config.provider}, model={model_config.name}, thinking_enabled={thinking_enabled}")
 

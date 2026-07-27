@@ -106,16 +106,15 @@ def build_intent_classification_system_prompt(event_dictionary: List[Dict[str, A
 """
 
 
-def build_intent_classification_user_message(text: str, event_dictionary: List[Dict[str, Any]]) -> str:
+def build_intent_classification_user_message(text: str) -> str:
     """
     构建意图分类的用户消息
 
     业务逻辑：
-    将用户输入和事件字典组合成完整的用户消息。
+    仅包含用户输入与分析指令。事件目录已在系统提示词中注入，此处不再重复。
 
     Args:
         text: 用户输入的自然语言文本
-        event_dictionary: 事件字典列表
 
     Returns:
         用户消息字符串
@@ -124,6 +123,4 @@ def build_intent_classification_user_message(text: str, event_dictionary: List[D
 请分析以下用户输入，识别其意图：
 
 用户输入：{text}
-
-可用事件类型：{json.dumps([e["event_name"] for e in event_dictionary], ensure_ascii=False)}
 """
