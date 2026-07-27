@@ -113,7 +113,7 @@ def response_from_pending(pending) -> IntentResponse:
     return build_intent_response_from_fields(pending_to_response_fields(pending))
 
 
-def try_handle_pending(
+async def try_handle_pending(
     text: str,
     conversation_id: str,
     full_events: List[Dict[str, Any]],
@@ -130,12 +130,16 @@ def try_handle_pending(
     if not pending:
         return None, False
 
-    result = resolve_free_text(text, pending)
+    result = await resolve_free_text(text, pending, full_events=full_events)
 
     if result.status == ResolveStatus.RESOLVED and result.event:
+        # quantity：LLM/解析结果非 None 时覆盖 pending
+        quantity = (
+            result.quantity if result.quantity is not None else pending.quantity
+        )
         clarification_store.clear(conversation_id)
         leaf = get_event_by_id(result.event.get("event_id"), full_events) or result.event
-        # 防御：解析结果若仍为父，不允许落库
+        # 防御 / correct 到父：不允许落库，改消歧
         if is_parent_event(leaf.get("event_id"), full_events):
             children = get_children(leaf.get("event_id"), full_events)
             parent = get_event_by_id(leaf.get("event_id"), full_events) or leaf
@@ -145,9 +149,14 @@ def try_handle_pending(
                     children=children,
                     original_utterance=pending.original_utterance,
                     action=pending.action,
-                    quantity=pending.quantity,
+                    quantity=quantity,
                     match_source=pending.match_source,
-                    matched_vector_id=pending.matched_vector_id,
+                    # correct 否定旧猜想：不把旧向量成功信号带入新 pending
+                    matched_vector_id=(
+                        ""
+                        if result.skip_vector_success
+                        else pending.matched_vector_id
+                    ),
                     device_no=pending.device_no,
                     model_config=pending.model_config,
                     conversation_id=conversation_id,
@@ -164,21 +173,28 @@ def try_handle_pending(
                 False,
             )
 
+        # correct：写原话到正确叶子，且不对旧向量 success++
+        # 其余：沿用原飞轮条件
+        write_expr = (
+            result.skip_vector_success
+            or pending.kind == "parent_disambiguation"
+            or pending.match_source == "llm"
+        )
+        matched_vid = (
+            "" if result.skip_vector_success else pending.matched_vector_id
+        )
         apply_flywheel_after_leaf_resolution(
             leaf=leaf,
             original_utterance=pending.original_utterance,
             action=pending.action,
             match_source=pending.match_source,
-            matched_vector_id=pending.matched_vector_id,
-            write_user_expression=(
-                pending.kind == "parent_disambiguation"
-                or pending.match_source == "llm"
-            ),
+            matched_vector_id=matched_vid,
+            write_user_expression=write_expr,
         )
         fields = leaf_intent_result(
             leaf,
             action=pending.action,
-            quantity=pending.quantity,
+            quantity=quantity,
             match_source=pending.match_source,
             match_confidence=1.0,
             original_utterance=pending.original_utterance,
@@ -207,7 +223,7 @@ def try_handle_pending(
             False,
         )
 
-    # OFF_TOPIC：清 pending，当新意图
+    # OFF_TOPIC / new_intent：清 pending，当新意图
     clarification_store.clear(conversation_id)
     logger.info(
         f"消歧答非所问，清 pending 当新意图: conversation_id={conversation_id}, "

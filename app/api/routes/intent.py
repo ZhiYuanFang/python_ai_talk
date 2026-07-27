@@ -161,7 +161,7 @@ async def analyze_intent(request: IntentRequest):
 
     # pending 续聊
     if request.conversation_id:
-        pending_resp, as_new = try_handle_pending(
+        pending_resp, as_new = await try_handle_pending(
             request.text, request.conversation_id, full_events
         )
         if pending_resp is not None:
@@ -201,7 +201,7 @@ async def analyze_intent_stream(request: IntentRequest):
 
     # pending 续聊：无图节点，直接返回 answer
     if request.conversation_id:
-        pending_resp, as_new = try_handle_pending(
+        pending_resp, as_new = await try_handle_pending(
             request.text, request.conversation_id, full_events
         )
         if pending_resp is not None:
