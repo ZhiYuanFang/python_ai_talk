@@ -20,6 +20,7 @@ from typing import Any, Dict
 
 from app.feeding.services.event_vector_store import event_vector_store
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
+from app.shared.constants import IntentAction, MatchSource, TargetType
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -62,9 +63,9 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
         if not results or len(results) == 0:
             logger.info(f"向量匹配未找到结果: text={text[:20]}...")
             return {
-                "intent_result": {"match_source": "llm"},
+                "intent_result": {"match_source": MatchSource.LLM.value},
                 "match_confidence": 0.0,
-                "match_source": "llm",
+                "match_source": MatchSource.LLM.value,
             }
 
         # 获取最相似的结果；score 已是 0–1 相似度，直接作置信度
@@ -84,6 +85,9 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
         # 提取数量（前置数量提取，避免通用场景请求 LLM 导致接口延迟）
         quantity = extract_quantity_from_text(text)
 
+        # metadata.action 约定为英文 IntentAction；空则默认 one（不做中文读兼容）
+        action = metadata.get("action") or IntentAction.ONE.value
+
         # 高置信度（≥0.95）：直接匹配，无需 LLM 或确认
         if confidence >= VECTOR_MATCH_HIGH_CONFIDENCE_THRESHOLD:
             # 高置信度匹配时，提取数量后直接返回，跳过 LLM 调用
@@ -92,20 +96,20 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
                 f"confidence={confidence}, quantity={quantity}"
             )
             intent_result = {
-                "target_type": "feeding",
-                "action": metadata.get("action") or "one",
+                "target_type": TargetType.FEEDING.value,
+                "action": action,
                 "event_name": metadata["event_name"],
                 # 存量 Chroma metadata 可能仍为 int，出站统一为 str
                 "event_id": "" if metadata.get("event_id") is None else str(metadata["event_id"]),
                 "quantity": quantity,
-                "keywords": [metadata.get("action", ""), metadata["event_name"]],
-                "match_source": "vector",
+                "keywords": [action, metadata["event_name"]],
+                "match_source": MatchSource.VECTOR.value,
                 "match_confidence": confidence,
             }
             return {
                 "intent_result": intent_result,
                 "match_confidence": confidence,
-                "match_source": "vector",
+                "match_source": MatchSource.VECTOR.value,
                 "need_confirm": False,
                 "matched_vector_id": top_result["id"],
             }
@@ -114,19 +118,19 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
         elif confidence >= VECTOR_MATCH_MEDIUM_CONFIDENCE_THRESHOLD:
             logger.info(f"中等置信度向量匹配，需要确认: confidence={confidence}")
             intent_result = {
-                "target_type": "feeding",
-                "action": metadata.get("action") or "one",
+                "target_type": TargetType.FEEDING.value,
+                "action": action,
                 "event_name": metadata["event_name"],
                 "event_id": "" if metadata.get("event_id") is None else str(metadata["event_id"]),
                 "quantity": quantity,
-                "keywords": [metadata.get("action", ""), metadata["event_name"]],
-                "match_source": "vector",
+                "keywords": [action, metadata["event_name"]],
+                "match_source": MatchSource.VECTOR.value,
                 "match_confidence": confidence,
             }
             return {
                 "intent_result": intent_result,
                 "match_confidence": confidence,
-                "match_source": "vector",
+                "match_source": MatchSource.VECTOR.value,
                 "need_confirm": True,
                 "confirm_message": f"您是要记录 {metadata['event_name']} 吗？",
                 "matched_vector_id": top_result["id"],
@@ -136,16 +140,16 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
         else:
             logger.info(f"低置信度向量匹配，降级至 LLM: confidence={confidence}")
             return {
-                "intent_result": {"match_source": "llm"},
+                "intent_result": {"match_source": MatchSource.LLM.value},
                 "match_confidence": confidence,
-                "match_source": "llm",
+                "match_source": MatchSource.LLM.value,
             }
 
     except Exception as e:
         logger.error(f"向量匹配失败: {e}", exc_info=True)
         # 向量匹配失败时，降级至 LLM
         return {
-            "intent_result": {"match_source": "llm"},
+            "intent_result": {"match_source": MatchSource.LLM.value},
             "match_confidence": 0.0,
-            "match_source": "llm",
+            "match_source": MatchSource.LLM.value,
         }

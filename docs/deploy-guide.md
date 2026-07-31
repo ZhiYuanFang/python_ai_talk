@@ -210,6 +210,7 @@ python_ai_talk/
 - 事件字典由 `EventCache` 管理，TTL 为 24 小时
 - **首次启动需要等待事件字典获取完成后才能使用向量匹配**，否则向量库中没有标准事件数据
 - 首次获取事件字典时会自动初始化向量库（`initialize_events`），为所有事件生成标准条目和动作变体
+- 若需按当前英文 action 编码强制重建标准条目：临时设置 `REBUILD_FEEDING_STANDARD_EVENTS=true` 后重启；成功拉取事件字典后会清除并重写 `source=standard`（保留 `user_*`）；完成后务必改回 `false`，避免每次重启全量 embed
 
 ### 2.1.4 ChromaDB Volume 挂载路径
 
@@ -871,6 +872,7 @@ docker compose --env-file env/.env.prod \
 | `GLM_API_KEY` | 智谱 GLM API 密钥 | 是 | `xxx` | `xxx` | `xxx` |
 | `CHROMA_PERSIST_DIR` | 向量库存储路径 | 否 | `/app/data/chroma_db` | `/app/data/chroma_db` | `/app/data/chroma_db` |
 | `EMBEDDING_MODEL` | Embedding 模型 | 否 | `BAAI/bge-small-zh-v1.5` | `BAAI/bge-small-zh-v1.5` | `BAAI/bge-small-zh-v1.5` |
+| `REBUILD_FEEDING_STANDARD_EVENTS` | 一次性重建喂养标准向量（`source=standard`） | 否 | `false` | `false` | `false` |
 
 ### 7.2 变量获取途径
 

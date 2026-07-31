@@ -613,7 +613,7 @@ cp -r backup/chroma_db_20260715 data/chroma_db
 
 标准事件的 ID 格式：
 - 基础条目：`std_{event_id}_base`
-- 动作变体：`std_{event_id}_{action}`（action 为 开始/结束/记录）
+- 动作变体：`std_{event_id}_{action}`（action 为 start/end/one）
 
 #### 9.2.2 用户表达
 
@@ -631,7 +631,7 @@ cp -r backup/chroma_db_20260715 data/chroma_db
 | `event_name` | str | 关联的事件名称 | `"喂奶"` | `"喂奶"` |
 | `parent_id` | str | 父级条目 ID | 基础条目为空，变体为基础条目 ID | 空字符串 |
 | `source` | str | 数据来源 | `"standard"` | `"user"` |
-| `action` | str | 动作类型 | `"开始"`/`"结束"`/`"记录"`/空 | 可选，用户指定 |
+| `action` | str | 动作类型 | `"start"`/`"end"`/`"one"`/空 | 可选，用户指定（英文 IntentAction） |
 | `match_count` | int | 匹配次数 | 0 | 0（初始） |
 | `success_count` | int | 成功次数 | 0 | 0（初始） |
 | `created_at` | str | 创建时间（ISO 8601） | `"2026-07-20T10:00:00"` | `"2026-07-20T10:05:00"` |

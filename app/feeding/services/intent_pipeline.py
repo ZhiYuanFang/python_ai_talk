@@ -30,6 +30,12 @@ from app.feeding.services.event_hierarchy import (
     is_parent_event,
 )
 from app.feeding.services.event_vector_store import event_vector_store
+from app.shared.constants import (
+    ConfirmType,
+    IntentAction,
+    MatchSource,
+    TargetType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +58,8 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
             )
 
     return IntentResponse(
-        target_type=fields.get("target_type", "conversation"),
-        action=fields.get("action", "reply"),
+        target_type=fields.get("target_type", TargetType.CONVERSATION.value),
+        action=fields.get("action", IntentAction.REPLY.value),
         event_name=fields.get("event_name", "") or "",
         event_id=str(fields.get("event_id", "") or ""),
         quantity=fields.get("quantity"),
@@ -94,14 +100,14 @@ def apply_flywheel_after_leaf_resolution(
             event_id=event_id,
             event_name=event_name,
             expression=utterance,
-            action=action or "one",
+            action=action or IntentAction.ONE.value,
         )
         logger.info(
             f"数据飞轮：落到叶子后写入用户表达 event_id={event_id}, "
             f"expression={utterance[:30]}..."
         )
 
-    if match_source == "vector" and matched_vector_id:
+    if match_source == MatchSource.VECTOR.value and matched_vector_id:
         event_vector_store.increment_success_count(matched_vector_id)
         logger.info(f"向量匹配确认，递增成功计数: vector_id={matched_vector_id}")
 
@@ -165,8 +171,8 @@ async def try_handle_pending(
             return (
                 build_intent_response_from_fields(
                     {
-                        "target_type": "conversation",
-                        "action": "reply",
+                        "target_type": TargetType.CONVERSATION.value,
+                        "action": IntentAction.REPLY.value,
                         "content": "无法确定具体事件，请重新描述。",
                     }
                 ),
@@ -177,8 +183,8 @@ async def try_handle_pending(
         # 其余：沿用原飞轮条件
         write_expr = (
             result.skip_vector_success
-            or pending.kind == "parent_disambiguation"
-            or pending.match_source == "llm"
+            or pending.kind == ConfirmType.PARENT_DISAMBIGUATION.value
+            or pending.match_source == MatchSource.LLM.value
         )
         matched_vid = (
             "" if result.skip_vector_success else pending.matched_vector_id
@@ -215,8 +221,8 @@ async def try_handle_pending(
         return (
             build_intent_response_from_fields(
                 {
-                    "target_type": "conversation",
-                    "action": "reply",
+                    "target_type": TargetType.CONVERSATION.value,
+                    "action": IntentAction.REPLY.value,
                     "content": "好的，已取消。请重新描述您要记录的事件。",
                 }
             ),
@@ -250,8 +256,8 @@ def try_exact_parent_disambiguation(
         parent=parent,
         children=children,
         original_utterance=text,
-        action="one",
-        match_source="name",
+        action=IntentAction.ONE.value,
+        match_source=MatchSource.NAME.value,
         device_no=device_no,
         model_config=model_config,
     )
@@ -280,13 +286,13 @@ def postprocess_feeding_result(
     - 叶子且无需确认 → 直接返回最终结果
     """
     event_id = intent_result.get("event_id") or ""
-    action = intent_result.get("action") or "one"
+    action = intent_result.get("action") or IntentAction.ONE.value
     quantity = intent_result.get("quantity")
-    match_source = intent_result.get("match_source") or "llm"
+    match_source = intent_result.get("match_source") or MatchSource.LLM.value
     match_confidence = intent_result.get("match_confidence")
 
     # 多事件：逐个校验，若含父则整体改消歧（取第一个父）
-    if action == "multi":
+    if action == IntentAction.MULTI.value:
         events = intent_result.get("events") or []
         for ev in events:
             eid = ev.get("event_id") or ""
@@ -295,7 +301,7 @@ def postprocess_feeding_result(
                     eid,
                     full_events,
                     original_utterance=user_input,
-                    action=ev.get("action") or "one",
+                    action=ev.get("action") or IntentAction.ONE.value,
                     quantity=ev.get("quantity"),
                     match_source=match_source,
                     matched_vector_id=matched_vector_id,
@@ -312,7 +318,7 @@ def postprocess_feeding_result(
                 "extra_names": [],
             },
             original_utterance=user_input,
-            action="multi",
+            action=IntentAction.MULTI.value,
             quantity=quantity,
             match_source=match_source,
             matched_vector_id=matched_vector_id,
@@ -350,8 +356,8 @@ def postprocess_feeding_result(
         # 父事件但无子：拒绝落库
         return build_intent_response_from_fields(
             {
-                "target_type": "conversation",
-                "action": "reply",
+                "target_type": TargetType.CONVERSATION.value,
+                "action": IntentAction.REPLY.value,
                 "content": "该分类下没有可记录的具体事件，请说明具体事项。",
                 "match_source": match_source,
             }
@@ -363,7 +369,7 @@ def postprocess_feeding_result(
         "event_name": intent_result.get("event_name") or "",
     }
 
-    if need_confirm or match_source == "llm":
+    if need_confirm or match_source == MatchSource.LLM.value:
         # LLM 或中置信：自由文本软确认
         if event_id:
             pending = create_leaf_confirm_pending(

@@ -23,6 +23,7 @@ from app.feeding.graphs.nodes.prompts.intent_classification import (
 )
 from app.feeding.schemas.intent import IntentResponse
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
+from app.shared.constants import EventType, IntentAction, MatchSource, TargetType
 from app.shared.llm_client import LLMModelConfig, llm_client
 
 # 初始化日志记录器
@@ -93,8 +94,8 @@ def _parse_intent_result(content: str) -> Dict[str, Any]:
         logger.error(f"LLM 返回内容 JSON 解析失败: {e}, content={content[:200]}")
         # 返回默认的 conversation 类型
         return {
-            "target_type": "conversation",
-            "action": "reply",
+            "target_type": TargetType.CONVERSATION.value,
+            "action": IntentAction.REPLY.value,
             "event_name": "",
             "event_id": "",
             "keywords": [],
@@ -172,7 +173,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
                 intent_result["is_new_event"] = True
                 # 确保 event_type 和 event_unit 有值
                 if not intent_result.get("event_type"):
-                    intent_result["event_type"] = "one"
+                    intent_result["event_type"] = EventType.ONE.value
                 if not intent_result.get("event_unit"):
                     intent_result["event_unit"] = "次"
         elif intent_result.get("event_id"):
@@ -196,22 +197,22 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
 
         # 确保所有字段都有默认值
         # 业务说明：feeding 结果由路由层做叶子校验 / 父消歧 / 自由文本软确认
-        intent_result.setdefault("target_type", "conversation")
-        intent_result.setdefault("action", "reply")
+        intent_result.setdefault("target_type", TargetType.CONVERSATION.value)
+        intent_result.setdefault("action", IntentAction.REPLY.value)
         intent_result.setdefault("event_name", "")
         intent_result.setdefault("event_id", "")
         intent_result.setdefault("quantity", None)
         intent_result.setdefault("event_type", None)
         intent_result.setdefault("event_unit", None)
         intent_result.setdefault("is_new_event", False)
-        intent_result.setdefault("match_source", "llm")
+        intent_result.setdefault("match_source", MatchSource.LLM.value)
         intent_result.setdefault("match_confidence", 1.0)
         intent_result.setdefault("keywords", [])
         intent_result.setdefault("content", "")
         intent_result.setdefault("events", [])
 
         # 多事件场景处理
-        if intent_result.get("action") == "multi" and intent_result.get("events"):
+        if intent_result.get("action") == IntentAction.MULTI.value and intent_result.get("events"):
             # 为多事件中的每个事件匹配 event_id
             for event in intent_result["events"]:
                 if event.get("event_name") and not event.get("event_id"):
@@ -240,7 +241,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "intent_result": intent_result,
             "match_confidence": 1.0,  # LLM 分类的置信度默认为 1.0
-            "match_source": "llm",
+            "match_source": MatchSource.LLM.value,
         }
 
     except Exception as e:
@@ -248,19 +249,19 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         # 分类失败时返回默认的 conversation 类型
         return {
             "intent_result": {
-                "target_type": "conversation",
-                "action": "reply",
+                "target_type": TargetType.CONVERSATION.value,
+                "action": IntentAction.REPLY.value,
                 "event_name": "",
                 "event_id": "",
                 "quantity": None,
                 "event_type": None,
                 "event_unit": None,
                 "is_new_event": False,
-                "match_source": "llm",
+                "match_source": MatchSource.LLM.value,
                 "match_confidence": 0.0,
                 "keywords": [],
                 "content": "AI 服务暂时不可用，请稍后再试",
             },
             "match_confidence": 0.0,
-            "match_source": "llm",
+            "match_source": MatchSource.LLM.value,
         }

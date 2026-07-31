@@ -32,12 +32,21 @@ from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
 from app.config.settings import settings
+from app.shared.constants import (
+    IntentAction,
+    STANDARD_INTENT_ACTIONS,
+    VectorSource,
+)
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
 
-# 标准事件的动作变体列表，用于生成不同动作的表达
-STANDARD_ACTIONS = ["开始", "结束", "记录"]
+# 标准动作 → embedding 文档用中文表面语料（不进 shared constants）
+_ACTION_DOCUMENT_PREFIX: Dict[str, str] = {
+    IntentAction.START.value: "开始",
+    IntentAction.END.value: "结束",
+    IntentAction.ONE.value: "记录",
+}
 
 
 def _resolve_event_id_name(event: Dict[str, Any]) -> tuple:
@@ -249,7 +258,7 @@ class EventVectorStore:
             event_id: 关联的事件 ID
             event_name: 关联的事件名称
             expression: 用户的自然语言表达
-            action: 动作类型（开始/结束/记录），可选
+            action: 动作类型（IntentAction：start/end/one），可选
 
         Returns:
             生成的向量记录 ID
@@ -271,8 +280,8 @@ class EventVectorStore:
         metadata = {
             "event_id": event_id,  # 关联的事件 ID
             "event_name": event_name,  # 关联的事件名称
-            "source": "user",  # 数据来源标记为用户表达
-            "action": action or "",  # 动作类型，未指定则为空字符串
+            "source": VectorSource.USER.value,
+            "action": action or "",  # IntentAction 英文值，未指定则为空
             "match_count": 0,  # 匹配次数，初始为 0
             "success_count": 0,  # 成功次数，初始为 0
             "created_at": created_at,  # 创建时间
@@ -431,7 +440,7 @@ class EventVectorStore:
 
         # 安全检查：仅允许删除用户表达记录，禁止删除标准记录
         # 标准记录是事件字典同步的基础数据，不能随意删除
-        if source != "user":
+        if source != VectorSource.USER.value:
             logger.warning(f"禁止删除标准记录: vector_id={vector_id}, source={source}")
             return
 
@@ -512,7 +521,7 @@ class EventVectorStore:
 
         业务逻辑：
         1. 添加事件名称本身作为基础标准条目
-        2. 为每个动作（开始/结束/记录）生成变体条目
+        2. 为每个标准 IntentAction（start/end/one）生成变体条目
 
         Args:
             event_id: 事件 ID
@@ -538,7 +547,7 @@ class EventVectorStore:
             "event_id": event_id,  # 关联事件 ID
             "event_name": event_name,  # 事件名称
             "parent_id": "",  # 基础条目无父级
-            "source": "standard",  # 来源标记为标准事件
+            "source": VectorSource.STANDARD.value,
             "action": "",  # 基础条目无动作
             "match_count": 0,  # 匹配次数初始为 0
             "success_count": 0,  # 成功次数初始为 0
@@ -546,10 +555,11 @@ class EventVectorStore:
         })
 
         # 为每个动作生成变体条目，覆盖常见的用户表达模式
-        for action in STANDARD_ACTIONS:
-            # 生成变体文本，格式为 "{动作}{事件名称}"，如 "开始喂奶"
-            variant_text = f"{action}{event_name}"
-            # 生成变体条目 ID
+        for action_enum in STANDARD_INTENT_ACTIONS:
+            action = action_enum.value
+            # document 用中文表面语料拼 embedding；metadata/id 用英文枚举
+            prefix = _ACTION_DOCUMENT_PREFIX[action]
+            variant_text = f"{prefix}{event_name}"
             variant_id = f"std_{event_id}_{action}"
             ids.append(variant_id)
             documents.append(variant_text)
@@ -557,8 +567,8 @@ class EventVectorStore:
                 "event_id": event_id,  # 关联事件 ID
                 "event_name": event_name,  # 事件名称
                 "parent_id": base_id,  # 父级为基础条目 ID
-                "source": "standard",  # 来源标记为标准事件
-                "action": action,  # 动作类型
+                "source": VectorSource.STANDARD.value,
+                "action": action,  # IntentAction 英文值
                 "match_count": 0,  # 匹配次数初始为 0
                 "success_count": 0,  # 成功次数初始为 0
                 "created_at": datetime.now().isoformat(),  # 创建时间
@@ -635,7 +645,7 @@ class EventVectorStore:
             where={
                 "$and": [  # 同时满足两个条件
                     {"event_id": event_id},  # 匹配 event_id
-                    {"source": "standard"},  # 来源为标准事件
+                    {"source": VectorSource.STANDARD.value},  # 来源为标准事件
                 ]
             },
             include=["metadatas"],  # 只获取元数据
@@ -676,7 +686,7 @@ class EventVectorStore:
 
         # 获取所有标准记录
         standard_results = self._collection.get(
-            where={"source": "standard"},  # 只查询标准记录
+            where={"source": VectorSource.STANDARD.value},  # 只查询标准记录
             include=["metadatas"],  # 只获取元数据
         )
 
@@ -741,7 +751,7 @@ class EventVectorStore:
 
         # 获取所有用户表达记录
         user_results = self._collection.get(
-            where={"source": "user"},  # 只查询用户表达记录
+            where={"source": VectorSource.USER.value},  # 只查询用户表达记录
             include=["metadatas"],  # 获取元数据用于质量评估
         )
 

@@ -32,6 +32,8 @@ services:
       # --- 向量数据库 ---
       CHROMA_PERSIST_DIR: "${CHROMA_PERSIST_DIR:-/app/data/chroma_db}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}"
+      # 一次性重建 feeding_events 的 source=standard（默认 false；用完改回）
+      REBUILD_FEEDING_STANDARD_EVENTS: "${REBUILD_FEEDING_STANDARD_EVENTS:-false}"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/v1/health || exit 1"]
       interval: 10s

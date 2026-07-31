@@ -32,6 +32,7 @@ from app.feeding.services.intent_pipeline import (
     try_exact_parent_disambiguation,
     try_handle_pending,
 )
+from app.shared.constants import TargetType
 
 logger = logging.getLogger(__name__)
 
@@ -120,11 +121,11 @@ def _response_from_final_state(
     if final_state.get("match_confidence") is not None:
         intent_result["match_confidence"] = final_state.get("match_confidence")
 
-    target_type = intent_result.get("target_type", "conversation")
+    target_type = intent_result.get("target_type", TargetType.CONVERSATION.value)
     need_confirm = bool(final_state.get("need_confirm", False))
     matched_vector_id = final_state.get("matched_vector_id", "") or ""
 
-    if target_type == "feeding":
+    if target_type == TargetType.FEEDING.value:
         return postprocess_feeding_result(
             intent_result,
             full_events=full_events,
@@ -136,7 +137,11 @@ def _response_from_final_state(
         )
 
     response = _build_intent_response(intent_result)
-    if target_type in ("history", "suggest", "conversation"):
+    if target_type in (
+        TargetType.HISTORY.value,
+        TargetType.SUGGEST.value,
+        TargetType.CONVERSATION.value,
+    ):
         llm_response = final_state.get("response", "")
         if llm_response:
             response.content = llm_response

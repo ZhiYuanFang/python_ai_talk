@@ -103,9 +103,35 @@ async def _warmup_vector_stores():
         logger.info("初始化喂养事件向量存储...")
         event_count = event_vector_store.get_event_count()
 
-        # 检查喂养事件向量库是否为空
-        # 如果为空，则需要从兄弟仓获取事件字典并初始化
-        if event_count == 0:
+        # ENV 一次性重建 standard：须先拿到字典，失败则不删库
+        if settings.rebuild_feeding_standard_events:
+            logger.warning(
+                "REBUILD_FEEDING_STANDARD_EVENTS=true，"
+                "将在获取事件字典成功后重建 source=standard 条目"
+            )
+            try:
+                event_dictionary = await event_cache.get_event_dictionary()
+                if event_dictionary:
+                    from app.feeding.services.event_hierarchy import get_leaf_events
+
+                    leaves = get_leaf_events(event_dictionary)
+                    logger.info(
+                        f"开始重建喂养标准向量，叶子事件数={len(leaves)}"
+                    )
+                    event_vector_store.initialize_events(leaves)
+                    logger.info("喂养事件标准向量重建完成")
+                else:
+                    logger.error(
+                        "重建开关已开启但事件字典为空，跳过删除/重建以保护现有数据"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"喂养事件标准向量重建失败（未删除现有数据）: {e}",
+                    exc_info=True,
+                )
+        elif event_count == 0:
+            # 检查喂养事件向量库是否为空
+            # 如果为空，则需要从兄弟仓获取事件字典并初始化
             logger.warning("喂养事件向量库为空，尝试从兄弟仓获取事件字典并初始化...")
             try:
                 # 通过事件缓存获取事件字典（自动处理缓存和 API 调用）

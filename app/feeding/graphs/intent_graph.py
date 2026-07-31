@@ -25,6 +25,7 @@ from app.feeding.graphs.nodes.match_event_by_vector import match_event_by_vector
 from app.feeding.graphs.states.intent_state import IntentState
 from app.shared.graphs.nodes.fetch_history import fetch_history
 from app.shared.graphs.nodes.judge_data_requirement import judge_data_requirement
+from app.shared.constants import MatchSource, TargetType
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ def _route_after_vector_match(state: State) -> str:
     - match_source 为 llm：降级至 LLM 分类
     - 否则 END（含高置信直接结果、中置信 need_confirm，由路由层 pending 处理）
     """
-    match_source = state.get("match_source", "llm")
+    match_source = state.get("match_source", MatchSource.LLM.value)
     need_confirm = state.get("need_confirm", False)
 
     logger.info(
@@ -49,7 +50,7 @@ def _route_after_vector_match(state: State) -> str:
         f"need_confirm={need_confirm}"
     )
 
-    if match_source == "llm":
+    if match_source == MatchSource.LLM.value:
         return "classify_intent"
     return "end"
 
@@ -64,15 +65,15 @@ def _route_after_classify(state: State) -> str:
     - exit / 其他：直接结束
     """
     intent_result = state.get("intent_result") or {}
-    target_type = intent_result.get("target_type", "conversation")
+    target_type = intent_result.get("target_type", TargetType.CONVERSATION.value)
 
     logger.info(f"意图分类后路由决策: target_type={target_type}")
 
-    if target_type == "feeding":
+    if target_type == TargetType.FEEDING.value:
         return "end"
-    if target_type == "history":
+    if target_type == TargetType.HISTORY.value:
         return "judge_data_requirement"
-    if target_type in ("conversation", "suggest"):
+    if target_type in (TargetType.CONVERSATION.value, TargetType.SUGGEST.value):
         return "call_clinic_agent"
     return "end"
 

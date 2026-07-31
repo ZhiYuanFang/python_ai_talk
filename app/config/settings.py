@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # 缓存配置
     event_cache_ttl_hours: int = 24  # 事件字典缓存 TTL（小时）
 
+    # 喂养事件向量：一次性重建 source=standard（默认关闭；字典拉取成功后再删写）
+    rebuild_feeding_standard_events: bool = False
+
 
 # 创建全局配置实例
 settings = Settings()

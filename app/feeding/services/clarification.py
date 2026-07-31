@@ -13,7 +13,6 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -27,9 +26,27 @@ from app.feeding.services.event_hierarchy import (
     is_parent_event,
     _extra_name_list,
 )
+from app.shared.constants import (
+    ConfirmType,
+    IntentAction,
+    MatchSource,
+    ResolveOp,
+    ResolveStatus,
+    TargetType,
+    VALID_RESOLVE_OPS,
+)
 from app.shared.llm_client import LLMModelConfig, llm_client
 
 logger = logging.getLogger(__name__)
+
+# 兼容：历史 import ResolveStatus from clarification
+__all__ = [
+    "ResolveStatus",
+    "ResolveOp",
+    "PendingClarification",
+    "ResolveResult",
+    "clarification_store",
+]
 
 REJECT_WORDS = {
     "取消",
@@ -93,25 +110,18 @@ _ORDINAL_MAP = {
 }
 
 
-class ResolveStatus(str, Enum):
-    RESOLVED = "resolved"
-    ASK_AGAIN = "ask_again"
-    REJECT = "reject"
-    OFF_TOPIC = "off_topic"
-
-
 @dataclass
 class PendingClarification:
     """待澄清会话状态。"""
 
-    kind: str  # parent_disambiguation | leaf_confirm
+    kind: str  # ConfirmType：parent_disambiguation | leaf_confirm
     conversation_id: str
     options: List[Dict[str, Any]]
     clarify_message: str
     original_utterance: str
-    action: str = "one"
+    action: str = IntentAction.ONE.value
     quantity: Optional[int] = None
-    match_source: str = "llm"
+    match_source: str = MatchSource.LLM.value
     matched_vector_id: str = ""
     parent_id: str = ""
     parent_name: str = ""
@@ -129,14 +139,12 @@ class ResolveResult:
     quantity: Optional[int] = None
     # correct 路径：不对旧向量 matched_vector_id 做 success++
     skip_vector_success: bool = False
-    # 可选：confirm|select|correct|... 便于日志
+    # 内部 ResolveOp（confirm|select|…），非 IntentResponse.action
     action: str = ""
 
 
 _TRAILING_PUNCT_RE = re.compile(r"[。．.!！?？]+$")
-_VALID_LLM_ACTIONS = frozenset(
-    {"confirm", "select", "correct", "reject", "new_intent", "ask_again"}
-)
+_VALID_LLM_ACTIONS = VALID_RESOLVE_OPS
 
 
 def normalize_reply_text(text: str) -> str:
@@ -186,12 +194,14 @@ def build_parent_disambiguation_message(
     return "\n".join(lines)
 
 
-def build_leaf_confirm_message(event_name: str, action: str = "one") -> str:
+def build_leaf_confirm_message(
+    event_name: str, action: str = IntentAction.ONE.value
+) -> str:
     """生成叶子事件确认问句（自由文本回应）。"""
     action_desc = {
-        "start": "开始记录",
-        "end": "结束记录",
-        "one": "记录",
+        IntentAction.START.value: "开始记录",
+        IntentAction.END.value: "结束记录",
+        IntentAction.ONE.value: "记录",
     }.get(action, "记录")
     return f"您是要{action_desc}「{event_name}」吗？请回复确认或取消，也可直接说明具体事件。"
 
@@ -201,9 +211,9 @@ def create_parent_disambiguation_pending(
     parent: Dict[str, Any],
     children: List[Dict[str, Any]],
     original_utterance: str,
-    action: str = "one",
+    action: str = IntentAction.ONE.value,
     quantity: Optional[int] = None,
-    match_source: str = "name",
+    match_source: str = MatchSource.NAME.value,
     matched_vector_id: str = "",
     device_no: str = "",
     model_config: Optional[Dict[str, Any]] = None,
@@ -222,12 +232,12 @@ def create_parent_disambiguation_pending(
     ]
     message = build_parent_disambiguation_message(parent_name, children)
     pending = PendingClarification(
-        kind="parent_disambiguation",
+        kind=ConfirmType.PARENT_DISAMBIGUATION.value,
         conversation_id=cid,
         options=options,
         clarify_message=message,
         original_utterance=original_utterance,
-        action=action or "one",
+        action=action or IntentAction.ONE.value,
         quantity=quantity,
         match_source=match_source,
         matched_vector_id=matched_vector_id or "",
@@ -244,9 +254,9 @@ def create_leaf_confirm_pending(
     *,
     leaf: Dict[str, Any],
     original_utterance: str,
-    action: str = "one",
+    action: str = IntentAction.ONE.value,
     quantity: Optional[int] = None,
-    match_source: str = "llm",
+    match_source: str = MatchSource.LLM.value,
     matched_vector_id: str = "",
     device_no: str = "",
     model_config: Optional[Dict[str, Any]] = None,
@@ -264,12 +274,12 @@ def create_leaf_confirm_pending(
     ]
     message = build_leaf_confirm_message(event_name, action)
     pending = PendingClarification(
-        kind="leaf_confirm",
+        kind=ConfirmType.LEAF_CONFIRM.value,
         conversation_id=cid,
         options=options,
         clarify_message=message,
         original_utterance=original_utterance,
-        action=action or "one",
+        action=action or IntentAction.ONE.value,
         quantity=quantity,
         match_source=match_source,
         matched_vector_id=matched_vector_id or "",
@@ -349,7 +359,9 @@ def try_hard_resolve(text: str, pending: PendingClarification) -> Optional[Resol
     name_matches = _match_options_by_name(t, pending.options)
     if len(name_matches) == 1:
         return ResolveResult(
-            status=ResolveStatus.RESOLVED, event=name_matches[0], action="select"
+            status=ResolveStatus.RESOLVED,
+            event=name_matches[0],
+            action=ResolveOp.SELECT.value,
         )
     if len(name_matches) > 1:
         msg = build_parent_disambiguation_message(
@@ -359,7 +371,7 @@ def try_hard_resolve(text: str, pending: PendingClarification) -> Optional[Resol
             status=ResolveStatus.ASK_AGAIN,
             message=msg,
             options=name_matches,
-            action="ask_again",
+            action=ResolveOp.ASK_AGAIN.value,
         )
 
     ordinal = _parse_ordinal(t, len(pending.options))
@@ -367,17 +379,19 @@ def try_hard_resolve(text: str, pending: PendingClarification) -> Optional[Resol
         return ResolveResult(
             status=ResolveStatus.RESOLVED,
             event=pending.options[ordinal],
-            action="select",
+            action=ResolveOp.SELECT.value,
         )
 
     if t in _reject_words_folded():
-        return ResolveResult(status=ResolveStatus.REJECT, action="reject")
+        return ResolveResult(
+            status=ResolveStatus.REJECT, action=ResolveOp.REJECT.value
+        )
 
-    if pending.kind == "leaf_confirm" and t in _yes_words_folded():
+    if pending.kind == ConfirmType.LEAF_CONFIRM.value and t in _yes_words_folded():
         return ResolveResult(
             status=ResolveStatus.RESOLVED,
             event=pending.options[0] if pending.options else None,
-            action="confirm",
+            action=ResolveOp.CONFIRM.value,
         )
 
     return None
@@ -460,7 +474,7 @@ def _ask_again_result(pending: PendingClarification) -> ResolveResult:
         status=ResolveStatus.ASK_AGAIN,
         message=pending.clarify_message,
         options=pending.options,
-        action="ask_again",
+        action=ResolveOp.ASK_AGAIN.value,
     )
 
 
@@ -478,26 +492,30 @@ def map_llm_clarify_payload(
     event_id = data.get("event_id")
     event_name = str(data.get("event_name") or "")
 
-    if action == "ask_again":
+    if action == ResolveOp.ASK_AGAIN.value:
         return _ask_again_result(pending)
 
-    if action == "reject":
-        return ResolveResult(status=ResolveStatus.REJECT, action="reject")
+    if action == ResolveOp.REJECT.value:
+        return ResolveResult(
+            status=ResolveStatus.REJECT, action=ResolveOp.REJECT.value
+        )
 
-    if action == "new_intent":
-        return ResolveResult(status=ResolveStatus.OFF_TOPIC, action="new_intent")
+    if action == ResolveOp.NEW_INTENT.value:
+        return ResolveResult(
+            status=ResolveStatus.OFF_TOPIC, action=ResolveOp.NEW_INTENT.value
+        )
 
-    if action == "confirm":
-        if pending.kind != "leaf_confirm" or not pending.options:
+    if action == ResolveOp.CONFIRM.value:
+        if pending.kind != ConfirmType.LEAF_CONFIRM.value or not pending.options:
             return _ask_again_result(pending)
         return ResolveResult(
             status=ResolveStatus.RESOLVED,
             event=pending.options[0],
             quantity=quantity,
-            action="confirm",
+            action=ResolveOp.CONFIRM.value,
         )
 
-    if action == "select":
+    if action == ResolveOp.SELECT.value:
         opt = _find_option(
             event_id=event_id, event_name=event_name, options=pending.options
         )
@@ -507,10 +525,10 @@ def map_llm_clarify_payload(
             status=ResolveStatus.RESOLVED,
             event=opt,
             quantity=quantity,
-            action="select",
+            action=ResolveOp.SELECT.value,
         )
 
-    if action == "correct":
+    if action == ResolveOp.CORRECT.value:
         target = _find_event_in_dictionary(
             event_id=event_id, event_name=event_name, events=full_events
         )
@@ -532,7 +550,7 @@ def map_llm_clarify_payload(
             },
             quantity=quantity,
             skip_vector_success=True,
-            action="correct",
+            action=ResolveOp.CORRECT.value,
         )
 
     return _ask_again_result(pending)
@@ -607,9 +625,9 @@ def try_parent_hit_from_event_id(
     full_events: List[Dict[str, Any]],
     *,
     original_utterance: str,
-    action: str = "one",
+    action: str = IntentAction.ONE.value,
     quantity: Optional[int] = None,
-    match_source: str = "vector",
+    match_source: str = MatchSource.VECTOR.value,
     matched_vector_id: str = "",
     device_no: str = "",
     model_config: Optional[Dict[str, Any]] = None,
@@ -639,8 +657,9 @@ def try_parent_hit_from_event_id(
 def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
     """将 pending 转为 IntentResponse 可用字段。"""
     return {
-        "target_type": "feeding",
-        "action": "disambiguate",
+        "target_type": TargetType.FEEDING.value,
+        # 澄清态由 need_confirm / confirm_type 表达；action 保留喂养 IntentAction
+        "action": pending.action or IntentAction.ONE.value,
         "event_name": pending.parent_name or (
             pending.options[0]["event_name"] if pending.options else ""
         ),
@@ -670,20 +689,21 @@ def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
 def leaf_intent_result(
     leaf: Dict[str, Any],
     *,
-    action: str = "one",
+    action: str = IntentAction.ONE.value,
     quantity: Optional[int] = None,
-    match_source: str = "llm",
+    match_source: str = MatchSource.LLM.value,
     match_confidence: float = 1.0,
     original_utterance: str = "",
 ) -> Dict[str, Any]:
     """构造已落到唯一叶子的 feeding 意图结果。"""
+    resolved_action = action or IntentAction.ONE.value
     return {
-        "target_type": "feeding",
-        "action": action or "one",
+        "target_type": TargetType.FEEDING.value,
+        "action": resolved_action,
         "event_name": leaf.get("event_name") or "",
         "event_id": str(leaf.get("event_id") or ""),
         "quantity": quantity,
-        "keywords": [action or "", leaf.get("event_name") or ""],
+        "keywords": [resolved_action, leaf.get("event_name") or ""],
         "content": "",
         "events": [],
         "match_confidence": match_confidence,

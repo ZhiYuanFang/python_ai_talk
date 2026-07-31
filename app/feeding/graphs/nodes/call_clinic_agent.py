@@ -36,6 +36,7 @@ from typing import Any, Dict
 from app.clinic.graphs.clinic_graph import clinic_graph
 # 诊疗回答生成节点导入（复用 clinic 模块的 LLM 回答生成逻辑）
 from app.clinic.graphs.nodes.generate_response import generate_response
+from app.shared.constants import IntentAction, TargetType
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
         # 成功：保留原 target_type（suggest 不得被改写成 conversation）
         # 业务说明：仅补充回答内容，供路由填入 content；同时写 response 字段
         preserved = dict(intent_result) if isinstance(intent_result, dict) else {}
-        preserved["action"] = preserved.get("action") or "reply"
+        preserved["action"] = preserved.get("action") or IntentAction.REPLY.value
         preserved["content"] = clinic_response
         return {
             "intent_result": preserved,
@@ -155,10 +156,10 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
         # 失败时仍保留原 target_type，仅写入兜底文案
         # 业务说明：即使调用失败也返回结构化响应，避免前端拿到空数据
         preserved = dict(intent_result) if isinstance(intent_result, dict) else {}
-        preserved["action"] = preserved.get("action") or "reply"
+        preserved["action"] = preserved.get("action") or IntentAction.REPLY.value
         preserved["content"] = CLINIC_FALLBACK
         if not preserved.get("target_type"):
-            preserved["target_type"] = "conversation"
+            preserved["target_type"] = TargetType.CONVERSATION.value
         return {
             "intent_result": preserved,
             "response": CLINIC_FALLBACK,
