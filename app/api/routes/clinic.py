@@ -44,10 +44,7 @@ from app.shared.progressive_thinking import (
     run_one_step_with_thinking,
 )
 from app.shared.schemas.feedback import FeedbackRequest
-from app.shared.suggestion_acceptance import (
-    apply_flywheel_for_status,
-    judge_suggestion_acceptance,
-)
+from app.shared.suggestion_acceptance import maybe_apply_implicit_feedback
 from app.shared.vector_store import vector_store
 
 logger = logging.getLogger(__name__)
@@ -100,39 +97,6 @@ async def clinic_stream(request: ClinicRequest):
     )
 
 
-async def _maybe_apply_implicit_feedback(
-    device_no: str,
-    question: str,
-    model_config: Dict[str, Any],
-) -> None:
-    """
-    生成前隐式飞轮：三态判定成功后标记 applied；accept/reject 调质量分。
-    """
-    session = await companion_session_store.get(device_no)
-    sug = session.last_suggestion
-    if not sug or sug.feedback_applied:
-        return
-    if not (sug.text or "").strip():
-        return
-
-    status = await judge_suggestion_acceptance(
-        user_text=question,
-        suggestion_text=sug.text,
-        model_config=model_config,
-    )
-    if status is None:
-        # 失败可重试，不置 applied
-        logger.warning(f"隐式采纳判定失败，本轮跳过飞轮 device_no={device_no}")
-        return
-
-    await apply_flywheel_for_status(status, sug.knowledge_ids)
-    await companion_session_store.mark_feedback_applied(device_no)
-    logger.info(
-        f"隐式飞轮完成: device_no={device_no}, status={status.value}, "
-        f"answer_id={sug.answer_id}, kids={len(sug.knowledge_ids)}"
-    )
-
-
 async def _stream_clinic_response(
     initial_state: Dict[str, Any],
     *,
@@ -146,7 +110,7 @@ async def _stream_clinic_response(
 
     async def _flywheel_node(state: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            await _maybe_apply_implicit_feedback(
+            await maybe_apply_implicit_feedback(
                 session_device_no, question, model_config
             )
         except Exception as e:

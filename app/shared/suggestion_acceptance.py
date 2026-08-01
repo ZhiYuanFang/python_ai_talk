@@ -201,3 +201,45 @@ async def apply_flywheel_for_status(
             vector_store.update_quality_score(str(kid), feedback)
         except Exception as e:
             logger.warning(f"飞轮更新质量分失败 id={kid}: {e}")
+
+
+async def maybe_apply_implicit_feedback(
+    device_no: str,
+    user_text: str,
+    model_config: Dict[str, Any],
+) -> None:
+    """
+    生成前隐式飞轮（clinic / intent clinic agent 共用）。
+
+    业务逻辑：
+    1. 读 companion session 的 last_suggestion
+    2. 已 applied 或无文本则跳过
+    3. 三态判定成功后调质量分并 mark_feedback_applied
+    4. 判定失败返回 None 时不置 applied，便于下次重试
+
+    调用方应自行 try/except，避免飞轮异常中断主流程。
+    """
+    from app.shared.companion_session import companion_session_store
+
+    session = await companion_session_store.get(device_no)
+    sug = session.last_suggestion
+    if not sug or sug.feedback_applied:
+        return
+    if not (sug.text or "").strip():
+        return
+
+    status = await judge_suggestion_acceptance(
+        user_text=user_text,
+        suggestion_text=sug.text,
+        model_config=model_config,
+    )
+    if status is None:
+        logger.warning(f"隐式采纳判定失败，本轮跳过飞轮 device_no={device_no}")
+        return
+
+    await apply_flywheel_for_status(status, sug.knowledge_ids)
+    await companion_session_store.mark_feedback_applied(device_no)
+    logger.info(
+        f"隐式飞轮完成: device_no={device_no}, status={status.value}, "
+        f"answer_id={sug.answer_id}, kids={len(sug.knowledge_ids)}"
+    )
