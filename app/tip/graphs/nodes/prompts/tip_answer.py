@@ -137,5 +137,5 @@ def build_tip_answer_user_message(
 
 {knowledge_info}
 {chat_block}
-请针对「{event_name}」用闺蜜口语跟家长说一小段（大约一两百字内，别用强制标题结构）。
+请针对「{event_name}」用闺蜜口语跟家长说一小段（大约50字内，别用强制标题结构，关键字加粗，要善于使用表情符号）。
 """
