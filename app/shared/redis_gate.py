@@ -100,6 +100,37 @@ def _build_cluster_startup_nodes(redis_url: str) -> Tuple[List[ClusterNode], Opt
     return startup_nodes, password
 
 
+def create_async_redis_client():
+    """
+    创建与闸门/陪伴会话共用的异步 Redis 客户端。
+
+    业务逻辑：
+    1. URL 含逗号 → 集群 RedisCluster + ClusterNode
+    2. 否则 → 单机 Redis.from_url
+    3. decode_responses=True，便于直接读写 JSON 字符串
+
+    Returns:
+        redis.asyncio.Redis 或 RedisCluster 实例
+    """
+    if "," in settings.redis_url:
+        startup_nodes, password = _build_cluster_startup_nodes(settings.redis_url)
+        if not startup_nodes:
+            raise ValueError(f"Redis 集群 URL 未解析出任何节点: {settings.redis_url!r}")
+        return RedisCluster(
+            startup_nodes=startup_nodes,
+            password=password,
+            decode_responses=True,
+            socket_timeout=5,
+            socket_connect_timeout=5,
+        )
+    return redis.Redis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_timeout=5,
+        socket_connect_timeout=5,
+    )
+
+
 class RedisGate:
     """
     Redis 闸门控制器
@@ -121,34 +152,9 @@ class RedisGate:
         redis://host1:7001,host2:7002,host3:7003/0
         （逗号分隔多个节点地址；后续节点可省略 redis://）
         """
-        # 创建 Redis 连接客户端
-        # 判断是否是集群模式（包含逗号说明是多节点集群）
-        if "," in settings.redis_url:
-            # 手动解析多节点，得到 ClusterNode 列表与可选密码
-            startup_nodes, password = _build_cluster_startup_nodes(settings.redis_url)
-            if not startup_nodes:
-                raise ValueError(f"Redis 集群 URL 未解析出任何节点: {settings.redis_url!r}")
-
-            # 使用异步集群客户端（decode_responses / 超时与单机保持一致）
-            self._redis = RedisCluster(
-                startup_nodes=startup_nodes,
-                password=password,
-                decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5,
-            )
-            # 标记为集群模式
-            self._is_cluster = True
-        else:
-            # 单机模式，使用异步 Redis 客户端
-            self._redis = redis.Redis.from_url(
-                settings.redis_url,
-                decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5,
-            )
-            # 标记为单机模式
-            self._is_cluster = False
+        # 与陪伴会话共用同一套客户端构造逻辑
+        self._redis = create_async_redis_client()
+        self._is_cluster = "," in settings.redis_url
 
         # Lua 脚本：尝试获取许可
         # 如果当前并发数 < max_in_flight，则增加计数器并返回 1（成功）

@@ -40,8 +40,12 @@ async def search_vectors(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         需要更新的 State 字段字典
     """
-    # 读取用户问题：intent_graph 用 user_input，clinic_graph 用 question
+    # 读取查询词：intent 用 user_input，clinic 用 question，tip 用事件名
     query = state.get("user_input") or state.get("question", "")
+    if not query:
+        event_info = state.get("event_info") or {}
+        if isinstance(event_info, dict):
+            query = event_info.get("event_name") or ""
 
     if not query:
         # 没有查询词，返回空列表

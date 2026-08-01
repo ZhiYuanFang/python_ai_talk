@@ -1,93 +1,77 @@
 """
-小贴士流式路由
+事件开场陪伴流式路由（tip）
 
 业务说明：
-提供 /v1/tip/stream 接口，接收小贴士生成请求，返回 SSE 流式响应。
-提供 /v1/tip/feedback 接口，接收用户反馈，更新知识质量分。
-使用 LangGraph 的 tip_graph 以流式方式准备上下文数据，然后流式生成小贴士回答。
+提供 /v1/tip/stream：添加事件后闺蜜先开口，写入按 device_no 的 Python Redis 会话。
+提供 /v1/tip/feedback：显式反馈兼容通道。
+与 /v1/clinic/stream 共享同一陪伴会话，家长可基于 tip 继续 clinic 续聊。
 
 流程：
-1. 调用 tip_graph.astream() 流式执行数据准备节点（判断数据需求→拉取历史→向量检索→获取宝宝画像）
-2. 每个节点完成时推送 thinking 事件，让用户实时感知 AI 思考过程
-3. 节点全部完成后，推送 "正在生成回答..." thinking 事件
-4. 调用 stream_tip_response 生成器流式输出 LLM 小贴士（thinking + answer 事件）
-5. 推送 [DONE] 结束标记
-6. 用户反馈通过 /v1/tip/feedback 接口提交，更新相关知识的质量分
+1. 读会话近 5 轮注入 chat_context
+2. tip_graph 准备上下文（事件名可作向量检索 query）
+3. 流式生成口语开场
+4. 合成 user「刚记录了「事件」」+ assistant 写入会话；last_suggestion 待隐式飞轮
 
 设计思路：
-1. tip_graph 用 astream 模式执行，节点级推送 thinking 事件
-2. 流式回答在路由层直接生成（因为 StateGraph 不支持流式节点）
-3. 支持 thinking 模式，分离思考和回答内容
-4. SSE 格式与诊疗接口一致：{"type": "thinking|answer", "content": "..."}
-5. 反馈接口支持 answerId 和 feedback 值（1=👍，-1=👎），用于知识飞轮
+1. 会话主键仅 device_no；tip 开场算待判定建议（feedback_applied=false）
+2. 不删 feedback 接口
 """
 
 import json
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.tip.graphs.tip_graph import tip_graph
-from app.tip.graphs.nodes.stream_tip_response import stream_tip_response
 from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
-from app.tip.schemas.tip import TipRequest, TipStreamResponse
 from app.feeding.services.event_cache import event_cache
+from app.shared.companion_session import (
+    build_tip_synthetic_user,
+    companion_session_store,
+    extract_knowledge_ids,
+    format_chat_turns_for_prompt,
+)
 from app.shared.schemas.feedback import FeedbackRequest
 from app.shared.vector_store import vector_store
+from app.tip.graphs.nodes.stream_tip_response import stream_tip_response
+from app.tip.graphs.tip_graph import tip_graph
+from app.tip.schemas.tip import TipRequest, TipStreamResponse
 
-# 初始化日志记录器
 logger = logging.getLogger(__name__)
 
+router = APIRouter(prefix="/tip", tags=["事件开场陪伴"])
 
-# 创建路由实例
-router = APIRouter(prefix="/tip", tags=["小贴士"])
-
-# 反馈频率限制存储（内存存储，服务重启后清空）
-# 格式：{answer_id: {"last_feedback_time": datetime, "feedback_count": int}}
 _feedback_limits: Dict[str, Dict[str, Any]] = {}
-
-# 频率限制配置
 MAX_FEEDBACK_PER_ANSWER = 5
 FEEDBACK_TIME_WINDOW_MINUTES = 60
 
 
-@router.post("/stream", summary="小贴士生成（流式）")
+@router.post("/stream", summary="事件开场陪伴（流式）")
 async def tip_stream(request: TipRequest):
     """
-    小贴士生成流式接口
+    tip 开场流式接口。
 
     业务逻辑：
-    1. 接收触发事件信息、设备编号和模型配置（月龄/时间由服务端派生，请求不传）
-    2. 构建 TipState 初始状态
-    3. 使用 tip_graph.astream() 流式执行数据准备节点，每个节点推送 thinking 事件
-    4. 节点全部完成后，推送 "正在生成回答..." thinking 事件
-    5. 调用 stream_tip_response 生成器流式生成小贴士（thinking + answer 事件）
-    6. 将流式结果包装为 SSE 事件返回
-
-    Args:
-        request: 小贴士请求，含 event_id、event_name、device_no、model（内部 snake；可过渡双收 camel）
-
-    Returns:
-        SSE 流式响应，包含 thinking（节点思考进度）和 answer（LLM 小贴士内容）两种事件类型
+    事件触发后生成口语陪伴；写入共享会话供 clinic 续聊与隐式飞轮。
     """
-    # 记录请求日志
     logger.info(
-        f"小贴士请求: device_no={request.device_no}, event_name={request.event_name}"
+        f"事件开场请求: device_no={request.device_no}, event_name={request.event_name}"
     )
 
-    # tip 图入口为 judge_data_requirement，必须注入事件字典
     event_dictionary = await event_cache.get_event_dictionary()
+    session = await companion_session_store.get(request.device_no)
+    chat_context = format_chat_turns_for_prompt(session.turns)
 
-    # 1. 构建初始状态（不含月龄/时间：月龄由 derive_baby_age 写入，时间在写 prompt 时生成）
+    # question=事件名：供 search_vectors / judge 有查询词；知识 id 可落到会话
     initial_state: Dict[str, Any] = {
         "event_info": {
             "event_id": request.event_id,
             "event_name": request.event_name,
         },
+        "question": request.event_name,
         "device_no": request.device_no,
         "model_config": {
             "provider": request.model.provider,
@@ -95,13 +79,11 @@ async def tip_stream(request: TipRequest):
             "max_in_flight": request.model.max_in_flight,
         },
         "event_dictionary": event_dictionary,
+        "chat_context": chat_context,
     }
 
-    # 2. 生成 SSE 流式响应
-    # 业务说明：使用 StreamingResponse 返回 SSE 格式数据
-    # 流式过程包含：节点级 thinking 事件 → LLM thinking/answer 事件 → [DONE]
     return StreamingResponse(
-        _stream_tip_response(initial_state),
+        _stream_tip_response(initial_state, request=request),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -113,86 +95,63 @@ async def tip_stream(request: TipRequest):
 
 async def _stream_tip_response(
     initial_state: Dict[str, Any],
+    *,
+    request: TipRequest,
 ) -> AsyncGenerator[str, None]:
-    """
-    生成小贴士流式 SSE 响应（含节点级 thinking 事件）
-
-    业务逻辑：
-    1. 生成唯一的 answer_id
-    2. 调用 tip_graph.astream() 流式执行图，每个节点完成时推送 thinking 事件
-    3. 累积最终状态（历史记录、向量知识、宝宝画像）
-    4. 图执行完成后，推送 "正在生成回答..." thinking 事件
-    5. 调用 stream_tip_response 生成器流式输出 LLM 小贴士（thinking + answer 事件）
-    6. 推送 done 事件（包含 answerId）
-
-    Args:
-        initial_state: 初始状态字典（含 event_info、device_no、model_config；月龄由图内派生）
-
-    Yields:
-        SSE 格式的字符串
-    """
-    # 生成唯一的 answer_id，用于后续反馈
+    """生成 tip SSE：图准备 → 流式回答 → 写共享会话。"""
     answer_id = f"tip_{uuid.uuid4().hex[:12]}"
-
-    # 累积最终状态的字典
-    # 业务说明：astream 模式下每个节点返回增量更新，需要手动合并
     final_state: Dict[str, Any] = dict(initial_state)
 
-    # 1. 流式执行 tip_graph，推送节点级 thinking 事件
-    # 业务说明：astream(stream_mode="updates") 会在每个节点完成时 yield (node_name, update_dict)
     async for chunk in tip_graph.astream(initial_state, stream_mode="updates"):
-        # LangGraph updates 模式 yield 的 chunk 格式因版本而异
-        # 兼容处理：chunk 可能是 tuple (node_name, update_dict) 或 dict
-        node_name = None
-        update_dict = None
-
+        updates_map: Dict[str, Any] = {}
         if isinstance(chunk, tuple) and len(chunk) >= 2:
-            # tuple 格式：(node_name, update_dict)
-            node_name = chunk[0]
-            update_dict = chunk[1]
+            second = chunk[1]
+            if isinstance(second, dict):
+                updates_map = second
         elif isinstance(chunk, dict):
-            # dict 格式：可能包含 node 字段
-            node_name = chunk.get("node") or chunk.get("name")
-            update_dict = chunk.get("data") or chunk
+            updates_map = chunk
 
-        # 推送该节点的 thinking 事件
-        if node_name:
-            thinking_text = get_thinking_message(node_name)
+        for node_name, node_update in updates_map.items():
+            thinking_text = get_thinking_message(str(node_name))
             event = TipStreamResponse(type="thinking", content=thinking_text)
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
+            if isinstance(node_update, dict):
+                final_state.update(node_update)
 
-        # 累积状态更新
-        if update_dict and isinstance(update_dict, dict):
-            final_state.update(update_dict)
-
-    # 2. 推送 LLM 开始的 thinking 事件
-    # 业务说明：数据准备完成，开始调用 LLM 生成小贴士
     llm_start_event = TipStreamResponse(
         type="thinking",
         content=get_thinking_message("llm_start"),
     )
     yield f"data: {json.dumps(llm_start_event.model_dump(), ensure_ascii=False)}\n\n"
 
-    # 3. 调用 stream_tip_response 流式输出 LLM 小贴士
-    # 业务说明：stream_tip_response 是生成器函数，逐块返回 LLM 的 thinking 和 answer 内容
+    answer_parts: list[str] = []
     async for chunk in stream_tip_response(final_state):
         if chunk.thinking:
-            # LLM 思考过程事件（DeepSeek thinking 模式的思考内容）
-            event = TipStreamResponse(
-                type="thinking",
-                content=chunk.thinking,
-            )
+            event = TipStreamResponse(type="thinking", content=chunk.thinking)
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
         if chunk.content:
-            # LLM 小贴士内容事件
-            event = TipStreamResponse(
-                type="answer",
-                content=chunk.content,
-            )
+            answer_parts.append(chunk.content)
+            event = TipStreamResponse(type="answer", content=chunk.content)
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
-    # 4. 推送 done 事件（包含 answerId，用于后续反馈）
+    full_answer = "".join(answer_parts)
+    knowledge_ids = extract_knowledge_ids(final_state.get("knowledge"))
+
+    # tip 开场：合成 user + assistant；last_suggestion.feedback_applied=false
+    try:
+        await companion_session_store.append_turn(
+            request.device_no,
+            user=build_tip_synthetic_user(request.event_name),
+            assistant=full_answer,
+            source="tip",
+            answer_id=answer_id,
+            knowledge_ids=knowledge_ids,
+            suggestion_text=full_answer,
+        )
+    except Exception as e:
+        logger.warning(f"写入陪伴会话失败（不中断 SSE）: {e}")
+
     done_event = TipStreamResponse(
         type="done",
         content="回答完成",
@@ -202,86 +161,62 @@ async def _stream_tip_response(
 
 
 def _check_feedback_limit(answer_id: str) -> bool:
-    """
-    检查反馈频率限制
-
-    业务逻辑：
-    1. 检查该 answer_id 在时间窗口内的反馈次数
-    2. 如果超过限制，返回 False；否则返回 True
-    3. 更新反馈计数和时间
-
-    Args:
-        answer_id: 回答 ID
-
-    Returns:
-        是否允许反馈
-    """
+    """显式反馈频率限制（兼容旧客户端）。"""
     now = datetime.now()
     limit_info = _feedback_limits.get(answer_id)
 
     if limit_info:
-        # 检查时间窗口是否过期
         time_diff = (now - limit_info["last_feedback_time"]).total_seconds() / 60
         if time_diff > FEEDBACK_TIME_WINDOW_MINUTES:
-            # 时间窗口已过期，重置计数
             _feedback_limits[answer_id] = {
                 "last_feedback_time": now,
                 "feedback_count": 1,
             }
             return True
 
-        # 检查反馈次数是否超过限制
         if limit_info["feedback_count"] >= MAX_FEEDBACK_PER_ANSWER:
             return False
 
-        # 更新反馈计数
         limit_info["feedback_count"] += 1
         return True
-    else:
-        # 首次反馈
-        _feedback_limits[answer_id] = {
-            "last_feedback_time": now,
-            "feedback_count": 1,
-        }
-        return True
+
+    _feedback_limits[answer_id] = {
+        "last_feedback_time": now,
+        "feedback_count": 1,
+    }
+    return True
 
 
-@router.post("/feedback", summary="小贴士反馈")
+@router.post("/feedback", summary="事件开场反馈（显式兼容）")
 async def tip_feedback(request: FeedbackRequest):
-    """
-    小贴士反馈接口
-
-    业务逻辑：
-    1. 验证反馈参数（feedback 必须为 1 或 -1，由 Pydantic validator 校验）
-    2. 检查反馈频率限制
-    3. 根据 answer_id 更新相关知识的质量分
-    4. 返回反馈结果
-
-    Args:
-        request: 反馈请求，包含 answer_id 和 feedback 字段
-
-    Returns:
-        包含反馈结果的 JSON 响应
-    """
+    """显式反馈接口（保留）；主路径为 clinic 隐式采纳判定。"""
     if not _check_feedback_limit(request.answer_id):
         raise HTTPException(
             status_code=429,
-            detail=f"该回答的反馈次数已达上限（{MAX_FEEDBACK_PER_ANSWER}次/{FEEDBACK_TIME_WINDOW_MINUTES}分钟）",
+            detail=(
+                f"该回答的反馈次数已达上限"
+                f"（{MAX_FEEDBACK_PER_ANSWER}次/{FEEDBACK_TIME_WINDOW_MINUTES}分钟）"
+            ),
         )
 
     try:
         vector_store.update_quality_score(request.answer_id, request.feedback)
 
-        logger.info(f"小贴士反馈成功: answer_id={request.answer_id}, feedback={request.feedback}")
+        logger.info(
+            f"tip 显式反馈成功: answer_id={request.answer_id}, "
+            f"feedback={request.feedback}"
+        )
 
-        return JSONResponse(content={
-            "code": 0,
-            "message": "反馈成功",
-            "data": {
-                "answer_id": request.answer_id,
-                "feedback": request.feedback,
-            },
-        })
+        return JSONResponse(
+            content={
+                "code": 0,
+                "message": "反馈成功",
+                "data": {
+                    "answer_id": request.answer_id,
+                    "feedback": request.feedback,
+                },
+            }
+        )
     except Exception as e:
-        logger.error(f"小贴士反馈失败: {str(e)}")
+        logger.error(f"tip 显式反馈失败: {str(e)}")
         raise HTTPException(status_code=500, detail="反馈处理失败")

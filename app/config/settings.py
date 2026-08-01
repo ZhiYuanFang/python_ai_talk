@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # 缓存配置
     event_cache_ttl_hours: int = 24  # 事件字典缓存 TTL（小时）
 
+    # 陪伴会话（tip/clinic 共享）：按 device_no，近 N 轮，TTL 天（滑动续期）
+    companion_session_ttl_days: int = 7
+    companion_session_max_turns: int = 5
+
     # 喂养事件向量：一次性重建 source=standard（默认关闭；字典拉取成功后再删写）
     rebuild_feeding_standard_events: bool = False
 

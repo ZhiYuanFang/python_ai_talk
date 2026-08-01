@@ -2,14 +2,12 @@
 suggest 意图建议生成提示词构建模块
 
 业务说明：
-构建 suggest 意图（成长建议）回答生成节点使用的系统提示词。
-引导 LLM 根据历史记录、向量库知识和宝宝画像生成个性化成长建议。
-复用 go_ai_talk 的 aiClinic.systemPrompt 的风格和内容框架。
+构建 suggest 意图回答生成节点使用的系统提示词。
+与 clinic/tip 统一为懂娃闺蜜口语人格，避免主对话人格分裂。
 
 设计思路：
-1. 组合历史记录、向量库知识、宝宝画像作为上下文
-2. 要求 LLM 给出专业、温暖、易懂的建议
-3. 建议要基于数据和知识，不能凭空编造
+1. 组合历史记录、向量库知识、宝宝画像作为背景
+2. 口语、鼓励，不做医生腔
 """
 
 import json
@@ -20,24 +18,15 @@ def build_suggest_answer_system_prompt() -> str:
     """
     构建 suggest 意图建议生成的系统提示词
 
-    业务逻辑：
-    引导 LLM 根据历史记录、相关知识和宝宝画像生成个性化成长建议。
-    回答风格要专业、温暖、易懂，复用 go_ai_talk 的诊疗提示词风格。
-
     Returns:
         系统提示词字符串
     """
     return """
-你是一个专业的儿科医生助手，擅长处理宝宝喂养和健康问题。
-请根据提供的宝宝信息、历史记录和相关知识，为用户提供专业的成长建议。
-
-回答要求：
-1. 回答要专业、温暖、易懂，适合与家长交流
-2. 建议要基于历史记录和相关知识，不要凭空编造
-3. 可以从喂养规律、生长发育、注意事项等多个角度给出建议
-4. 如果历史记录或知识不足，要如实说明，给出一般性建议
-5. 回答要有条理，可以分点说明
-6. 语气要鼓励和支持，避免让家长感到焦虑
+你是家长身边懂娃的闺蜜，不是医生。
+根据宝宝信息、喂养记录和知识背景，用口语跟「你」聊聊可行的小建议。
+先接住心情，再顺嘴提点实用的；别端着分点讲课，别制造焦虑。
+不做诊断、不开药；真担心身体状况时，温柔提醒可以问问医生。
+信息不够就老实说，别编。
 """
 
 
@@ -50,9 +39,6 @@ def build_suggest_answer_user_message(
     """
     构建 suggest 意图建议生成的用户消息
 
-    业务逻辑：
-    将用户问题、宝宝画像、历史记录和相关知识组合成用户消息。
-
     Args:
         user_text: 用户的问题文本
         history_events: 历史记录列表
@@ -62,7 +48,6 @@ def build_suggest_answer_user_message(
     Returns:
         用户消息字符串
     """
-    # 格式化宝宝画像
     baby_info = ""
     if baby_profile:
         baby_info = f"""
@@ -71,7 +56,6 @@ def build_suggest_answer_user_message(
 - 性别：{baby_profile.get("gender", "未知")}
 """
 
-    # 格式化历史记录（只取最近10条）
     history_info = ""
     if history_events:
         recent_events = history_events[-10:]
@@ -80,17 +64,18 @@ def build_suggest_answer_user_message(
 {json.dumps(recent_events, ensure_ascii=False, indent=2)}
 """
 
-    # 格式化知识
     knowledge_info = ""
     if knowledge_results:
-        knowledge_texts = [f"- {r['content']}（相似度：{r['score']}）" for r in knowledge_results]
+        knowledge_texts = [
+            f"- {r['content']}（相似度：{r['score']}）" for r in knowledge_results
+        ]
         knowledge_info = f"""
-相关知识：
+可参考的知识（背景）：
 {"\n".join(knowledge_texts)}
 """
 
     return f"""
-用户问题："{user_text}"
+家长说："{user_text}"
 
 {baby_info}
 
@@ -98,5 +83,5 @@ def build_suggest_answer_user_message(
 
 {knowledge_info}
 
-请根据以上信息，为用户提供专业的成长建议。
+请用闺蜜口语回复。
 """

@@ -16,18 +16,18 @@ from typing import Optional
 # 节点名→中文思考文案映射表
 # 业务说明：每个 key 对应 LangGraph 图中注册的节点名，value 为推送给前端的中文文案
 NODE_THINKING_MESSAGES = {
-    # 数据需求判断节点：LLM 分析用户问题，判断需要哪些事件类型和时间范围
-    "judge_data_requirement": "正在分析需要哪些历史数据...",
-    # 历史拉取节点：根据数据需求判断结果，调用 Go 侧 API 拉取历史喂养记录
-    "fetch_history": "正在拉取最近的喂养记录...",
-    # 向量检索节点：从 Chroma 向量库中检索与当前问题相关的母婴知识
-    "search_vectors": "正在检索知识库中的相关知识...",
-    # 宝宝画像获取节点：调用设备服务获取宝宝基本信息（生日、性别等）
-    "fetch_baby_profile": "正在获取宝宝画像信息...",
-    # tip 专用：画像拉取后按 birthday 自算月龄（Asia/Shanghai）
-    "derive_baby_age": "正在根据生日计算宝宝月龄...",
-    # LLM 回答开始标记：数据准备完成，开始调用 LLM 生成回答
-    "llm_start": "正在生成回答...",
+    # 数据需求判断：是否需要拉喂养史当背景
+    "judge_data_requirement": "正在看看要不要翻翻最近的记录...",
+    # 历史拉取：Go 侧喂养记录
+    "fetch_history": "正在翻翻最近的喂养记录...",
+    # 向量检索：知识背景
+    "search_vectors": "正在想想有没有相关经验可以参考...",
+    # 宝宝画像
+    "fetch_baby_profile": "正在了解宝宝的基本情况...",
+    # tip：自算月龄
+    "derive_baby_age": "正在根据生日算算宝宝月龄...",
+    # 开始生成口语回复
+    "llm_start": "正在想怎么跟你说...",
 }
 
 

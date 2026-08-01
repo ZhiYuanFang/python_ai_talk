@@ -8,8 +8,8 @@
 包含的子路由：
 - /health：健康检查
 - /analyze/intent：意图分析
-- /clinic/stream：胖宝诊疗（流式）
-- /tip/stream：小贴士生成（流式）
+- /clinic/stream：智能陪伴续聊（流式；与 tip 共享 device_no 会话）
+- /tip/stream：事件开场陪伴（流式；写入共享会话，可供 clinic 续聊）
 - /knowledge：知识库管理（上传、列表、详情、更新、删除、统计、分类）
 """
 

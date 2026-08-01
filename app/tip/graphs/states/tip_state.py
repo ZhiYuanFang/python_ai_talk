@@ -41,6 +41,10 @@ class TipState(TypedDict, total=False):
     device_no: str                      # 设备编号
     model_config: Dict[str, Any]        # 模型配置
     event_dictionary: List[Dict[str, Any]]  # 事件字典列表（供 judge_data_requirement）
+    # 事件名同步为 question，供 search_vectors / judge 使用（须声明否则被静默丢弃）
+    question: str
+    # tip/clinic 共享陪伴对话上下文（路由注入，生成节点读取）
+    chat_context: str
 
     # 派生字段（derive_baby_age 写入；未知为 None）
     baby_age_months: Optional[int]      # 宝宝月龄；None=未知，0=算出的 0 个月

@@ -34,10 +34,12 @@ class ClinicState(TypedDict, total=False):
     """
 
     # 输入字段（路由传入）
-    question: str                      # 用户的诊疗问题
+    question: str                      # 家长本轮问题
     device_no: str                     # 设备编号
     model_config: Dict[str, Any]       # 模型配置
     event_dictionary: List[Dict[str, Any]]  # 事件字典列表（供 judge_data_requirement）
+    # tip/clinic 共享陪伴对话（须声明否则 LangGraph 静默丢弃）
+    chat_context: str
 
     # 中间字段（各节点填充）
     data_requirement: Dict[str, Any]        # 数据需求判断结果

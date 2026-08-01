@@ -57,6 +57,7 @@ async def stream_tip_response(state: Dict[str, Any]) -> AsyncGenerator[LLMRespon
     knowledge = state.get("knowledge", [])             # 向量检索结果
     baby_profile = state.get("baby_profile", {})       # 宝宝画像
     model_config_dict = state.get("model_config", {})  # 模型配置
+    chat_context = state.get("chat_context") or ""     # tip/clinic 共享陪伴对话
 
     # 构建模型配置对象
     model_config = LLMModelConfig(**model_config_dict)
@@ -69,6 +70,7 @@ async def stream_tip_response(state: Dict[str, Any]) -> AsyncGenerator[LLMRespon
         history_events=history_events,
         knowledge_results=knowledge,
         baby_profile=baby_profile,
+        chat_context=chat_context,
     )
 
     # 流式调用 LLM

@@ -45,12 +45,13 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
     Yields:
         LLMResponse 对象（流式逐块返回）
     """
-    # 读取输入参数
+    # 读取输入参数（chat_context 为 tip/clinic 共享会话，与喂养史分离）
     question = state.get("question", "")
     history_events = state.get("history_events", [])
     knowledge = state.get("knowledge", [])
     baby_profile = state.get("baby_profile", {})
     model_config_dict = state.get("model_config", {})
+    chat_context = state.get("chat_context") or ""
 
     # 构建模型配置对象
     model_config = LLMModelConfig(**model_config_dict)
@@ -62,6 +63,7 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
         history_events=history_events,
         knowledge_results=knowledge,
         baby_profile=baby_profile,
+        chat_context=chat_context,
     )
 
     # 流式调用 LLM

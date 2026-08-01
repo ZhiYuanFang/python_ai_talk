@@ -54,7 +54,7 @@ PYTHON_AI_TALK_DEEPSEEK_API_KEY   → DEEPSEEK_API_KEY
 Python AI Talk 是一个基于 FastAPI + LangGraph 的母婴喂养意图识别微服务，提供以下能力：
 
 - **意图分析**：识别用户自然语言中的喂养记录、历史查询、成长建议等意图
-- **胖宝诊疗**：结合向量数据库和 LLM 提供母婴健康诊疗建议
+- **智能陪伴（tip/clinic）**：懂娃闺蜜口语陪伴；添加事件走 tip 开场，可用 clinic 续聊；Python 按 `device_no` Redis 会话共享近 5 轮（TTL 7 天）；续聊时隐式判定上一条建议是否采纳以驱动知识飞轮（显式 `/feedback` 仍兼容）
 - **向量数据库**：基于 Chroma + BGE 的中文母婴知识库
 
 ### 1.2 部署架构
@@ -331,8 +331,10 @@ app/
 | 知识库删除 | DELETE | `/v1/knowledge/{doc_id}` | 删除文档 |
 | 知识库统计 | GET | `/v1/knowledge/stats` | 获取知识库统计信息 |
 | 知识库分类 | GET | `/v1/knowledge/categories` | 获取所有知识分类 |
-| 诊疗反馈 | POST | `/v1/clinic/feedback` | 诊疗回答反馈（👍/👎） |
-| 小贴士反馈 | POST | `/v1/tip/feedback` | 小贴士回答反馈（👍/👎） |
+| 陪伴续聊（流式） | POST | `/v1/clinic/stream` | 与 tip 共享 `device_no` 会话；隐式采纳飞轮 |
+| 事件开场（流式） | POST | `/v1/tip/stream` | 添加事件后闺蜜开场，写入共享会话 |
+| 陪伴反馈 | POST | `/v1/clinic/feedback` | 显式反馈兼容（👍/👎）；主路径为隐式判定 |
+| 开场反馈 | POST | `/v1/tip/feedback` | 显式反馈兼容（👍/👎） |
 
 **流式响应变更**：
 
