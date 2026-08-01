@@ -26,6 +26,28 @@ from app.config.settings import settings
 logger = logging.getLogger(__name__)
 
 
+def normalize_llm_provider(provider: str) -> str:
+    """
+    将调用方传入的 provider 规范为内部权威名。
+
+    业务逻辑：
+    1. strip + lower，兼容 Zhipu / ZHIPU 等大小写
+    2. zhipu 与 glm 同属智谱，统一为内部名 glm（共用 GLM_* 配置）
+    3. deepseek 保持 deepseek；其它原样返回，由 _get_client 拒绝
+
+    Args:
+        provider: 请求中的提供商字符串
+
+    Returns:
+        规范化后的提供商名（如 glm、deepseek）
+    """
+    canonical = (provider or "").strip().lower()
+    # 智谱别名：Go 常传 zhipu，本仓配置键为 glm
+    if canonical == "zhipu":
+        return "glm"
+    return canonical
+
+
 class LLMModelConfig(BaseModel):
     """
     LLM 模型配置类
@@ -33,7 +55,10 @@ class LLMModelConfig(BaseModel):
     业务说明：
     用于封装调用 LLM 时的模型配置参数，由 Go 服务传入。
     """
-    provider: str = Field(..., description="LLM 提供商，可选值: deepseek, glm")
+    provider: str = Field(
+        ...,
+        description="LLM 提供商，可选值: deepseek, glm, zhipu（zhipu 与 glm 等价）",
+    )
     name: str = Field(..., description="模型名称")
     max_in_flight: int = Field(3, description="最大并发数")
 
@@ -143,39 +168,40 @@ class LLMClient:
         获取指定提供商的 LLM 客户端
 
         业务逻辑：
-        1. 根据 provider 选择对应的 API Key 和 Base URL
-        2. 如果客户端已缓存，直接返回
-        3. 如果未缓存，创建新的客户端并缓存
+        1. 规范化 provider（zhipu→glm，大小写不敏感）
+        2. 用规范名生成缓存 key，使 zhipu/glm 共享同一客户端
+        3. 按规范名选择 API Key / Base URL；未知提供商报错
 
         Args:
-            provider: LLM 提供商（deepseek 或 glm）
+            provider: LLM 提供商（deepseek、glm 或 zhipu）
             model_name: 模型名称
 
         Returns:
             ChatOpenAI 客户端实例
         """
-        # 生成缓存 key，格式为 provider:model_name
-        cache_key = f"{provider}:{model_name}"
+        # 保留原始值仅用于报错提示；选路与缓存一律用规范名
+        original_provider = provider
+        canonical = normalize_llm_provider(provider)
 
-        # 如果客户端已缓存，直接返回
+        # 缓存 key 用规范名，避免 zhipu:model 与 glm:model 各建一份
+        cache_key = f"{canonical}:{model_name}"
+
         if cache_key in self._clients:
             return self._clients[cache_key]
 
-        # 根据 provider 设置对应的 API Key 和 Base URL
-        if provider == "deepseek":
+        if canonical == "deepseek":
             api_key = settings.deepseek_api_key
             base_url = settings.deepseek_base_url
-        elif provider == "glm":
+        elif canonical == "glm":
+            # glm / zhipu 共用智谱配置
             api_key = settings.glm_api_key
             base_url = settings.glm_base_url
         else:
-            raise ValueError(f"不支持的 LLM 提供商: {provider}")
+            raise ValueError(f"不支持的 LLM 提供商: {original_provider}")
 
-        # 验证 API Key 是否已配置
         if not api_key:
-            raise ValueError(f"{provider} API Key 未配置")
+            raise ValueError(f"{canonical} API Key 未配置")
 
-        # 创建 ChatOpenAI 客户端
         client = ChatOpenAI(
             model=model_name,
             api_key=api_key,
@@ -185,7 +211,6 @@ class LLMClient:
             timeout=30,  # 请求超时时间（秒）
         )
 
-        # 缓存客户端实例
         self._clients[cache_key] = client
 
         return client

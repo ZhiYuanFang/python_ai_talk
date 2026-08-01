@@ -23,7 +23,10 @@ class ModelConfig(BaseModel):
     业务说明：
     用于封装调用 LLM 时的模型配置参数，由 Go 服务传入。
     """
-    provider: str = Field(..., description="LLM 提供商，可选值: deepseek, glm")
+    provider: str = Field(
+        ...,
+        description="LLM 提供商，可选值: deepseek, glm, zhipu（zhipu 与 glm 等价）",
+    )
     name: str = Field(..., description="模型名称")
     max_in_flight: int = Field(3, description="最大并发数")
 
