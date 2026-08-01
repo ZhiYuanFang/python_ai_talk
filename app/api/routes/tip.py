@@ -53,7 +53,6 @@ _feedback_limits: Dict[str, Dict[str, Any]] = {}
 MAX_FEEDBACK_PER_ANSWER = 5
 FEEDBACK_TIME_WINDOW_MINUTES = 60
 
-
 @router.post("/stream", summary="事件开场陪伴（流式）")
 async def tip_stream(request: TipRequest):
     """
@@ -85,6 +84,11 @@ async def tip_stream(request: TipRequest):
         },
         "event_dictionary": event_dictionary,
         "chat_context": chat_context,
+        "data_requirement": {
+            "event_ids": [request.event_id],        # 空列表表示所有事件类型
+            "time_range": "last_7_days",
+            "limit": 20,
+        }
     }
 
     return StreamingResponse(
@@ -107,9 +111,8 @@ async def _stream_tip_response(
     answer_id = f"tip_{uuid.uuid4().hex[:12]}"
     final_state: Dict[str, Any] = dict(initial_state)
 
-    # 与 tip_graph 边一致：judge → history → vectors → profile → derive_baby_age
+    # 与 tip_graph 边一致： history → vectors → profile → derive_baby_age
     prepare_steps = [
-        ("judge_data_requirement", judge_data_requirement),
         ("fetch_history", fetch_history),
         ("search_vectors", search_vectors),
         ("fetch_baby_profile", fetch_baby_profile),

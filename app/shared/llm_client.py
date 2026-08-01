@@ -163,6 +163,30 @@ class LLMClient:
             logger.info(f"--- LLM request message[{i}] role={role} ---\n{content}")
         logger.info("--- LLM request payload END ---")
 
+    def _log_response_content(
+        self,
+        *,
+        mode: str,
+        model_config: LLMModelConfig,
+        content: str,
+    ) -> None:
+        """
+        以 INFO 打印 LLM 回复正文，便于与 request payload 对照排查。
+
+        Args:
+            mode: 调用模式（invoke / stream）
+            model_config: 模型配置
+            content: 回复正文（stream 为累积后的 answer）
+        """
+        text = content if content is not None else ""
+        logger.info(
+            "--- LLM response BEGIN --- "
+            f"mode={mode}, provider={model_config.provider}, "
+            f"model={model_config.name}, chars={len(text)}"
+        )
+        logger.info(f"--- LLM response content ---\n{text}")
+        logger.info("--- LLM response END ---")
+
     def _get_client(self, provider: str, model_name: str) -> ChatOpenAI:
         """
         获取指定提供商的 LLM 客户端
@@ -273,9 +297,16 @@ class LLMClient:
                 # 调用 LLM
                 logger.info(f"开始调用 LLM: provider={model_config.provider}, model={model_config.name}")
                 response = await client.ainvoke(langchain_messages)
-
-                # 构建返回结果
-                return LLMResponse(content=response.content)
+                content = response.content if response.content is not None else ""
+                if not isinstance(content, str):
+                    content = str(content)
+                # 成功后打印回复正文（失败走 except，不打残缺 response）
+                self._log_response_content(
+                    mode="invoke",
+                    model_config=model_config,
+                    content=content,
+                )
+                return LLMResponse(content=content)
 
             except Exception as e:
                 # 记录错误日志
@@ -353,6 +384,10 @@ class LLMClient:
                 async for chunk in client.astream(langchain_messages):
                     # 获取当前 chunk 的内容
                     chunk_content = chunk.content
+                    if chunk_content is None:
+                        chunk_content = ""
+                    if not isinstance(chunk_content, str):
+                        chunk_content = str(chunk_content)
 
                     # 如果启用了思考模式，尝试分离思考和回答内容
                     if thinking_enabled:
@@ -371,6 +406,13 @@ class LLMClient:
                         # 非思考模式，直接返回内容
                         answer_buffer += chunk_content
                         yield LLMResponse(content=chunk_content, thinking="")
+
+                # 流正常结束后打一次累积回答（不打 thinking；不逐 chunk）
+                self._log_response_content(
+                    mode="stream",
+                    model_config=model_config,
+                    content=answer_buffer,
+                )
 
             except Exception as e:
                 # 记录错误日志
