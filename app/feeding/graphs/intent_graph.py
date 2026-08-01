@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 State = IntentState
 
 
-def _route_after_vector_match(state: State) -> str:
+def route_after_vector_match(state: State) -> str:
     """
-    向量匹配后的路由决策
+    向量匹配后的路由决策（供图边与 intent 流式步进共用）。
 
     业务逻辑：
     - match_source 为 llm：降级至 LLM 分类
@@ -55,9 +55,9 @@ def _route_after_vector_match(state: State) -> str:
     return "end"
 
 
-def _route_after_classify(state: State) -> str:
+def route_after_classify(state: State) -> str:
     """
-    意图分类后的路由决策
+    意图分类后的路由决策（供图边与 intent 流式步进共用）。
 
     - feeding（含 multi）：END，由路由层做叶子校验/消歧/软确认
     - history：历史短链
@@ -78,6 +78,11 @@ def _route_after_classify(state: State) -> str:
     return "end"
 
 
+# 兼容旧私有名（若有外部引用）
+_route_after_vector_match = route_after_vector_match
+_route_after_classify = route_after_classify
+
+
 def build_intent_graph() -> StateGraph:
     """
     构建意图分析图（无旧 confirm interrupt 主路径）。
@@ -95,7 +100,7 @@ def build_intent_graph() -> StateGraph:
 
     graph.add_conditional_edges(
         "match_event_by_vector",
-        _route_after_vector_match,
+        route_after_vector_match,
         {
             "classify_intent": "classify_intent",
             "end": END,
@@ -104,7 +109,7 @@ def build_intent_graph() -> StateGraph:
 
     graph.add_conditional_edges(
         "classify_intent",
-        _route_after_classify,
+        route_after_classify,
         {
             "end": END,
             "judge_data_requirement": "judge_data_requirement",

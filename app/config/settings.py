@@ -58,7 +58,11 @@ class Settings(BaseSettings):
 
     # 陪伴会话（tip/clinic 共享）：按 device_no，近 N 轮，TTL 天（滑动续期）
     companion_session_ttl_days: int = 7
-    companion_session_max_turns: int = 5
+    companion_session_max_turns: int = 3  # 进 prompt / Redis 截断一致，默认 3 轮省 token
+
+    # 知识注入预算：检索后按 score 过滤，默认 K=1 且 score>=0.6，否则不注入
+    knowledge_min_score: float = 0.6
+    knowledge_prompt_top_k: int = 1
 
     # 喂养事件向量：一次性重建 source=standard（默认关闭；字典拉取成功后再删写）
     rebuild_feeding_standard_events: bool = False

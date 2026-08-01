@@ -22,7 +22,15 @@ from uuid import uuid4
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.feeding.graphs.intent_graph import intent_graph
+from app.clinic.graphs.nodes.generate_response import generate_response
+from app.feeding.graphs.intent_graph import (
+    intent_graph,
+    route_after_classify,
+    route_after_vector_match,
+)
+from app.feeding.graphs.nodes.call_clinic_agent import call_clinic_agent
+from app.feeding.graphs.nodes.classify_intent import classify_intent
+from app.feeding.graphs.nodes.match_event_by_vector import match_event_by_vector
 from app.feeding.graphs.nodes.thinking_messages import get_thinking_message
 from app.feeding.schemas.intent import IntentRequest, IntentResponse, IntentStreamResponse
 from app.feeding.services.event_cache import event_cache
@@ -33,6 +41,9 @@ from app.feeding.services.intent_pipeline import (
     try_handle_pending,
 )
 from app.shared.constants import TargetType
+from app.shared.graphs.nodes.fetch_history import fetch_history
+from app.shared.graphs.nodes.judge_data_requirement import judge_data_requirement
+from app.shared.progressive_thinking import run_one_step_with_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -283,31 +294,49 @@ async def _stream_intent_response(
     full_events: list,
     model_config: Dict[str, Any],
 ) -> AsyncGenerator[str, None]:
-    """冷启动流式执行图并推送 thinking / answer。"""
+    """
+    冷启动流式：按 intent_graph 边逐步先 thinking 再执行节点，再组装 answer。
+
+    非流式仍走 intent_graph.ainvoke；本路径不用 astream(updates)。
+    """
     final_state: Dict[str, Any] = dict(initial_state)
-    run_config = _run_config(thread_id)
+    # thread_id 仍写入 conversation_id（initial_state）；无 checkpointer 时 config 可省略
+    _ = thread_id
 
-    async for chunk in intent_graph.astream(
-        initial_state, config=run_config, stream_mode="updates"
-    ):
-        updates_map: Dict[str, Any] = {}
-        if isinstance(chunk, tuple) and len(chunk) >= 2:
-            second = chunk[1]
-            if isinstance(second, dict):
-                updates_map = second
-        elif isinstance(chunk, dict):
-            updates_map = chunk
-
-        for node_name, node_update in updates_map.items():
-            thinking_text = get_thinking_message(node_name)
+    async def _emit_step(node_name: str, node_fn) -> AsyncGenerator[str, None]:
+        async for name, thinking_text in run_one_step_with_thinking(
+            final_state, node_name, node_fn, get_thinking_message
+        ):
             event = IntentStreamResponse(
                 type="thinking",
                 content=thinking_text,
-                node=node_name,
+                node=name,
             )
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
-            if isinstance(node_update, dict):
-                final_state.update(node_update)
+
+    # match_event_by_vector → route
+    async for sse in _emit_step("match_event_by_vector", match_event_by_vector):
+        yield sse
+
+    after_match = route_after_vector_match(final_state)
+    if after_match == "classify_intent":
+        async for sse in _emit_step("classify_intent", classify_intent):
+            yield sse
+
+        after_classify = route_after_classify(final_state)
+        if after_classify == "judge_data_requirement":
+            async for sse in _emit_step(
+                "judge_data_requirement", judge_data_requirement
+            ):
+                yield sse
+            async for sse in _emit_step("fetch_history", fetch_history):
+                yield sse
+            async for sse in _emit_step("generate_response", generate_response):
+                yield sse
+        elif after_classify == "call_clinic_agent":
+            async for sse in _emit_step("call_clinic_agent", call_clinic_agent):
+                yield sse
+        # "end"：feeding / exit 等，路由层后处理
 
     response = _response_from_final_state(
         final_state,

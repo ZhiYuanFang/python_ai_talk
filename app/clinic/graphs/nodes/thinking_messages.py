@@ -16,6 +16,8 @@ from typing import Optional
 # 节点名→中文思考文案映射表
 # 业务说明：每个 key 对应 LangGraph 图中注册的节点名，value 为推送给前端的中文文案
 NODE_THINKING_MESSAGES = {
+    # clinic：隐式判定上一条建议是否被接受（飞轮）
+    "implicit_feedback": "正在回想咱们刚聊到的建议...",
     # 数据需求判断：是否需要拉喂养史当背景
     "judge_data_requirement": "正在看看要不要翻翻最近的记录...",
     # 历史拉取：Go 侧喂养记录

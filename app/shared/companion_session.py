@@ -2,14 +2,14 @@
 陪伴会话存储（tip / clinic 共享）
 
 业务说明：
-按 device_no 在 Redis 中维护近 5 轮 user+assistant 对话，TTL 7 天滑动续期。
-tip 开场与 clinic 续聊读写同一会话，供口语化闺蜜上下文与隐式飞轮使用。
+按 device_no 在 Redis 中维护近 N 轮 user+assistant 对话（默认 3 轮，可配置），
+TTL 7 天滑动续期。tip 开场与 clinic 续聊读写同一会话，供口语化闺蜜上下文与隐式飞轮使用。
 
 设计思路：
 1. key = companion:session:{device_no}
 2. 一轮 = user + assistant；tip 开场合成 user「刚记录了「事件」」
-3. 截断只保留最近 max_turns 整轮
-4. last_suggestion 记录待隐式判定的建议与 knowledge_ids
+3. 截断只保留最近 max_turns 整轮（与注入 chat_context 一致，默认 3）
+4. last_suggestion 记录待隐式判定的建议与 knowledge_ids（与进 prompt 的 knowledge 对齐）
 """
 
 from __future__ import annotations

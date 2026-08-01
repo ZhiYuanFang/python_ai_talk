@@ -7,14 +7,14 @@
 与 /v1/clinic/stream 共享同一陪伴会话，家长可基于 tip 继续 clinic 续聊。
 
 流程：
-1. 读会话近 5 轮注入 chat_context
-2. tip_graph 准备上下文（事件名可作向量检索 query）
+1. 读会话近轮注入 chat_context
+2. 逐步数据准备（先 thinking 再 await；含 derive_baby_age）
 3. 流式生成口语开场
 4. 合成 user「刚记录了「事件」」+ assistant 写入会话；last_suggestion 待隐式飞轮
 
 设计思路：
 1. 会话主键仅 device_no；tip 开场算待判定建议（feedback_applied=false）
-2. 不删 feedback 接口
+2. 流式路径不用 astream(updates)，保证「先报后做」
 """
 
 import json
@@ -34,10 +34,15 @@ from app.shared.companion_session import (
     extract_knowledge_ids,
     format_chat_turns_for_prompt,
 )
+from app.shared.graphs.nodes.fetch_baby_profile import fetch_baby_profile
+from app.shared.graphs.nodes.fetch_history import fetch_history
+from app.shared.graphs.nodes.judge_data_requirement import judge_data_requirement
+from app.shared.graphs.nodes.search_vectors import search_vectors
+from app.shared.progressive_thinking import run_linear_steps_with_thinking
 from app.shared.schemas.feedback import FeedbackRequest
 from app.shared.vector_store import vector_store
+from app.tip.graphs.nodes.derive_baby_age import derive_baby_age
 from app.tip.graphs.nodes.stream_tip_response import stream_tip_response
-from app.tip.graphs.tip_graph import tip_graph
 from app.tip.schemas.tip import TipRequest, TipStreamResponse
 
 logger = logging.getLogger(__name__)
@@ -98,25 +103,23 @@ async def _stream_tip_response(
     *,
     request: TipRequest,
 ) -> AsyncGenerator[str, None]:
-    """生成 tip SSE：图准备 → 流式回答 → 写共享会话。"""
+    """生成 tip SSE：逐步先报后做 → 流式回答 → 写共享会话。"""
     answer_id = f"tip_{uuid.uuid4().hex[:12]}"
     final_state: Dict[str, Any] = dict(initial_state)
 
-    async for chunk in tip_graph.astream(initial_state, stream_mode="updates"):
-        updates_map: Dict[str, Any] = {}
-        if isinstance(chunk, tuple) and len(chunk) >= 2:
-            second = chunk[1]
-            if isinstance(second, dict):
-                updates_map = second
-        elif isinstance(chunk, dict):
-            updates_map = chunk
-
-        for node_name, node_update in updates_map.items():
-            thinking_text = get_thinking_message(str(node_name))
-            event = TipStreamResponse(type="thinking", content=thinking_text)
-            yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
-            if isinstance(node_update, dict):
-                final_state.update(node_update)
+    # 与 tip_graph 边一致：judge → history → vectors → profile → derive_baby_age
+    prepare_steps = [
+        ("judge_data_requirement", judge_data_requirement),
+        ("fetch_history", fetch_history),
+        ("search_vectors", search_vectors),
+        ("fetch_baby_profile", fetch_baby_profile),
+        ("derive_baby_age", derive_baby_age),
+    ]
+    async for node_name, thinking_text in run_linear_steps_with_thinking(
+        final_state, prepare_steps, get_thinking_message
+    ):
+        event = TipStreamResponse(type="thinking", content=thinking_text)
+        yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
     llm_start_event = TipStreamResponse(
         type="thinking",
@@ -136,6 +139,7 @@ async def _stream_tip_response(
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
     full_answer = "".join(answer_parts)
+    # knowledge 已经过 search_vectors 门槛过滤；无注入则飞轮 ids 为空
     knowledge_ids = extract_knowledge_ids(final_state.get("knowledge"))
 
     # tip 开场：合成 user + assistant；last_suggestion.feedback_applied=false

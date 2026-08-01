@@ -3,25 +3,79 @@
 
 业务说明：
 LangGraph 节点：根据用户问题从向量库中检索相关知识。
-异常时返回空列表，不中断图的执行流程。
+检索后按相似度过滤：默认只保留最高分且 score>=门槛的条目（K=1, T=0.6），
+不够像则 knowledge 为空，由闺蜜口语陪聊，降低 token。
 
 设计思路：
-1. 从 State 中读取用户问题（user_input 或 question）
-2. 调用 vector_store.search 进行向量检索
-3. 异常时返回空列表，记录错误日志
-4. 返回 knowledge 更新 State
+1. 从 State 中读取用户问题（user_input / question / tip 事件名）
+2. 多取若干候选再按 score 排序过滤
+3. 写入 State 的 knowledge 即最终进 prompt / 飞轮 ids 的集合
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
 
+from app.config.settings import settings
 from app.shared.vector_store import vector_store
 
-# 初始化日志记录器
 logger = logging.getLogger(__name__)
 
-# 向量检索默认返回数量
+# 底层多取候选，再按门槛与 top_k 收紧（给排序留余地）
 DEFAULT_SEARCH_LIMIT = 5
+
+
+def filter_knowledge_for_prompt(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    按配置收紧进 LLM 的知识列表。
+
+    业务逻辑：
+    1. 按 score 降序
+    2. 丢弃 score < knowledge_min_score 的条目
+    3. 最多保留 knowledge_prompt_top_k 条（默认 1）
+
+    Args:
+        results: 检索结果字典列表（含 score）
+
+    Returns:
+        过滤后的知识列表（可能为空）
+    """
+    if not results:
+        return []
+
+    min_score = float(settings.knowledge_min_score)
+    top_k = max(0, int(settings.knowledge_prompt_top_k))
+    if top_k == 0:
+        return []
+
+    sorted_items = sorted(
+        results,
+        key=lambda r: float(r.get("score") or 0.0),
+        reverse=True,
+    )
+    kept: List[Dict[str, Any]] = []
+    for item in sorted_items:
+        score = float(item.get("score") or 0.0)
+        if score < min_score:
+            continue
+        kept.append(item)
+        if len(kept) >= top_k:
+            break
+
+    if not kept and sorted_items:
+        top = sorted_items[0]
+        logger.info(
+            "知识未达注入门槛，放弃注入: top_score=%s, min_score=%s",
+            top.get("score"),
+            min_score,
+        )
+    elif kept:
+        logger.info(
+            "知识注入: count=%s, top_score=%s, min_score=%s",
+            len(kept),
+            kept[0].get("score"),
+            min_score,
+        )
+    return kept
 
 
 async def search_vectors(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -29,10 +83,9 @@ async def search_vectors(state: Dict[str, Any]) -> Dict[str, Any]:
     向量检索节点函数
 
     业务逻辑：
-    1. 从 State 中读取用户问题（优先 user_input，其次 question）
-    2. 调用向量库进行相似性检索
-    3. 检索异常时返回空列表，不中断流程
-    4. 返回 knowledge 更新 State
+    1. 读取查询词并检索候选
+    2. 过滤为高匹配子集写入 knowledge（供 prompt 与飞轮）
+    3. 异常时返回空列表，不中断流程
 
     Args:
         state: 当前图状态
@@ -40,7 +93,6 @@ async def search_vectors(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         需要更新的 State 字段字典
     """
-    # 读取查询词：intent 用 user_input，clinic 用 question，tip 用事件名
     query = state.get("user_input") or state.get("question", "")
     if not query:
         event_info = state.get("event_info") or {}
@@ -48,21 +100,17 @@ async def search_vectors(state: Dict[str, Any]) -> Dict[str, Any]:
             query = event_info.get("event_name") or ""
 
     if not query:
-        # 没有查询词，返回空列表
         return {"knowledge": []}
 
     try:
-        # 调用向量库检索
         results = vector_store.search(
             query=query,
             n_results=DEFAULT_SEARCH_LIMIT,
         )
 
-        # 格式化结果：转换为字典列表
-        knowledge = []
+        knowledge: List[Dict[str, Any]] = []
         if results and isinstance(results, list):
             for item in results:
-                # 兼容不同的返回格式
                 if isinstance(item, dict):
                     knowledge.append(item)
                 elif isinstance(item, tuple):
@@ -73,9 +121,8 @@ async def search_vectors(state: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     knowledge.append({"content": str(item), "score": 0})
 
-        return {"knowledge": knowledge}
+        return {"knowledge": filter_knowledge_for_prompt(knowledge)}
 
     except Exception as e:
-        # 向量检索失败，返回空列表，不中断流程
         logger.error(f"向量检索失败: {str(e)}")
         return {"knowledge": []}

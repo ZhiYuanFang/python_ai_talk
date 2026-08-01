@@ -7,14 +7,14 @@
 生成前对上一条建议（含 tip 开场）做接受/拒绝/说不清三态判定并驱动飞轮。
 
 流程：
-1. 读陪伴会话，注入近 5 轮 chat_context
-2. 若有未飞轮的 last_suggestion → 三态判定 → 质量分 / 标记 applied
-3. clinic_graph 准备喂养/知识/画像上下文
+1. 读陪伴会话，注入近 3 轮 chat_context
+2. 若有未飞轮的 last_suggestion → 先 thinking 再三态判定 → 质量分 / 标记 applied
+3. 逐步执行数据准备节点（先 thinking 再 await）
 4. 流式生成闺蜜口语回答并写回会话
 
 设计思路：
 1. 会话主键仅 device_no；不删 feedback 接口
-2. 喂养史与聊天轮次分离
+2. 流式路径不用 astream(updates)，保证「先报后做」
 """
 
 import json
@@ -26,7 +26,6 @@ from typing import Any, AsyncGenerator, Dict
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.clinic.graphs.clinic_graph import clinic_graph
 from app.clinic.graphs.nodes.stream_response import stream_response
 from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
 from app.feeding.schemas.intent import ClinicRequest, ClinicStreamResponse
@@ -35,6 +34,14 @@ from app.shared.companion_session import (
     companion_session_store,
     extract_knowledge_ids,
     format_chat_turns_for_prompt,
+)
+from app.shared.graphs.nodes.fetch_baby_profile import fetch_baby_profile
+from app.shared.graphs.nodes.fetch_history import fetch_history
+from app.shared.graphs.nodes.judge_data_requirement import judge_data_requirement
+from app.shared.graphs.nodes.search_vectors import search_vectors
+from app.shared.progressive_thinking import (
+    run_linear_steps_with_thinking,
+    run_one_step_with_thinking,
 )
 from app.shared.schemas.feedback import FeedbackRequest
 from app.shared.suggestion_acceptance import (
@@ -66,7 +73,7 @@ async def clinic_stream(request: ClinicRequest):
 
     event_dictionary = await event_cache.get_event_dictionary()
 
-    # 读会话：注入近 5 轮（不含本轮尚未写入的 user）
+    # 读会话：注入近轮（不含本轮尚未写入的 user）
     session = await companion_session_store.get(request.device_no)
     chat_context = format_chat_turns_for_prompt(session.turns)
 
@@ -131,36 +138,43 @@ async def _stream_clinic_response(
     *,
     session_device_no: str,
 ) -> AsyncGenerator[str, None]:
-    """生成 clinic SSE：隐式飞轮 → 图准备 → 流式回答 → 写会话。"""
+    """生成 clinic SSE：先 thinking 再飞轮/数据准备 → 流式回答 → 写会话。"""
     answer_id = f"clinic_{uuid.uuid4().hex[:12]}"
     final_state: Dict[str, Any] = dict(initial_state)
     question = str(initial_state.get("question") or "")
     model_config = dict(initial_state.get("model_config") or {})
 
-    # 1. 隐式判定上一条建议（含 tip 开场）
-    try:
-        await _maybe_apply_implicit_feedback(
-            session_device_no, question, model_config
-        )
-    except Exception as e:
-        logger.error(f"隐式飞轮异常（不中断主流程）: {e}", exc_info=True)
+    async def _flywheel_node(state: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            await _maybe_apply_implicit_feedback(
+                session_device_no, question, model_config
+            )
+        except Exception as e:
+            logger.error(f"隐式飞轮异常（不中断主流程）: {e}", exc_info=True)
+        return {}
 
-    # 2. 流式执行 clinic_graph（updates：{node_name: patch}）
-    async for chunk in clinic_graph.astream(initial_state, stream_mode="updates"):
-        updates_map: Dict[str, Any] = {}
-        if isinstance(chunk, tuple) and len(chunk) >= 2:
-            second = chunk[1]
-            if isinstance(second, dict):
-                updates_map = second
-        elif isinstance(chunk, dict):
-            updates_map = chunk
+    # 1. 隐式飞轮：先字幕再判定
+    async for node_name, thinking_text in run_one_step_with_thinking(
+        final_state,
+        "implicit_feedback",
+        _flywheel_node,
+        get_thinking_message,
+    ):
+        event = ClinicStreamResponse(type="thinking", content=thinking_text)
+        yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
-        for node_name, node_update in updates_map.items():
-            thinking_text = get_thinking_message(str(node_name))
-            event = ClinicStreamResponse(type="thinking", content=thinking_text)
-            yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
-            if isinstance(node_update, dict):
-                final_state.update(node_update)
+    # 2. 数据准备：逐步先报后做（与 clinic_graph 边一致）
+    prepare_steps = [
+        ("judge_data_requirement", judge_data_requirement),
+        ("fetch_history", fetch_history),
+        ("search_vectors", search_vectors),
+        ("fetch_baby_profile", fetch_baby_profile),
+    ]
+    async for node_name, thinking_text in run_linear_steps_with_thinking(
+        final_state, prepare_steps, get_thinking_message
+    ):
+        event = ClinicStreamResponse(type="thinking", content=thinking_text)
+        yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
     llm_start_event = ClinicStreamResponse(
         type="thinking",
@@ -181,6 +195,7 @@ async def _stream_clinic_response(
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
     full_answer = "".join(answer_parts)
+    # knowledge 已经过 search_vectors 门槛过滤；无注入则飞轮 ids 为空
     knowledge_ids = extract_knowledge_ids(final_state.get("knowledge"))
 
     # 4. 追加本轮到共享会话
