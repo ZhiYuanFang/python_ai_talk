@@ -2,7 +2,7 @@
 历史查询句式检测
 
 业务说明：
-含事件名的「上次/什么时候」类问句易被向量高置信打成 feeding。
+含事件名的「上次/什么时候/总结最近N天」类问句易被向量高置信打成 feeding。
 在 match_event_by_vector 前提示：命中则强制降级 LLM 分类。
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-# 查询/询问句式（命中任一则不当作直接落库）
+# 查询/询问/汇总句式（命中任一则不当作直接落库）
 _QUERY_PATTERNS = (
     r"什么时候",
     r"啥时候",
@@ -28,6 +28,17 @@ _QUERY_PATTERNS = (
     r"有没有记录",
     r"查一下",
     r"查查",
+    # 汇总 / 趋势
+    r"总结",
+    r"变化",
+    r"趋势",
+    r"最近\s*\d+\s*天",
+    r"最近七天",
+    r"最近7天",
+    r"这周",
+    r"这一周",
+    r"近一周",
+    r"怎么样",
 )
 
 _QUERY_RE = re.compile("|".join(_QUERY_PATTERNS), re.IGNORECASE)

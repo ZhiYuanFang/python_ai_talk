@@ -56,7 +56,7 @@ def build_history_answer_user_message(user_text: str, history_events: List[Dict[
         用户消息字符串
     """
     history_str = json.dumps(
-        slim_history_events_for_prompt(history_events),
+        slim_history_events_for_prompt(history_events, limit=20, time_style="relative"),
         ensure_ascii=False,
         indent=2,
     )

@@ -104,7 +104,9 @@ def build_tip_answer_user_message(
 
     history_info = ""
     if history_events:
-        recent_events = slim_history_events_for_prompt(history_events)[-5:]
+        recent_events = slim_history_events_for_prompt(
+            history_events, limit=5, time_style="relative"
+        )
         history_info = f"""
 近期喂养记录（背景）：
 {json.dumps(recent_events, ensure_ascii=False, indent=2)}
