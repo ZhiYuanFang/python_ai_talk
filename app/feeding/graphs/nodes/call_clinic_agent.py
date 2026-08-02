@@ -2,13 +2,14 @@
 调用诊疗 Agent 节点
 
 业务说明：
-当意图为 conversation / suggest 时，同进程走 clinic 数据准备 + 闺蜜生成，
+当意图为 history / conversation / suggest 时，同进程走 clinic 数据准备 + 闺蜜生成，
 并与 tip/clinic 共享 companion session（读 chat_context、写轮次、隐式飞轮）。
+history（纯查记录）设 skip_knowledge，跳过知识向量检索。
 
 流程：
 1. 隐式飞轮（对 last_suggestion）
 2. 读会话注入 chat_context
-3. clinic_graph.ainvoke 数据准备
+3. clinic_graph.ainvoke 数据准备（history 跳过 search_vectors）
 4. generate_clinic_answer（clinic_answer + invoke）
 5. 成功非兜底则 append_turn(source=intent) + last_suggestion
 
@@ -84,13 +85,22 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"读取陪伴会话失败，继续无 chat_context: {e}")
 
+    target_type = ""
+    if isinstance(intent_result, dict):
+        target_type = str(intent_result.get("target_type") or "")
+    # 纯查记录：跳过知识检索，避免干扰答时间点
+    skip_knowledge = target_type == TargetType.HISTORY.value
+
     clinic_state = {
         "question": user_input,
         "device_no": device_no,
         "model_config": model_config,
         "event_dictionary": event_dictionary or [],
         "chat_context": chat_context,
+        "skip_knowledge": skip_knowledge,
     }
+    if skip_knowledge:
+        logger.info("history 意图：clinic 数据准备跳过 search_vectors")
 
     try:
         # 3. 数据准备
@@ -100,6 +110,8 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
         merged_state["user_input"] = user_input
         merged_state["chat_context"] = chat_context
         merged_state["model_config"] = model_config
+        if skip_knowledge:
+            merged_state["knowledge"] = []
 
         # 4. 闺蜜同步生成（不再走 generate_response）
         generate_result = await generate_clinic_answer(merged_state)

@@ -14,6 +14,8 @@ history 意图回答生成提示词构建模块
 import json
 from typing import Any, Dict, List
 
+from app.shared.history_prompt_fields import slim_history_events_for_prompt
+
 
 def build_history_answer_system_prompt() -> str:
     """
@@ -53,7 +55,11 @@ def build_history_answer_user_message(user_text: str, history_events: List[Dict[
     Returns:
         用户消息字符串
     """
-    history_str = json.dumps(history_events, ensure_ascii=False, indent=2)
+    history_str = json.dumps(
+        slim_history_events_for_prompt(history_events),
+        ensure_ascii=False,
+        indent=2,
+    )
 
     return f"""
 用户问题："{user_text}"

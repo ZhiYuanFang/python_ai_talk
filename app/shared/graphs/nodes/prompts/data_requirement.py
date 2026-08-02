@@ -45,6 +45,12 @@ time_range 可选值：
 - "last_30_days": 最近30天
 - "custom": 自定义时间范围（需同时提供 start_time 和 end_time）
 
+查「上次 / 上一次 / 什么时候 / 分别」时：
+- 从可用事件中选出提到的类型填入 event_ids（如拉屎、睡觉）
+- 「X 和 Y 分别」→ 放入多个 event_ids
+- time_range 优先 last_7_days，若不确定用 last_30_days
+- limit 至少 20，保证每种事件能取到最近一条
+
 注意事项：
 1. event_ids 使用事件的字符串ID（如 "1"、"2"），从可用事件中选择
 2. 如果用户问题涉及所有喂养事件，返回所有相关事件的ID

@@ -2,15 +2,14 @@
 意图分析图定义
 
 业务说明：
-使用 LangGraph 定义意图分析的状态图，协调向量匹配、意图分类、
-历史查询短链与 clinic agent 调用等节点。
+使用 LangGraph 定义意图分析的状态图，协调向量匹配、意图分类与 clinic agent。
+history / conversation / suggest 均走 call_clinic_agent（查记录由 clinic 拉历史答题）。
 
-确认/消歧改为同一 /intent + conversation_id 的 pending 自由文本续聊，
-图内不再使用 prepare_confirm interrupt 与 /intent/confirm。
+确认/消歧改为同一 /intent + conversation_id 的 pending 自由文本续聊。
 
 设计思路：
-1. 向量匹配 → 按置信度路由（高置信 END / 中置信 END 由路由 pending / 低置信 LLM）
-2. LLM 分类后按 target_type 分支：feeding END（路由后处理）、history 短链、conversation/suggest clinic、exit END
+1. 向量匹配 → 按置信度路由（查询句已在 match 内降级 LLM）
+2. LLM 分类后：feeding END；history/conversation/suggest → clinic agent；exit END
 """
 
 import logging
@@ -18,19 +17,14 @@ from typing import Any, Dict
 
 from langgraph.graph import StateGraph, START, END
 
-from app.clinic.graphs.nodes.generate_response import generate_response
 from app.feeding.graphs.nodes.call_clinic_agent import call_clinic_agent
 from app.feeding.graphs.nodes.classify_intent import classify_intent
 from app.feeding.graphs.nodes.match_event_by_vector import match_event_by_vector
 from app.feeding.graphs.states.intent_state import IntentState
-from app.shared.graphs.nodes.fetch_history import fetch_history
-from app.shared.graphs.nodes.judge_data_requirement import judge_data_requirement
 from app.shared.constants import MatchSource, TargetType
 
-# 初始化日志记录器
 logger = logging.getLogger(__name__)
 
-# 使用 IntentState TypedDict，确保 conversation_id / user_input 等通道保留
 State = IntentState
 
 
@@ -38,7 +32,6 @@ def route_after_vector_match(state: State) -> str:
     """
     向量匹配后的路由决策（供图边与 intent 流式步进共用）。
 
-    业务逻辑：
     - match_source 为 llm：降级至 LLM 分类
     - 否则 END（含高置信直接结果、中置信 need_confirm，由路由层 pending 处理）
     """
@@ -60,8 +53,7 @@ def route_after_classify(state: State) -> str:
     意图分类后的路由决策（供图边与 intent 流式步进共用）。
 
     - feeding（含 multi）：END，由路由层做叶子校验/消歧/软确认
-    - history：历史短链
-    - conversation / suggest：clinic agent
+    - history / conversation / suggest：clinic agent
     - exit / 其他：直接结束
     """
     intent_result = state.get("intent_result") or {}
@@ -71,29 +63,25 @@ def route_after_classify(state: State) -> str:
 
     if target_type == TargetType.FEEDING.value:
         return "end"
-    if target_type == TargetType.HISTORY.value:
-        return "judge_data_requirement"
-    if target_type in (TargetType.CONVERSATION.value, TargetType.SUGGEST.value):
+    if target_type in (
+        TargetType.HISTORY.value,
+        TargetType.CONVERSATION.value,
+        TargetType.SUGGEST.value,
+    ):
         return "call_clinic_agent"
     return "end"
 
 
-# 兼容旧私有名（若有外部引用）
 _route_after_vector_match = route_after_vector_match
 _route_after_classify = route_after_classify
 
 
 def build_intent_graph() -> StateGraph:
-    """
-    构建意图分析图（无旧 confirm interrupt 主路径）。
-    """
+    """构建意图分析图（history 并入 clinic agent）。"""
     graph = StateGraph(State)
 
     graph.add_node("match_event_by_vector", match_event_by_vector)
     graph.add_node("classify_intent", classify_intent)
-    graph.add_node("judge_data_requirement", judge_data_requirement)
-    graph.add_node("fetch_history", fetch_history)
-    graph.add_node("generate_response", generate_response)
     graph.add_node("call_clinic_agent", call_clinic_agent)
 
     graph.add_edge(START, "match_event_by_vector")
@@ -112,19 +100,14 @@ def build_intent_graph() -> StateGraph:
         route_after_classify,
         {
             "end": END,
-            "judge_data_requirement": "judge_data_requirement",
             "call_clinic_agent": "call_clinic_agent",
         },
     )
 
-    graph.add_edge("judge_data_requirement", "fetch_history")
-    graph.add_edge("fetch_history", "generate_response")
-    graph.add_edge("generate_response", END)
     graph.add_edge("call_clinic_agent", END)
 
-    logger.info("意图分析图构建完成（pending 澄清由 /intent 路由处理）")
+    logger.info("意图分析图构建完成（history→clinic agent；pending 由路由处理）")
     return graph.compile()
 
 
-# 模块级单例
 intent_graph = build_intent_graph()

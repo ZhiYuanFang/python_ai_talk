@@ -15,6 +15,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 
+from app.shared.history_prompt_fields import slim_history_events_for_prompt
 from app.tip.graphs.nodes.derive_baby_age import shanghai_now
 
 
@@ -103,7 +104,7 @@ def build_tip_answer_user_message(
 
     history_info = ""
     if history_events:
-        recent_events = history_events[-5:]
+        recent_events = slim_history_events_for_prompt(history_events)[-5:]
         history_info = f"""
 近期喂养记录（背景）：
 {json.dumps(recent_events, ensure_ascii=False, indent=2)}

@@ -40,6 +40,8 @@ class ClinicState(TypedDict, total=False):
     event_dictionary: List[Dict[str, Any]]  # 事件字典列表（供 judge_data_requirement）
     # tip/clinic 共享陪伴对话（须声明否则 LangGraph 静默丢弃）
     chat_context: str
+    # True 时跳过 search_vectors（intent history 纯查记录）
+    skip_knowledge: bool
 
     # 中间字段（各节点填充）
     data_requirement: Dict[str, Any]        # 数据需求判断结果

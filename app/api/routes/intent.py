@@ -22,7 +22,6 @@ from uuid import uuid4
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.clinic.graphs.nodes.generate_response import generate_response
 from app.feeding.graphs.intent_graph import (
     intent_graph,
     route_after_classify,
@@ -41,8 +40,6 @@ from app.feeding.services.intent_pipeline import (
     try_handle_pending,
 )
 from app.shared.constants import TargetType
-from app.shared.graphs.nodes.fetch_history import fetch_history
-from app.shared.graphs.nodes.judge_data_requirement import judge_data_requirement
 from app.shared.progressive_thinking import run_one_step_with_thinking
 
 logger = logging.getLogger(__name__)
@@ -324,16 +321,8 @@ async def _stream_intent_response(
             yield sse
 
         after_classify = route_after_classify(final_state)
-        if after_classify == "judge_data_requirement":
-            async for sse in _emit_step(
-                "judge_data_requirement", judge_data_requirement
-            ):
-                yield sse
-            async for sse in _emit_step("fetch_history", fetch_history):
-                yield sse
-            async for sse in _emit_step("generate_response", generate_response):
-                yield sse
-        elif after_classify == "call_clinic_agent":
+        if after_classify == "call_clinic_agent":
+            # history / conversation / suggest → clinic agent
             async for sse in _emit_step("call_clinic_agent", call_clinic_agent):
                 yield sse
         # "end"：feeding / exit 等，路由层后处理

@@ -3,43 +3,45 @@
 
 业务说明：
 构建 clinic 场景回答生成节点使用的系统提示词。
-角色为对妈妈/家长说话的懂娃闺蜜：口语接情绪，喂养知识当背景。
+角色为对妈妈/家长说话的懂娃闺蜜：口语接情绪；查记录题按喂养史答时间。
 
 设计思路：
-1. 组合宝宝画像、历史记录、向量库知识、近期陪伴对话
-2. 口语化，不做医生诊疗口吻
+1. 组合宝宝画像、精简历史、向量库知识、近期陪伴对话
+2. 查记录题优先事实时间；闲聊题保持短口语
 3. 保留不诊断、不开药、必要时温柔劝就医
 """
 
 import json
 from typing import Any, Dict, List, Optional
 
+from app.shared.history_prompt_fields import slim_history_events_for_prompt
+
 
 def build_clinic_answer_system_prompt() -> str:
     """
-    构建 clinic 回答的系统提示词
-
-    业务逻辑：
-    引导 LLM 作为懂一点喂养的闺蜜，和家长口语聊天；
-    先接住情绪，再顺嘴带一点实用信息；知识与记录只作背景。
-
-    Returns:
-        系统提示词字符串
+    构建 clinic 回答的系统提示词。
     """
     return """
 你是家长（妈妈/爸爸）身边懂娃的闺蜜，不是医生，也不要自称儿科助手。
-用口语跟「你」聊天，称呼宝宝用「宝宝/小家伙」。主打接住对方情绪，像最好的闺蜜一样陪着说。
+用口语跟「你」聊天，称呼宝宝用「宝宝/小家伙」。
 
-你可以参考喂养记录和知识库里的信息，让自己显得「懂一点」，但别端着讲课，别开医嘱。
-先共情，再顺嘴给一点轻松、可做的小提醒就好。
+【查记录题】若家长在问上次/上一次/什么时候/何时/分别何时等：
+1. 必须以「喂养记录」为准回答，不要编造时间
+2. 问单一事件上次：说出该事件最近一条的时间（优先 startTime，没有再用 endTime）
+3. 问多个事件「分别」：按事件类型各取最近一条，分别说清
+4. 记录里没有就老实说没记到
+5. 这类题可以略长一点把时间说清楚，不受下面约 50 字限制
+
+【闲聊/建议题】：
+先共情，再顺嘴给一点轻松、可做的小提醒；知识与记录只作背景。
+回复控制在大约 50 字内，关键字可加粗，可适度用表情。
 
 注意事项：
 1. 不要做疾病诊断，不要给药物剂量或处方
-2. 家长若明显担心身体状况，用闺蜜口吻轻轻提醒：不放心就问问医生/去医院看看
+2. 家长若明显担心身体状况，轻轻提醒：不放心就问问医生
 3. 信息不够就诚实说，别编
-4. 回答口语、自然，别用说明书标题和硬邦邦分点清单（除非家长明确要条理）
+4. 别用说明书标题和硬邦邦分点清单（除非家长明确要条理）
 5. 不要制造焦虑
-6. 回复控制在大约50字内，别用强制标题结构，关键字加粗，要善于使用表情符号
 
 若开启思考：可用 [思考]... 再给出回答；回答正文直接口语说。
 """
@@ -53,21 +55,7 @@ def build_clinic_answer_user_message(
     chat_context: Optional[str] = None,
 ) -> str:
     """
-    构建 clinic 回答的用户消息
-
-    业务逻辑：
-    将用户问题、宝宝画像、喂养历史、知识与近期陪伴对话组合成用户消息。
-    chat_context 与喂养历史分离，仅作续聊记忆。
-
-    Args:
-        question: 家长本轮问题
-        history_events: 喂养历史记录列表
-        knowledge_results: 向量检索结果列表
-        baby_profile: 宝宝画像信息
-        chat_context: 近期 tip/clinic 陪伴对话文本（可选）
-
-    Returns:
-        用户消息字符串
+    构建 clinic 回答的用户消息（历史已裁剪字段）。
     """
     baby_info = ""
     if baby_profile:
@@ -78,10 +66,12 @@ def build_clinic_answer_user_message(
 """
 
     history_info = ""
-    if history_events:
-        recent_events = history_events[-10:]
+    slim = slim_history_events_for_prompt(history_events)
+    if slim:
+        # 查记录题用最近若干条即可
+        recent_events = slim[-20:]
         history_info = f"""
-最近喂养记录（背景，不是聊天记录）：
+喂养记录（答题依据；不是聊天记录）：
 {json.dumps(recent_events, ensure_ascii=False, indent=2)}
 """
 

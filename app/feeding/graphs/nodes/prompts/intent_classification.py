@@ -94,6 +94,12 @@ def build_intent_classification_system_prompt(event_dictionary: List[Dict[str, A
 - 睡觉、游泳、洗澡、晒太阳 → time（时间型，单位：分钟 或 小时）
 - 换尿布、刷牙、洗脸 → one（单次型，单位：次）
 
+查记录 vs 记事件（重要）：
+- 用户在问「上次/上一次/什么时候/何时/分别/多少次/吃了多少」等 → 必须用 history + search，禁止 feeding
+- 例：「上一次拉屎是什么时候」「上一次睡觉拉屎分别在什么时候」→ history
+- 例：「拉屎了」「记录拉屎」「开始睡觉」→ feeding
+- history 时 event_name/event_id 可填相关事件以便下游拉记录，但 target_type 必须是 history
+
 注意事项：
 1. 如果无法确定意图，请使用 "conversation" + "reply"，并在 content 中说明无法理解
 2. 喂养场景必须填写 event_name 和 event_id，event_id 从可用事件中选择

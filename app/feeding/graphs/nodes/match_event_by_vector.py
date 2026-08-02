@@ -20,6 +20,7 @@ from typing import Any, Dict
 
 from app.feeding.services.event_vector_store import event_vector_store
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
+from app.feeding.utils.query_utterance import looks_like_history_query
 from app.shared.constants import IntentAction, MatchSource, TargetType
 
 # 初始化日志记录器
@@ -54,6 +55,17 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     # 业务说明：路由注入的是 user_input；兼容旧字段 text 作 fallback
     text = state.get("user_input") or state.get("text", "")
+
+    # 查询句（上次/什么时候/分别…）禁止向量直接落 feeding，交给 LLM 分类
+    if looks_like_history_query(text):
+        logger.info(
+            f"检测到历史查询句式，跳过向量 feeding: text={text[:40]}..."
+        )
+        return {
+            "intent_result": {"match_source": MatchSource.LLM.value},
+            "match_confidence": 0.0,
+            "match_source": MatchSource.LLM.value,
+        }
 
     try:
         # 复用模块级单例，避免每次请求重新加载 Embedding / Chroma
