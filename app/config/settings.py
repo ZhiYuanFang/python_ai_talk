@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     qa_fast_path_enabled: bool = True
     qa_sim_threshold: float = 0.8
     qa_quality_min: float = 0.7
-    rewrite_timeout_s: float = 2.0
+    rewrite_timeout_s: float = 5.0
 
     # 喂养事件向量：一次性重建 source=standard（默认关闭；字典拉取成功后再删写）
     rebuild_feeding_standard_events: bool = False

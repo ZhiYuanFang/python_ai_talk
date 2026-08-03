@@ -65,7 +65,7 @@ def _tip_closing_instruction(
     if has_chat:
         parts.append("必须结合近期陪伴对话，点名上次相关内容。")
     if has_history:
-        parts.append("必须结合近期喂养记录，点名 1 条近况。")
+        parts.append("必须结合近期喂养记录，点名 1 条近况。如果喂养记录的时间距今超过2天，用「之前有一次/上次看到」来引导，不要说成「现在/今天」，避免让家长觉得你在拿旧事说现在。")
     if not has_chat and not has_history:
         parts.append("没有对话和记录时，不要编造「上次」或「记录里」。")
     parts.append("大约50字内，别用强制标题结构，关键字加粗，可适度用表情。")
