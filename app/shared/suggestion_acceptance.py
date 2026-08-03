@@ -190,12 +190,21 @@ async def apply_flywheel_for_status(
     对每个 knowledge_id 调用 vector_store.update_quality_score。
     """
     if status == AcceptanceStatus.UNCLEAR:
+        logger.info("飞轮加减分跳过: status=unclear, kids=%s", len(knowledge_ids or []))
         return
     if not knowledge_ids:
+        logger.info("飞轮加减分跳过: 无 knowledge_ids, status=%s", status.value)
         return
     from app.shared.vector_store import vector_store
 
     feedback = 1 if status == AcceptanceStatus.ACCEPTED else -1
+    logger.info(
+        "飞轮加减分开始: status=%s, feedback=%s, kids=%s, ids=%s",
+        status.value,
+        feedback,
+        len(knowledge_ids),
+        [str(k) for k in knowledge_ids[:8]],
+    )
     for kid in knowledge_ids:
         try:
             vector_store.update_quality_score(str(kid), feedback)
@@ -215,11 +224,13 @@ async def maybe_apply_implicit_feedback(
     1. 读 companion session 的 last_suggestion
     2. 已 applied 或无文本则跳过
     3. 三态判定成功后调质量分并 mark_feedback_applied
-    4. 判定失败返回 None 时不置 applied，便于下次重试
+    4. accepted 且上轮改写成功时写入全局 Q&A
+    5. 判定失败返回 None 时不置 applied，便于下次重试
 
     调用方应自行 try/except，避免飞轮异常中断主流程。
     """
     from app.shared.companion_session import companion_session_store
+    from app.shared.qa_fast_path import promote_accepted_qa
 
     session = await companion_session_store.get(device_no)
     sug = session.last_suggestion
@@ -238,6 +249,21 @@ async def maybe_apply_implicit_feedback(
         return
 
     await apply_flywheel_for_status(status, sug.knowledge_ids)
+
+    if status == AcceptanceStatus.ACCEPTED:
+        qa_id = promote_accepted_qa(
+            standalone_question=sug.standalone_question,
+            answer=sug.text,
+            age_band=sug.age_band,
+        )
+        logger.info(
+            "隐式采纳后 Q&A 推广: device_no=%s, qa_id=%s, has_rewrite=%s, age_band=%s",
+            device_no,
+            qa_id,
+            bool(sug.standalone_question),
+            sug.age_band or "",
+        )
+
     await companion_session_store.mark_feedback_applied(device_no)
     logger.info(
         f"隐式飞轮完成: device_no={device_no}, status={status.value}, "

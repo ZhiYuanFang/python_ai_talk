@@ -15,6 +15,7 @@ from typing import Any, Dict
 
 from app.clinic.graphs.clinic_graph import clinic_graph
 from app.clinic.graphs.nodes.generate_clinic_answer import generate_clinic_answer
+from app.shared.baby_age import age_band_from_months
 from app.shared.companion_session import (
     companion_session_store,
     extract_knowledge_ids,
@@ -107,20 +108,30 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
         if skip_knowledge:
             merged_state["knowledge"] = []
 
-        generate_result = await generate_clinic_answer(merged_state)
-        clinic_response = (generate_result.get("response") or "").strip()
-
         used_fallback = False
-        if not clinic_response:
-            logger.warning("诊疗 Agent 闺蜜生成返回为空，使用兜底文案")
-            clinic_response = CLINIC_FALLBACK
-            used_fallback = True
+        if merged_state.get("qa_hit") and str(merged_state.get("qa_answer") or "").strip():
+            clinic_response = str(merged_state.get("qa_answer") or "").strip()
+            logger.info(
+                "诊疗 Agent 走 Q&A 捷径: id=%s, sim=%s",
+                merged_state.get("qa_match_id"),
+                merged_state.get("qa_match_score"),
+            )
+        else:
+            generate_result = await generate_clinic_answer(merged_state)
+            clinic_response = (generate_result.get("response") or "").strip()
+            if not clinic_response:
+                logger.warning("诊疗 Agent 闺蜜生成返回为空，使用兜底文案")
+                clinic_response = CLINIC_FALLBACK
+                used_fallback = True
 
         logger.info(f"诊疗 Agent 调用成功，response={clinic_response[:50]}")
 
         if not used_fallback and clinic_response != CLINIC_FALLBACK:
             knowledge_ids = extract_knowledge_ids(merged_state.get("knowledge"))
             answer_id = f"intent_{uuid.uuid4().hex[:12]}"
+            age_band = merged_state.get("age_band") or age_band_from_months(
+                merged_state.get("baby_age_months")
+            )
             try:
                 await companion_session_store.append_turn(
                     device_no,
@@ -130,6 +141,8 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
                     answer_id=answer_id,
                     knowledge_ids=knowledge_ids,
                     suggestion_text=clinic_response,
+                    standalone_question=merged_state.get("standalone_question") or "",
+                    age_band=age_band or "",
                 )
             except Exception as e:
                 logger.warning(f"写入陪伴会话失败（不中断意图响应）: {e}")

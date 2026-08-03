@@ -28,8 +28,12 @@ NODE_THINKING_MESSAGES = {
     "search_vectors": "正在想想有没有相关经验可以参考...",
     # 宝宝画像
     "fetch_baby_profile": "正在了解宝宝的基本情况...",
-    # tip：自算月龄
+    # tip/clinic：自算月龄
     "derive_baby_age": "正在根据生日算算宝宝月龄...",
+    # Q&A 捷径
+    "rewrite_standalone_question": "正在把问题整理得更清楚...",
+    "search_qa_fast_path": "正在看看有没有类似的优质问答...",
+    "format_qa_answer": "命中历史优质问答，正在组织回答...",
     # 开始生成口语回复
     "llm_start": "正在想怎么跟你说...",
 }

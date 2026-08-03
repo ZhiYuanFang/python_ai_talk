@@ -24,31 +24,62 @@ logger = logging.getLogger(__name__)
 DEFAULT_SEARCH_LIMIT = 5
 
 
+def _item_quality_score(item: Dict[str, Any]) -> float:
+    """读取 metadata.quality_score；缺失按通识库默认 0.8。"""
+    meta = item.get("metadata") or {}
+    if not isinstance(meta, dict):
+        return 0.8
+    raw = meta.get("quality_score")
+    if raw is None:
+        return 0.8
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.8
+
+
 def filter_knowledge_for_prompt(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     按配置收紧进 LLM 的知识列表。
 
     业务逻辑：
-    1. 按 score 降序
-    2. 丢弃 score < knowledge_min_score 的条目
-    3. 最多保留 knowledge_prompt_top_k 条（默认 1）
-
-    Args:
-        results: 检索结果字典列表（含 score）
-
-    Returns:
-        过滤后的知识列表（可能为空）
+    1. 丢弃 quality_score < knowledge_quality_min 的条目（硬过滤）
+    2. 按相似度 score 降序
+    3. 丢弃 score < knowledge_min_score 的条目
+    4. 最多保留 knowledge_prompt_top_k 条（默认 1）
     """
     if not results:
         return []
 
     min_score = float(settings.knowledge_min_score)
+    quality_min = float(settings.knowledge_quality_min)
     top_k = max(0, int(settings.knowledge_prompt_top_k))
     if top_k == 0:
         return []
 
+    after_quality: List[Dict[str, Any]] = []
+    for item in results:
+        q = _item_quality_score(item)
+        if q < quality_min:
+            logger.info(
+                "通识硬过滤丢弃: id=%s, quality=%.4f < min=%.4f, sim=%s",
+                item.get("id"),
+                q,
+                quality_min,
+                item.get("score"),
+            )
+            continue
+        after_quality.append(item)
+
+    if not after_quality and results:
+        logger.info(
+            "通识硬过滤后为空: candidates=%s, quality_min=%s",
+            len(results),
+            quality_min,
+        )
+
     sorted_items = sorted(
-        results,
+        after_quality,
         key=lambda r: float(r.get("score") or 0.0),
         reverse=True,
     )
@@ -64,16 +95,20 @@ def filter_knowledge_for_prompt(results: List[Dict[str, Any]]) -> List[Dict[str,
     if not kept and sorted_items:
         top = sorted_items[0]
         logger.info(
-            "知识未达注入门槛，放弃注入: top_score=%s, min_score=%s",
+            "知识未达注入门槛，放弃注入: top_score=%s, min_score=%s, top_quality=%s",
             top.get("score"),
             min_score,
+            _item_quality_score(top),
         )
     elif kept:
         logger.info(
-            "知识注入: count=%s, top_score=%s, min_score=%s",
+            "知识注入: count=%s, top_score=%s, min_score=%s, top_quality=%s, "
+            "quality_min=%s",
             len(kept),
             kept[0].get("score"),
             min_score,
+            _item_quality_score(kept[0]),
+            quality_min,
         )
     return kept
 

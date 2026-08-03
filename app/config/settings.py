@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # 知识注入预算：检索后按 score 过滤，默认 K=1 且 score>=0.6，否则不注入
     knowledge_min_score: float = 0.6
     knowledge_prompt_top_k: int = 1
+    # 通识知识 quality_score 硬过滤下限（缺省元数据按 store 默认 0.8）
+    knowledge_quality_min: float = 0.7
+
+    # Q&A 捷径：改写超时、相似度/质量阈值、总开关
+    qa_fast_path_enabled: bool = True
+    qa_sim_threshold: float = 0.8
+    qa_quality_min: float = 0.7
+    rewrite_timeout_s: float = 2.0
 
     # 喂养事件向量：一次性重建 source=standard（默认关闭；字典拉取成功后再删写）
     rebuild_feeding_standard_events: bool = False

@@ -54,7 +54,7 @@ PYTHON_AI_TALK_DEEPSEEK_API_KEY   → DEEPSEEK_API_KEY
 Python AI Talk 是一个基于 FastAPI + LangGraph 的母婴喂养意图识别微服务，提供以下能力：
 
 - **意图分析**：识别用户自然语言中的喂养记录、历史查询、成长建议等意图
-- **智能陪伴（tip/clinic）**：懂娃闺蜜口语陪伴；添加事件走 tip 开场，可用 clinic 续聊；Python 按 `device_no` Redis 会话共享近 5 轮（TTL 7 天）；续聊时隐式判定上一条建议是否采纳以驱动知识飞轮（显式 `/feedback` 仍兼容）
+- **智能陪伴（tip/clinic）**：懂娃闺蜜口语陪伴；添加事件走 tip 开场，可用 clinic 续聊；Python 按 `device_no` Redis 会话共享近轮（TTL 7 天）；续聊时隐式判定上一条建议是否采纳以驱动知识飞轮与全局 Q&A 捷径。显式 `/v1/clinic/feedback`、`/v1/tip/feedback` 已下线（Go/Flutter 旧调用将 404，需跨仓停调）
 - **向量数据库**：基于 Chroma + BGE 的中文母婴知识库
 
 ### 1.2 部署架构
@@ -296,8 +296,8 @@ app/
 │
 ├── api/routes/                 # API 路由
 │   ├── knowledge.py            # **新增**：知识库管理接口（上传、列表、详情、更新、删除、统计）
-│   ├── clinic.py               # 诊疗问答路由（新增 /feedback 接口）
-│   ├── tip.py                  # 小贴士路由（新增 /feedback 接口）
+│   ├── clinic.py               # 陪伴续聊路由（隐式飞轮 + Q&A 捷径）
+│   ├── tip.py                  # 事件开场路由（共享会话）
 │   └── ...                     # 其他路由
 │
 └── shared/                     # 共享服务
@@ -331,14 +331,12 @@ app/
 | 知识库删除 | DELETE | `/v1/knowledge/{doc_id}` | 删除文档 |
 | 知识库统计 | GET | `/v1/knowledge/stats` | 获取知识库统计信息 |
 | 知识库分类 | GET | `/v1/knowledge/categories` | 获取所有知识分类 |
-| 陪伴续聊（流式） | POST | `/v1/clinic/stream` | 与 tip 共享 `device_no` 会话；隐式采纳飞轮 |
+| 陪伴续聊（流式） | POST | `/v1/clinic/stream` | 与 tip 共享 `device_no` 会话；隐式采纳飞轮 + Q&A 捷径 |
 | 事件开场（流式） | POST | `/v1/tip/stream` | 添加事件后闺蜜开场，写入共享会话 |
-| 陪伴反馈 | POST | `/v1/clinic/feedback` | 显式反馈兼容（👍/👎）；主路径为隐式判定 |
-| 开场反馈 | POST | `/v1/tip/feedback` | 显式反馈兼容（👍/👎） |
 
-**流式响应变更**：
+**流式响应说明**：
 
-诊疗和小贴士流式接口新增 `done` 事件，包含 `answer_id` 字段，用于前端提交反馈：
+诊疗和小贴士流式接口含 `done` 事件与 `answer_id`（会话/排障用）。质量分更新走隐式采纳，不再提供显式 feedback 接口。
 
 ```
 data: {"type": "done", "content": "回答完成", "answer_id": "clinic_abc123"}

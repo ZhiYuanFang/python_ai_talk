@@ -14,6 +14,7 @@
 5. 支持扩展元数据字段，用于知识飞轮（质量评分、反馈统计）
 """
 
+import hashlib
 import logging
 import os
 import uuid
@@ -120,6 +121,11 @@ class VectorStore:
                 self._collection = self._chroma_client.get_or_create_collection(
                     name="mother_baby_knowledge",  # Collection 名称
                     metadata={"description": "母婴喂养知识向量库"},  # 描述信息
+                )
+                # 全局 Q&A 捷径库（与通识知识隔离）
+                self._qa_collection = self._chroma_client.get_or_create_collection(
+                    name="qa_fast_path",
+                    metadata={"description": "全局问答捷径向量库"},
                 )
 
                 # 标记初始化完成
@@ -275,8 +281,20 @@ class VectorStore:
         # 更新被匹配文档的 match_count
         self._update_match_count(matched_ids)
 
-        # 记录检索完成日志
-        logger.debug(f"检索完成，找到 {len(formatted_results)} 个相似文档")
+        if formatted_results:
+            top = formatted_results[0]
+            meta = top.get("metadata") or {}
+            logger.info(
+                "通识向量检索: query=%r, hits=%s, top_id=%s, top_sim=%.4f, "
+                "top_quality=%s",
+                query[:80],
+                len(formatted_results),
+                top.get("id"),
+                float(top.get("score") or 0),
+                meta.get("quality_score"),
+            )
+        else:
+            logger.info("通识向量检索: query=%r, hits=0", query[:80])
 
         return formatted_results
 
@@ -341,12 +359,23 @@ class VectorStore:
             metadata = existing_data["metadatas"][0].copy()
 
             # 更新质量分
-            current_score = metadata.get("quality_score", 0.8)
+            current_score = float(metadata.get("quality_score", 0.8))
             if feedback == 1:
-                metadata["quality_score"] = min(1.0, current_score + 0.1)
+                new_score = min(1.0, current_score + 0.1)
+                metadata["quality_score"] = new_score
                 metadata["helpful_count"] = metadata.get("helpful_count", 0) + 1
+                delta = "+0.1"
             elif feedback == -1:
-                metadata["quality_score"] = max(0.0, current_score - 0.2)
+                new_score = max(0.0, current_score - 0.2)
+                metadata["quality_score"] = new_score
+                delta = "-0.2"
+            else:
+                logger.warning(
+                    "通识质量分忽略未知 feedback: doc_id=%s, feedback=%s",
+                    doc_id,
+                    feedback,
+                )
+                return
 
             # 更新匹配计数和时间戳
             metadata["match_count"] = metadata.get("match_count", 0) + 1
@@ -355,7 +384,17 @@ class VectorStore:
             # 保存更新后的元数据
             self._collection.update(ids=[doc_id], metadatas=[metadata])
 
-            logger.info(f"文档 {doc_id} 质量分已更新: {metadata['quality_score']}")
+            logger.info(
+                "通识质量分更新: doc_id=%s, feedback=%s, delta=%s, "
+                "quality %.4f -> %.4f, helpful_count=%s, match_count=%s",
+                doc_id,
+                feedback,
+                delta,
+                current_score,
+                float(metadata["quality_score"]),
+                metadata.get("helpful_count"),
+                metadata.get("match_count"),
+            )
         except Exception as e:
             logger.error(f"更新质量分失败: {str(e)}")
 
@@ -687,6 +726,137 @@ class VectorStore:
                 logger.info("所有文档的元数据已完整")
         except Exception as e:
             logger.error(f"补全元数据失败: {str(e)}")
+
+    @staticmethod
+    def qa_entry_id(standalone_question: str, age_band: str) -> str:
+        """稳定 Q&A 文档 id（同问句+月龄带幂等 upsert）。"""
+        raw = f"{(standalone_question or '').strip()}|{age_band or ''}"
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+        return f"qa_{digest}"
+
+    def upsert_qa(
+        self,
+        *,
+        standalone_question: str,
+        answer: str,
+        age_band: str,
+        quality_score: float = 0.8,
+    ) -> Optional[str]:
+        """
+        写入/覆盖全局 Q&A 捷径条目。
+
+        document 存独立问句（检索 key）；answer 在 metadata。
+        """
+        self._ensure_initialized()
+        q = (standalone_question or "").strip()
+        a = (answer or "").strip()
+        band = (age_band or "").strip()
+        if not q or not a or not band:
+            logger.info(
+                "Q&A 入库跳过: 缺字段 question=%s answer=%s age_band=%s",
+                bool(q),
+                bool(a),
+                bool(band),
+            )
+            return None
+
+        doc_id = self.qa_entry_id(q, band)
+        now = datetime.now().isoformat()
+        metadata = {
+            "age_band": band,
+            "quality_score": float(quality_score),
+            "standalone_question": q[:500],
+            "answer": a[:4000],
+            "source": "qa_fast_path",
+            "match_count": 0,
+            "helpful_count": 0,
+            "created_at": now,
+            "updated_at": now,
+        }
+        embedding = self._embed([q])[0]
+        existing = self._qa_collection.get(ids=[doc_id], include=["metadatas"])
+        if existing and existing.get("ids"):
+            old_meta = (existing.get("metadatas") or [{}])[0] or {}
+            metadata["created_at"] = old_meta.get("created_at") or now
+            metadata["match_count"] = int(old_meta.get("match_count") or 0)
+            metadata["helpful_count"] = int(old_meta.get("helpful_count") or 0)
+            # 再次采纳略提质量分
+            prev_q = float(old_meta.get("quality_score") or quality_score)
+            metadata["quality_score"] = min(1.0, max(prev_q, float(quality_score)) + 0.05)
+            self._qa_collection.update(
+                ids=[doc_id],
+                embeddings=[embedding],
+                documents=[q],
+                metadatas=[metadata],
+            )
+            logger.info(
+                "Q&A 更新: id=%s, age_band=%s, quality=%.4f, question=%r",
+                doc_id,
+                band,
+                metadata["quality_score"],
+                q[:80],
+            )
+        else:
+            self._qa_collection.add(
+                ids=[doc_id],
+                embeddings=[embedding],
+                documents=[q],
+                metadatas=[metadata],
+            )
+            logger.info(
+                "Q&A 新增: id=%s, age_band=%s, quality=%.4f, question=%r",
+                doc_id,
+                band,
+                metadata["quality_score"],
+                q[:80],
+            )
+        return doc_id
+
+    def search_qa(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
+        """按独立问句检索 Q&A 捷径候选。"""
+        self._ensure_initialized()
+        if not (query or "").strip():
+            logger.info("Q&A 检索跳过: 空 query")
+            return []
+
+        query_embedding = self._embed([query])[0]
+        results = self._qa_collection.query(
+            query_embeddings=[query_embedding],
+            n_results=max(1, n_results),
+            include=["documents", "metadatas", "distances"],
+        )
+        formatted: List[Dict[str, Any]] = []
+        ids = (results.get("ids") or [[]])[0]
+        docs = (results.get("documents") or [[]])[0]
+        metas = (results.get("metadatas") or [[]])[0]
+        dists = (results.get("distances") or [[]])[0]
+        for i in range(len(ids)):
+            distance = dists[i]
+            score = 1 / (1 + distance)
+            formatted.append(
+                {
+                    "id": ids[i],
+                    "content": docs[i],
+                    "metadata": metas[i] or {},
+                    "score": round(score, 4),
+                }
+            )
+        if formatted:
+            top = formatted[0]
+            meta = top.get("metadata") or {}
+            logger.info(
+                "Q&A 向量检索: query=%r, hits=%s, top_id=%s, top_sim=%.4f, "
+                "top_quality=%s, top_age_band=%s",
+                query[:80],
+                len(formatted),
+                top.get("id"),
+                float(top.get("score") or 0),
+                meta.get("quality_score"),
+                meta.get("age_band"),
+            )
+        else:
+            logger.info("Q&A 向量检索: query=%r, hits=0", query[:80])
+        return formatted
 
 
 # 创建全局向量存储实例

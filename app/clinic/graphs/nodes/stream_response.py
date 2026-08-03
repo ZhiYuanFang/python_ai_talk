@@ -52,6 +52,7 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
     baby_profile = state.get("baby_profile", {})
     model_config_dict = state.get("model_config", {})
     chat_context = state.get("chat_context") or ""
+    baby_age_months = state.get("baby_age_months")
 
     # 构建模型配置对象
     model_config = LLMModelConfig(**model_config_dict)
@@ -64,6 +65,7 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
         knowledge_results=knowledge,
         baby_profile=baby_profile,
         chat_context=chat_context,
+        baby_age_months=baby_age_months,
     )
 
     # 流式调用 LLM

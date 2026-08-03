@@ -44,6 +44,7 @@ class LastSuggestion:
     上一条待飞轮判定的建议。
 
     feedback_applied=True 后不再对同一条加减分。
+    standalone_question / age_band 供 accepted 时写入全局 Q&A。
     """
 
     answer_id: str = ""
@@ -51,6 +52,8 @@ class LastSuggestion:
     knowledge_ids: List[str] = field(default_factory=list)
     feedback_applied: bool = False
     source: str = ""  # tip | clinic
+    standalone_question: str = ""
+    age_band: str = ""
 
 
 @dataclass
@@ -96,6 +99,8 @@ class CompanionSession:
                 ],
                 feedback_applied=bool(raw_sug.get("feedback_applied", False)),
                 source=str(raw_sug.get("source", "")),
+                standalone_question=str(raw_sug.get("standalone_question", "")),
+                age_band=str(raw_sug.get("age_band", "")),
             )
         return cls(
             device_no=str(data.get("device_no", "")),
@@ -231,6 +236,8 @@ class CompanionSessionStore:
         answer_id: str,
         knowledge_ids: Optional[List[str]] = None,
         suggestion_text: Optional[str] = None,
+        standalone_question: Optional[str] = None,
+        age_band: Optional[str] = None,
     ) -> CompanionSession:
         """
         追加一轮并更新 last_suggestion（新建议默认未飞轮）。
@@ -243,6 +250,8 @@ class CompanionSessionStore:
             answer_id: 本轮回答 id
             knowledge_ids: 本轮检索命中的文档 id
             suggestion_text: 待判定建议文本，默认用 assistant
+            standalone_question: 本轮改写独立问句（供 Q&A 推广）
+            age_band: 本轮月龄带
         """
         session = await self.get(device_no)
         session.turns.append(
@@ -254,6 +263,8 @@ class CompanionSessionStore:
             knowledge_ids=list(knowledge_ids or []),
             feedback_applied=False,
             source=source,
+            standalone_question=(standalone_question or "").strip(),
+            age_band=(age_band or "").strip(),
         )
         await self.save(session)
         return session

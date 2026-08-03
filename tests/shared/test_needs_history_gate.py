@@ -131,7 +131,7 @@ def test_clinic_graph_routes_and_skip_knowledge_combo():
         _route_after_needs_history(
             {"needs_history": False, "skip_knowledge": True}
         )
-        == "fetch_baby_profile"
+        == "end"
     )
     # force 覆盖 false
     assert (
@@ -140,5 +140,5 @@ def test_clinic_graph_routes_and_skip_knowledge_combo():
         )
         == "judge_data_requirement"
     )
-    assert _route_after_fetch_history({"skip_knowledge": True}) == "fetch_baby_profile"
+    assert _route_after_fetch_history({"skip_knowledge": True}) == "end"
     assert _route_after_fetch_history({}) == "search_vectors"

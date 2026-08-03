@@ -9,6 +9,7 @@
 import json
 from typing import Any, Dict, List, Optional
 
+from app.shared.baby_age import format_age_months_text
 from app.shared.history_prompt_fields import (
     build_daily_history_summary,
     looks_like_summary_query,
@@ -56,14 +57,17 @@ def build_clinic_answer_user_message(
     knowledge_results: List[Dict[str, Any]],
     baby_profile: Dict[str, Any],
     chat_context: Optional[str] = None,
+    baby_age_months: Optional[int] = None,
 ) -> str:
     """构建 clinic 用户消息：最新窗口 + 可读时间；汇总题附加按日聚合。"""
     baby_info = ""
-    if baby_profile:
+    if baby_profile or baby_age_months is not None:
+        age_text = format_age_months_text(baby_age_months)
+        gender = (baby_profile or {}).get("gender", "未知")
         baby_info = f"""
 宝宝信息：
-- 生日：{baby_profile.get("birthday", "未知")}
-- 性别：{baby_profile.get("gender", "未知")}
+- 月龄：{age_text}
+- 性别：{gender}
 """
 
     is_summary = looks_like_summary_query(question or "")

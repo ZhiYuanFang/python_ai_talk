@@ -39,6 +39,7 @@ async def generate_clinic_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     baby_profile = state.get("baby_profile", {})
     model_config_dict = state.get("model_config", {})
     chat_context = state.get("chat_context") or ""
+    baby_age_months = state.get("baby_age_months")
 
     model_config = LLMModelConfig(**model_config_dict)
     system_prompt = build_clinic_answer_system_prompt()
@@ -48,6 +49,7 @@ async def generate_clinic_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         knowledge_results=knowledge,
         baby_profile=baby_profile,
         chat_context=chat_context,
+        baby_age_months=baby_age_months,
     )
 
     resp = await llm_client.invoke(
