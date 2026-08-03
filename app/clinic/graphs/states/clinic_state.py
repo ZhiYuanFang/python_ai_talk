@@ -27,6 +27,8 @@ class ClinicState(TypedDict, total=False):
     - device_no: 设备编号
     - model_config: 模型配置（provider, name, max_in_flight）
     - event_dictionary: 事件字典列表（路由注入；须声明否则 LangGraph 静默丢弃）
+    - needs_history: 门禁结果，是否需要喂养历史
+    - force_needs_history: 上游强制需要历史（如 intent history）
     - data_requirement: 数据需求判断结果（event_ids, time_range, limit）
     - history_events: 历史记录列表
     - knowledge: 向量检索结果列表
@@ -42,8 +44,11 @@ class ClinicState(TypedDict, total=False):
     chat_context: str
     # True 时跳过 search_vectors（intent history 纯查记录）
     skip_knowledge: bool
+    # True 时门禁跳过 LLM，必须拉历史（intent history）
+    force_needs_history: bool
 
     # 中间字段（各节点填充）
+    needs_history: bool                     # 是否需要喂养历史（门禁）
     data_requirement: Dict[str, Any]        # 数据需求判断结果
     history_events: List[Dict[str, Any]]    # 历史记录列表
     knowledge: List[Dict[str, Any]]         # 向量检索结果

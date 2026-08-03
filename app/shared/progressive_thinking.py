@@ -1,13 +1,14 @@
 """
-流式「先思考字幕、再执行节点」辅助
+流式「先思考字幕、再执行节点」辅助（遗留）
 
 业务说明：
-clinic / tip / intent 流式路径不再依赖 astream(updates) 的「完成后才报」。
-对线性步骤：先让调用方 yield thinking，再执行节点并合并 state。
+主路径已改为 LangGraph astream(custom) + with_node_thinking（见
+app.shared.graphs.node_thinking / stream_graph）。
+本模块保留供回滚或偶发脚本，路由层不应再依赖。
 
-设计思路：
+设计思路（历史）：
 1. run_linear_steps_with_thinking：线性步骤表，逐步 yield (node_name, message)
-2. 节点可为 sync 或 async：返回 awaitable 则 await，否则直接当 patch（兼容 match_event_by_vector）
+2. 节点可为 sync 或 async：返回 awaitable 则 await，否则直接当 patch
 3. 每步执行前 asyncio.sleep(0)，便于事件循环刷出 SSE
 """
 

@@ -18,9 +18,11 @@ from typing import Optional
 NODE_THINKING_MESSAGES = {
     # clinic：隐式判定上一条建议是否被接受（飞轮）
     "implicit_feedback": "正在回想咱们刚聊到的建议...",
-    # 数据需求判断：是否需要拉喂养史当背景
-    "judge_data_requirement": "正在看看要不要翻翻最近的记录...",
-    # 历史拉取：Go 侧喂养记录
+    # 门禁：是否需要喂养历史
+    "judge_needs_history": "正在看看要不要翻翻最近的记录...",
+    # 范围：拉哪些事件、多长时间
+    "judge_data_requirement": "正在想想要翻多久的记录...",
+    # 历史拉取：Go 侧喂养记录（仅 needs_history 为真时执行）
     "fetch_history": "正在翻翻最近的喂养记录...",
     # 向量检索：知识背景
     "search_vectors": "正在想想有没有相关经验可以参考...",

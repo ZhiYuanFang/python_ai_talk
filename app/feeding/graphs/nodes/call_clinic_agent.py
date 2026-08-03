@@ -3,17 +3,10 @@
 
 业务说明：
 当意图为 history / conversation / suggest 时，同进程走 clinic 数据准备 + 闺蜜生成，
-并与 tip/clinic 共享 companion session（读 chat_context、写轮次、隐式飞轮）。
-history（纯查记录）设 skip_knowledge，跳过知识向量检索。
-
-流程：
-1. 隐式飞轮（对 last_suggestion）
-2. 读会话注入 chat_context
-3. clinic_graph.ainvoke 数据准备（history 跳过 search_vectors）
-4. generate_clinic_answer（clinic_answer + invoke）
-5. 成功非兜底则 append_turn(source=intent) + last_suggestion
-
-失败时返回兜底文案且不写会话，保证意图始终有响应。
+并与 tip/clinic 共享 companion session（读 chat_context、写轮次）。
+隐式飞轮由 clinic_graph 入口节点执行。
+history 设 skip_knowledge + force_needs_history。
+流式编排下对 clinic_graph astream 并转发 custom thinking；非流式 ainvoke。
 """
 
 import logging
@@ -28,7 +21,8 @@ from app.shared.companion_session import (
     format_chat_turns_for_prompt,
 )
 from app.shared.constants import IntentAction, TargetType
-from app.shared.suggestion_acceptance import maybe_apply_implicit_feedback
+from app.shared.graphs.node_thinking import is_graph_streaming
+from app.shared.graphs.stream_graph import ainvoke_or_astream_forward
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +46,7 @@ def _build_preserved_result(
 
 async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    调用诊疗 Agent：飞轮 → 读会话 → 数据准备 → 闺蜜生成 → 写会话。
+    调用诊疗 Agent：读会话 → clinic_graph 数据准备（含飞轮）→ 闺蜜生成 → 写会话。
 
     Returns:
         更新 intent_result 与 response；写会话失败不影响返回值。
@@ -71,13 +65,7 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
         f"开始调用诊疗 Agent，device_no={device_no}, user_input={user_input[:50]}"
     )
 
-    # 1. 隐式飞轮（失败不阻断）
-    try:
-        await maybe_apply_implicit_feedback(device_no, user_input, model_config)
-    except Exception as e:
-        logger.error(f"隐式飞轮异常（不中断主流程）: {e}", exc_info=True)
-
-    # 2. 读陪伴会话 → chat_context
+    # 读陪伴会话 → chat_context（飞轮在 clinic_graph 内）
     chat_context = ""
     try:
         session = await companion_session_store.get(device_no)
@@ -88,8 +76,9 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     target_type = ""
     if isinstance(intent_result, dict):
         target_type = str(intent_result.get("target_type") or "")
-    # 纯查记录：跳过知识检索，避免干扰答时间点
-    skip_knowledge = target_type == TargetType.HISTORY.value
+    is_history = target_type == TargetType.HISTORY.value
+    skip_knowledge = is_history
+    force_needs_history = is_history
 
     clinic_state = {
         "question": user_input,
@@ -98,13 +87,18 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
         "event_dictionary": event_dictionary or [],
         "chat_context": chat_context,
         "skip_knowledge": skip_knowledge,
+        "force_needs_history": force_needs_history,
     }
     if skip_knowledge:
-        logger.info("history 意图：clinic 数据准备跳过 search_vectors")
+        logger.info("history 意图：clinic 数据准备跳过 search_vectors，强制拉取历史")
 
     try:
-        # 3. 数据准备
-        clinic_result = await clinic_graph.ainvoke(clinic_state)
+        # 数据准备：流式转发 custom；非流式 ainvoke
+        clinic_result = await ainvoke_or_astream_forward(
+            clinic_graph,
+            clinic_state,
+            forward_custom=is_graph_streaming(),
+        )
         merged_state: Dict[str, Any] = dict(clinic_result)
         merged_state["question"] = user_input
         merged_state["user_input"] = user_input
@@ -113,7 +107,6 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
         if skip_knowledge:
             merged_state["knowledge"] = []
 
-        # 4. 闺蜜同步生成（不再走 generate_response）
         generate_result = await generate_clinic_answer(merged_state)
         clinic_response = (generate_result.get("response") or "").strip()
 
@@ -125,7 +118,6 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
 
         logger.info(f"诊疗 Agent 调用成功，response={clinic_response[:50]}")
 
-        # 5. 成功非兜底：写共享会话
         if not used_fallback and clinic_response != CLINIC_FALLBACK:
             knowledge_ids = extract_knowledge_ids(merged_state.get("knowledge"))
             answer_id = f"intent_{uuid.uuid4().hex[:12]}"

@@ -8,13 +8,13 @@
 
 流程：
 1. 读会话近轮注入 chat_context
-2. 逐步数据准备（先 thinking 再 await；含 derive_baby_age）
+2. tip_graph.astream 数据准备（预置 data_requirement，入口 fetch_history）
 3. 流式生成口语开场
 4. 合成 user「刚记录了「事件」」+ assistant 写入会话；last_suggestion 待隐式飞轮
 
 设计思路：
 1. 会话主键仅 device_no；tip 开场算待判定建议（feedback_applied=false）
-2. 流式路径不用 astream(updates)，保证「先报后做」
+2. 与非流式共用 tip_graph；流式经 custom thinking 逐步字幕
 """
 
 import json
@@ -34,15 +34,11 @@ from app.shared.companion_session import (
     extract_knowledge_ids,
     format_chat_turns_for_prompt,
 )
-from app.shared.graphs.nodes.fetch_baby_profile import fetch_baby_profile
-from app.shared.graphs.nodes.fetch_history import fetch_history
-from app.shared.graphs.nodes.judge_data_requirement import judge_data_requirement
-from app.shared.graphs.nodes.search_vectors import search_vectors
-from app.shared.progressive_thinking import run_linear_steps_with_thinking
+from app.shared.graphs.stream_graph import iter_graph_custom_thinking
 from app.shared.schemas.feedback import FeedbackRequest
 from app.shared.vector_store import vector_store
-from app.tip.graphs.nodes.derive_baby_age import derive_baby_age
 from app.tip.graphs.nodes.stream_tip_response import stream_tip_response
+from app.tip.graphs.tip_graph import tip_graph
 from app.tip.schemas.tip import TipRequest, TipStreamResponse
 
 logger = logging.getLogger(__name__)
@@ -107,22 +103,20 @@ async def _stream_tip_response(
     *,
     request: TipRequest,
 ) -> AsyncGenerator[str, None]:
-    """生成 tip SSE：逐步先报后做 → 流式回答 → 写共享会话。"""
+    """生成 tip SSE：tip_graph custom thinking → 流式回答 → 写共享会话。"""
     answer_id = f"tip_{uuid.uuid4().hex[:12]}"
     final_state: Dict[str, Any] = dict(initial_state)
 
-    # 与 tip_graph 边一致： history → vectors → profile → derive_baby_age
-    prepare_steps = [
-        ("fetch_history", fetch_history),
-        ("search_vectors", search_vectors),
-        ("fetch_baby_profile", fetch_baby_profile),
-        ("derive_baby_age", derive_baby_age),
-    ]
-    async for node_name, thinking_text in run_linear_steps_with_thinking(
-        final_state, prepare_steps, get_thinking_message
-    ):
-        event = TipStreamResponse(type="thinking", content=thinking_text)
-        yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
+    # 预置 data_requirement；tip_graph 入口 fetch_history（强制需要历史）
+    async for kind, payload in iter_graph_custom_thinking(tip_graph, initial_state):
+        if kind == "thinking":
+            event = TipStreamResponse(
+                type="thinking",
+                content=str(payload.get("content") or ""),
+            )
+            yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
+        elif kind == "final":
+            final_state = dict(payload)
 
     llm_start_event = TipStreamResponse(
         type="thinking",

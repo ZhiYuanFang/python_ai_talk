@@ -4,24 +4,22 @@
 业务说明：
 使用 LangGraph 定义意图分析的状态图，协调向量匹配、意图分类与 clinic agent。
 history / conversation / suggest 均走 call_clinic_agent（查记录由 clinic 拉历史答题）。
+节点经 with_node_thinking 推送 custom thinking，供流式 astream 与非流式 ainvoke 共用。
 
 确认/消歧改为同一 /intent + conversation_id 的 pending 自由文本续聊。
-
-设计思路：
-1. 向量匹配 → 按置信度路由（查询句已在 match 内降级 LLM）
-2. LLM 分类后：feeding END；history/conversation/suggest → clinic agent；exit END
 """
 
 import logging
-from typing import Any, Dict
 
 from langgraph.graph import StateGraph, START, END
 
 from app.feeding.graphs.nodes.call_clinic_agent import call_clinic_agent
 from app.feeding.graphs.nodes.classify_intent import classify_intent
 from app.feeding.graphs.nodes.match_event_by_vector import match_event_by_vector
+from app.feeding.graphs.nodes.thinking_messages import get_thinking_message
 from app.feeding.graphs.states.intent_state import IntentState
 from app.shared.constants import MatchSource, TargetType
+from app.shared.graphs.node_thinking import with_node_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +28,7 @@ State = IntentState
 
 def route_after_vector_match(state: State) -> str:
     """
-    向量匹配后的路由决策（供图边与 intent 流式步进共用）。
+    向量匹配后的路由决策（供图条件边使用）。
 
     - match_source 为 llm：降级至 LLM 分类
     - 否则 END（含高置信直接结果、中置信 need_confirm，由路由层 pending 处理）
@@ -50,7 +48,7 @@ def route_after_vector_match(state: State) -> str:
 
 def route_after_classify(state: State) -> str:
     """
-    意图分类后的路由决策（供图边与 intent 流式步进共用）。
+    意图分类后的路由决策（供图条件边使用）。
 
     - feeding（含 multi）：END，由路由层做叶子校验/消歧/软确认
     - history / conversation / suggest：clinic agent
@@ -76,13 +74,20 @@ _route_after_vector_match = route_after_vector_match
 _route_after_classify = route_after_classify
 
 
+def _wrap(name: str, fn):
+    return with_node_thinking(name, fn, get_thinking_message)
+
+
 def build_intent_graph() -> StateGraph:
     """构建意图分析图（history 并入 clinic agent）。"""
     graph = StateGraph(State)
 
-    graph.add_node("match_event_by_vector", match_event_by_vector)
-    graph.add_node("classify_intent", classify_intent)
-    graph.add_node("call_clinic_agent", call_clinic_agent)
+    graph.add_node(
+        "match_event_by_vector",
+        _wrap("match_event_by_vector", match_event_by_vector),
+    )
+    graph.add_node("classify_intent", _wrap("classify_intent", classify_intent))
+    graph.add_node("call_clinic_agent", _wrap("call_clinic_agent", call_clinic_agent))
 
     graph.add_edge(START, "match_event_by_vector")
 
@@ -106,7 +111,7 @@ def build_intent_graph() -> StateGraph:
 
     graph.add_edge("call_clinic_agent", END)
 
-    logger.info("意图分析图构建完成（history→clinic agent；pending 由路由处理）")
+    logger.info("意图分析图构建完成（thinking 包装；history→clinic agent）")
     return graph.compile()
 
 

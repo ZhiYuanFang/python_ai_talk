@@ -6,13 +6,15 @@ LangGraph 节点：根据 data_requirement 拉取历史记录。
 有数据需求判断结果时调用 filter API（按事件ID+时间范围筛选），
 没有数据需求时调用全量 API（兼容旧逻辑）。
 filter API 不可用时自动降级到全量 API。
+若门禁判定不需要历史（且未 force），防御性返回空列表。
 
 设计思路：
-1. 从 State 中读取 device_no、data_requirement
-2. 如果有 data_requirement，调用 get_filtered_history_events
-3. 如果没有 data_requirement，调用 get_history_events（全量）
-4. filter API 失败时降级到全量 API
-5. 返回 history_events 更新 State
+1. should_fetch_history 为假则直接返回 []
+2. 从 State 中读取 device_no、data_requirement
+3. 如果有 data_requirement，调用 get_filtered_history_events
+4. 如果没有 data_requirement，调用 get_history_events（全量）
+5. filter API 失败时降级到全量 API
+6. 返回 history_events 更新 State
 """
 
 import logging
@@ -20,6 +22,7 @@ from typing import Any, Dict
 
 import httpx
 
+from app.shared.graphs.history_gate import should_fetch_history
 from app.shared.http_client import http_client
 
 # 初始化日志记录器
@@ -31,11 +34,12 @@ async def fetch_history(state: Dict[str, Any]) -> Dict[str, Any]:
     历史拉取节点函数
 
     业务逻辑：
-    1. 从 State 中读取设备编号和数据需求
-    2. 如果有 data_requirement，计算时间范围并调用 filter API
-    3. 如果没有 data_requirement，调用全量 API
-    4. filter API 失败时降级到全量 API
-    5. 返回 history_events 更新 State
+    1. 门禁防御：needs_history 为 false 且未 force 时直接返回空列表、不打 API
+    2. 从 State 中读取设备编号和数据需求
+    3. 如果有 data_requirement，计算时间范围并调用 filter API
+    4. 如果没有 data_requirement，调用全量 API
+    5. filter API 失败时降级到全量 API
+    6. 返回 history_events 更新 State
 
     Args:
         state: 当前图状态
@@ -43,6 +47,10 @@ async def fetch_history(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         需要更新的 State 字段字典
     """
+    # 主路径应已跳过本节点；此处防御误入
+    if not should_fetch_history(state):
+        return {"history_events": []}
+
     # 读取输入参数
     device_no = state.get("device_no", "")
     data_requirement = state.get("data_requirement")

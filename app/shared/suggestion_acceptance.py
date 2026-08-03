@@ -147,9 +147,9 @@ async def judge_suggestion_acceptance(
 
     system_prompt = """你是对话态度分类器。根据「家长本轮回复」判断其对「上一条闺蜜建议」的态度。
 只输出 JSON：{"status":"accepted"|"rejected"|"unclear"}
-- accepted：明确采纳、照做、认可有用
-- rejected：明确否定、拒绝、认为没用
-- unclear：闲聊、换话题、继续提问、态度不明
+- accepted：认可有用
+- rejected：认为没用
+- unclear：换话题
 不要输出其它文字。"""
 
     user_message = (
