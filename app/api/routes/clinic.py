@@ -26,6 +26,7 @@ from app.shared.companion_session import (
     extract_knowledge_ids,
     format_chat_turns_for_prompt,
 )
+from app.shared.graphs.node_thinking import ensure_orchestration_thinking_content
 from app.shared.graphs.stream_graph import iter_graph_custom_thinking
 
 logger = logging.getLogger(__name__)
@@ -107,11 +108,14 @@ async def _stream_clinic_response(
     else:
         llm_start_event = ClinicStreamResponse(
             type="thinking",
-            content=get_thinking_message("llm_start"),
+            content=ensure_orchestration_thinking_content(
+                get_thinking_message("llm_start")
+            ),
         )
         yield f"data: {json.dumps(llm_start_event.model_dump(), ensure_ascii=False)}\n\n"
 
         async for chunk in stream_response(final_state):
+            # LLM thinking 原样转发，不加尾部换行
             if chunk.thinking:
                 event = ClinicStreamResponse(type="thinking", content=chunk.thinking)
                 yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"

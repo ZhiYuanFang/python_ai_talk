@@ -10,11 +10,11 @@ LLM 客户端封装模块
 2. 支持动态选择模型，由调用方传入 provider 和 model 参数
 3. 实现 Redis 闸门控制，避免超过并发限制
 4. 提供统一的错误处理和重试机制
+5. 流式 thinking：经底层 OpenAI 客户端读 reasoning_content（ChatOpenAI 会丢该字段）
 """
 
-import asyncio
 import logging
-from typing import Any, Dict, List, Optional, AsyncGenerator
+from typing import Any, Dict, List, Optional, AsyncGenerator, Tuple
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
@@ -24,6 +24,9 @@ from app.config.settings import settings
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
+
+# DeepSeek / 智谱 OpenAI 兼容接口的原生思考开关（经 extra_body 传递）
+_THINKING_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "enabled"}}
 
 
 def normalize_llm_provider(provider: str) -> str:
@@ -46,6 +49,57 @@ def normalize_llm_provider(provider: str) -> str:
     if canonical == "zhipu":
         return "glm"
     return canonical
+
+
+def _coerce_text(value: Any) -> str:
+    """将 chunk 字段规范为 str；None / 非 str 转为空串或 str()。"""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def extract_stream_thinking_and_content(chunk_or_delta: Any) -> Tuple[str, str]:
+    """
+    从流式 delta / AIMessageChunk 提取 (thinking, content)。
+
+    查找顺序（thinking）：
+    1. 顶层 reasoning_content
+    2. additional_kwargs.reasoning_content / reasoning
+    content 取顶层 content。二者可同时非空。
+    """
+    thinking = getattr(chunk_or_delta, "reasoning_content", None)
+    if thinking is None and isinstance(chunk_or_delta, dict):
+        thinking = chunk_or_delta.get("reasoning_content")
+    if thinking is None:
+        additional = getattr(chunk_or_delta, "additional_kwargs", None)
+        if additional is None and isinstance(chunk_or_delta, dict):
+            additional = chunk_or_delta.get("additional_kwargs")
+        if isinstance(additional, dict):
+            thinking = additional.get("reasoning_content") or additional.get("reasoning")
+
+    content = getattr(chunk_or_delta, "content", None)
+    if content is None and isinstance(chunk_or_delta, dict):
+        content = chunk_or_delta.get("content")
+
+    return _coerce_text(thinking), _coerce_text(content)
+
+
+def _build_openai_chat_messages(
+    messages: List[Dict[str, str]],
+    system_prompt: Optional[str],
+) -> List[Dict[str, str]]:
+    """将本仓消息列表转为 OpenAI chat.completions messages。"""
+    openai_messages: List[Dict[str, str]] = []
+    if system_prompt:
+        openai_messages.append({"role": "system", "content": system_prompt})
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role in ("system", "user", "assistant"):
+            openai_messages.append({"role": role, "content": content})
+    return openai_messages
 
 
 class LLMModelConfig(BaseModel):
@@ -325,44 +379,24 @@ class LLMClient:
 
         业务逻辑：
         1. 获取 Redis 闸门许可（并发控制）
-        2. 将消息转换为 langchain 格式
-        3. 流式调用 LLM，逐块返回结果
-        4. 支持 thinking 模式（胖宝诊疗场景）
-        5. 释放 Redis 闸门许可
+        2. thinking_enabled 时经底层 OpenAI 客户端开启原生思考并映射 reasoning_content
+        3. 否则走 ChatOpenAI.astream，仅推送正文
+        4. 释放 Redis 闸门许可
 
         Args:
             messages: 消息列表，格式为 [{"role": "user", "content": "..."}]
             model_config: 模型配置
             system_prompt: 系统提示词（可选）
-            thinking_enabled: 是否启用思考模式
+            thinking_enabled: 是否启用提供商原生思考模式
 
         Yields:
-            LLMResponse 响应结果（流式返回）
+            LLMResponse 响应结果（流式返回；thinking 增量不加尾部换行）
         """
         # 获取 Redis 闸门许可，控制并发数
         async with self._get_redis_gate().acquire(model_config.name, model_config.max_in_flight):
             try:
-                # 获取对应的 LLM 客户端
+                # 获取对应的 LLM 客户端（缓存实例；thinking 仅在本次 create 传入）
                 client = self._get_client(model_config.provider, model_config.name)
-
-                # 构建 langchain 格式的消息列表
-                langchain_messages = []
-
-                # 如果提供了系统提示词，添加到消息列表开头
-                if system_prompt:
-                    langchain_messages.append(SystemMessage(content=system_prompt))
-
-                # 将输入消息转换为 langchain 格式
-                for msg in messages:
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-
-                    if role == "system":
-                        langchain_messages.append(SystemMessage(content=content))
-                    elif role == "user":
-                        langchain_messages.append(HumanMessage(content=content))
-                    elif role == "assistant":
-                        langchain_messages.append(AIMessage(content=content))
 
                 # INFO 全量打印发送载荷，便于核对实际发给模型的内容
                 self._log_request_payload(
@@ -373,37 +407,64 @@ class LLMClient:
                     thinking_enabled=thinking_enabled,
                 )
                 # 开始流式调用
-                logger.info(f"开始流式调用 LLM: provider={model_config.provider}, model={model_config.name}, thinking_enabled={thinking_enabled}")
+                logger.info(
+                    f"开始流式调用 LLM: provider={model_config.provider}, "
+                    f"model={model_config.name}, thinking_enabled={thinking_enabled}"
+                )
 
-                # 思考内容缓冲区
-                thinking_buffer = ""
-                # 回答内容缓冲区
                 answer_buffer = ""
 
-                # 流式获取响应
-                async for chunk in client.astream(langchain_messages):
-                    # 获取当前 chunk 的内容
-                    chunk_content = chunk.content
-                    if chunk_content is None:
-                        chunk_content = ""
-                    if not isinstance(chunk_content, str):
-                        chunk_content = str(chunk_content)
+                if thinking_enabled:
+                    # ChatOpenAI.astream 会丢弃非标 reasoning_content，改走底层 OpenAI 流
+                    openai_messages = _build_openai_chat_messages(
+                        messages, system_prompt
+                    )
+                    create_kwargs: Dict[str, Any] = {
+                        "model": model_config.name,
+                        "messages": openai_messages,
+                        "stream": True,
+                        "temperature": 0.7,
+                        "max_tokens": 4096,
+                        # 仅本次请求开启；不写回缓存 ChatOpenAI.extra_body
+                        "extra_body": dict(_THINKING_EXTRA_BODY),
+                    }
+                    stream = await client.root_async_client.chat.completions.create(
+                        **create_kwargs
+                    )
+                    async for chunk in stream:
+                        if not getattr(chunk, "choices", None):
+                            continue
+                        delta = chunk.choices[0].delta
+                        thinking_part, content_part = extract_stream_thinking_and_content(
+                            delta
+                        )
+                        if not thinking_part and not content_part:
+                            continue
+                        if content_part:
+                            answer_buffer += content_part
+                        yield LLMResponse(
+                            content=content_part,
+                            thinking=thinking_part,
+                        )
+                else:
+                    # 非思考模式：沿用 langchain 消息格式与 astream
+                    langchain_messages = []
+                    if system_prompt:
+                        langchain_messages.append(SystemMessage(content=system_prompt))
+                    for msg in messages:
+                        role = msg.get("role", "user")
+                        content = msg.get("content", "")
+                        if role == "system":
+                            langchain_messages.append(SystemMessage(content=content))
+                        elif role == "user":
+                            langchain_messages.append(HumanMessage(content=content))
+                        elif role == "assistant":
+                            langchain_messages.append(AIMessage(content=content))
 
-                    # 如果启用了思考模式，尝试分离思考和回答内容
-                    if thinking_enabled:
-                        # 简单的思考/回答分离逻辑
-                        # 实际应用中可能需要根据模型返回格式调整
-                        if "[思考]" in chunk_content or "思考：" in chunk_content:
-                            # 提取思考内容
-                            thinking_part = chunk_content.replace("[思考]", "").replace("思考：", "")
-                            thinking_buffer += thinking_part
-                            yield LLMResponse(content="", thinking=thinking_part)
-                        else:
-                            # 剩余内容作为回答
-                            answer_buffer += chunk_content
-                            yield LLMResponse(content=chunk_content, thinking="")
-                    else:
-                        # 非思考模式，直接返回内容
+                    async for chunk in client.astream(langchain_messages):
+                        chunk_content = _coerce_text(chunk.content)
+                        if not chunk_content:
+                            continue
                         answer_buffer += chunk_content
                         yield LLMResponse(content=chunk_content, thinking="")
 

@@ -30,6 +30,7 @@ from app.shared.companion_session import (
     extract_knowledge_ids,
     format_chat_turns_for_prompt,
 )
+from app.shared.graphs.node_thinking import ensure_orchestration_thinking_content
 from app.shared.graphs.stream_graph import iter_graph_custom_thinking
 from app.tip.graphs.nodes.stream_tip_response import stream_tip_response
 from app.tip.graphs.tip_graph import tip_graph
@@ -109,12 +110,15 @@ async def _stream_tip_response(
 
     llm_start_event = TipStreamResponse(
         type="thinking",
-        content=get_thinking_message("llm_start"),
+        content=ensure_orchestration_thinking_content(
+            get_thinking_message("llm_start")
+        ),
     )
     yield f"data: {json.dumps(llm_start_event.model_dump(), ensure_ascii=False)}\n\n"
 
     answer_parts: list[str] = []
     async for chunk in stream_tip_response(final_state):
+        # LLM thinking 原样转发，不加尾部换行
         if chunk.thinking:
             event = TipStreamResponse(type="thinking", content=chunk.thinking)
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"

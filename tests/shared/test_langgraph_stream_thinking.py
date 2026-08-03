@@ -47,7 +47,7 @@ async def test_custom_thinking_arrives_before_slow_work():
         {"n": 0}, stream_mode=["custom", "updates"]
     ):
         if mode == "custom":
-            assert chunk.get("content") == "think:slow"
+            assert chunk.get("content") == "think:slow\n"
             saw_custom_while_running = not work_done.is_set()
         elif mode == "updates":
             assert work_done.is_set()
@@ -90,7 +90,7 @@ async def test_iter_graph_custom_thinking_and_streaming_flag():
         else:
             final = payload
     assert is_graph_streaming() is False
-    assert thinkings and thinkings[0]["content"] == "think:n"
+    assert thinkings and thinkings[0]["content"] == "think:n\n"
     assert final and final.get("flag") is True
 
 
@@ -179,3 +179,10 @@ def test_emit_thinking_no_crash_outside_graph():
         assert is_graph_streaming()
     finally:
         GRAPH_STREAMING.reset(token)
+
+
+def test_ensure_orchestration_thinking_content_idempotent():
+    from app.shared.graphs.node_thinking import ensure_orchestration_thinking_content
+
+    assert ensure_orchestration_thinking_content("字幕") == "字幕\n"
+    assert ensure_orchestration_thinking_content("字幕\n") == "字幕\n"
