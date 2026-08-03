@@ -4,6 +4,7 @@
 业务说明：
 构建 clinic 场景回答生成节点使用的系统提示词。
 查记录：点查念可读时间；汇总据记录谈变化。
+建议/闲聊：有经验闺蜜口吻，有对话或喂养史则点名依据再答，约 50 字。
 """
 
 import json
@@ -20,8 +21,15 @@ from app.shared.history_prompt_fields import (
 def build_clinic_answer_system_prompt() -> str:
     """构建 clinic 回答的系统提示词。"""
     return """
-你是家长（妈妈/爸爸）身边懂娃的闺蜜，不是医生，也不要自称儿科助手。
+你是家长（妈妈/爸爸）身边带过娃、听过很多吐槽的闺蜜，不是医生，也不要自称儿科助手。
 用口语跟「你」聊天，称呼宝宝用「宝宝/小家伙」。
+态度：先接情绪 → 点出依据（上次聊过的或喂养记录）→ 再轻轻一句提醒；不端着、不科普腔、不装懂。
+
+【有据必点名】
+1. 下方若有「近期陪伴对话」：正文必须点到上次相关一句（可意译），再答本轮；禁止当首轮冷启动。
+2. 下方若有「喂养记录」：正文必须点到与本轮最相关的 1 条事实（时间/次数/间隔等），再对应回应；禁止只共情不碰数据、禁止堆砌多条。
+3. 对话与记录都没有：禁止编造「上次你说」「记录里」；可短陪，诚实即可。
+4. 口述与记录不一致时：以记录为准，用口语圆一下。
 
 【点查时间题】若问上次/上一次/什么时候/何时开始/分别何时：
 1. 必须以喂养记录为准，不要编造
@@ -38,8 +46,8 @@ def build_clinic_answer_system_prompt() -> str:
 4. 可略长，把趋势说清楚
 
 【闲聊/建议题】：
-先共情，再顺嘴给一点轻松小提醒；知识与记录只作背景。
-回复约 50 字内，可加粗关键字，可适度用表情。
+按「有据必点名」作答；回复约 50 字内（含点名那一句），可加粗关键字，可适度用表情。
+通用知识仅作轻背景，不得替代对话或记录成为「假记忆」。
 
 注意事项：
 1. 不要做疾病诊断，不要给药物剂量或处方
@@ -49,6 +57,41 @@ def build_clinic_answer_system_prompt() -> str:
 
 若开启思考：可用 [思考]... 再给出回答；回答正文直接口语说。
 """
+
+
+def _clinic_closing_instruction(
+    *,
+    has_history: bool,
+    has_chat: bool,
+    is_summary: bool,
+    question: str,
+) -> str:
+    """按是否有记录/对话拼接收尾硬约束。"""
+    parts: List[str] = []
+    if is_summary or looks_like_summary_query(question or ""):
+        parts.append("若是查时间/汇总题，必须以记录为准，可略长念清。")
+    else:
+        parts.append("若是查时间题，必须以记录为准，可略长念清。")
+
+    if has_chat:
+        parts.append("必须结合近期陪伴对话，点名上次相关内容再答本轮。")
+    if has_history:
+        parts.append("必须结合喂养记录，点名 1 条相关事实再回应。")
+    if not has_chat and not has_history:
+        parts.append("没有对话和记录时，不要编造「上次」或「记录里」。")
+
+    if not (is_summary or _looks_like_time_query(question or "")):
+        parts.append("闲聊/建议约 50 字内。")
+
+    parts.append(f"用有经验闺蜜口语回家长。家长说：{question}")
+    return "".join(parts)
+
+
+def _looks_like_time_query(question: str) -> bool:
+    """粗判点查时间题（与 system 点查规则对齐的轻量启发）。"""
+    q = question or ""
+    keys = ("上次", "上一次", "什么时候", "何时", "几点", "哪天")
+    return any(k in q for k in keys)
 
 
 def build_clinic_answer_user_message(
@@ -87,7 +130,7 @@ def build_clinic_answer_user_message(
     history_info = ""
     if slim:
         history_info = f"""
-喂养记录明细（答题依据；时间为已转换的可读文案，请直接念给家长听）：
+喂养记录明细（答题依据；时间为已转换的可读文案，请直接念给家长听；回应时须点名其中 1 条相关事实）：
 {json.dumps(slim, ensure_ascii=False, indent=2)}
 """
 
@@ -97,13 +140,21 @@ def build_clinic_answer_user_message(
             f"- {r['content']}（相似度：{r['score']}）" for r in knowledge_results
         ]
         knowledge_info = f"""
-可参考的知识（背景）：
+可参考的知识（轻背景，不得编造为「记录」或「上次说过」）：
 {"\n".join(knowledge_texts)}
 """
 
     chat_block = ""
-    if chat_context and chat_context.strip():
+    has_chat = bool(chat_context and chat_context.strip())
+    if has_chat:
         chat_block = f"\n{chat_context.strip()}\n"
+
+    closing = _clinic_closing_instruction(
+        has_history=bool(slim),
+        has_chat=has_chat,
+        is_summary=is_summary,
+        question=question,
+    )
 
     return f"""
 {baby_info}
@@ -111,5 +162,5 @@ def build_clinic_answer_user_message(
 {history_info}
 {knowledge_info}
 {chat_block}
-请用闺蜜口语回家长。若是查时间/汇总题，必须以记录为准。家长说：{question}
+{closing}
 """

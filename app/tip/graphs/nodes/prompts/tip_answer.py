@@ -2,13 +2,9 @@
 小贴士（事件开场）回答提示词构建模块
 
 业务说明：
-事件添加后 tip 先开口：懂娃闺蜜对家长说几句口语暖话。
+事件添加后 tip 先开口：有经验闺蜜对家长说几句口语暖话。
+有近史/近期对话则点名依据；约 50 字；无据不编。
 可与 clinic 共享陪伴会话，后续由 clinic 续聊。
-
-设计思路：
-1. 结合当前触发事件、时间、月龄、喂养史与知识背景
-2. 篇幅精炼，适合卡片展示，但不强制说明书标题结构
-3. 注入近期陪伴对话（若有）便于一条线续聊
 """
 
 import json
@@ -27,9 +23,13 @@ def build_tip_answer_system_prompt() -> str:
         系统提示词字符串
     """
     return """
-你是家长身边懂娃的闺蜜。刚才家长记了一条宝宝相关事件，你先开口陪两句。
+你是家长身边带过娃的闺蜜。刚才家长记了一条宝宝相关事件，你先开口陪两句。
 口语、短一点、暖一点，像微信里随口回的消息，别写成「注意事项清单」。
-可以轻轻提一句接下来留意啥，但别端着、别诊断、别开药。
+态度：接住当下 → 若有近况或上次聊过的就点一句 → 再轻轻提接下来留意啥。
+有「近期喂养记录」时：必须点名 1 条相关近况，再对应开口；禁止空喊加油。
+有「近期陪伴对话」时：必须接上上次相关一句，再谈本条事件。
+没有记录也没有对话时：禁止编造「上次/记录里」；可短暖一句。
+全文约 50 字内；别端着、别诊断、别开药。
 月龄若是「未知」，别假设是新生儿。
 真担心身体状况时，用闺蜜口吻轻轻说不放心就问问医生。
 """
@@ -52,6 +52,24 @@ def format_tip_age_text(baby_age_months: Optional[int]) -> str:
     if baby_age_months is None:
         return "宝宝月龄：未知"
     return f"宝宝月龄：{baby_age_months} 个月"
+
+
+def _tip_closing_instruction(
+    event_name: str,
+    *,
+    has_history: bool,
+    has_chat: bool,
+) -> str:
+    """按是否有记录/对话拼接收尾硬约束。"""
+    parts: List[str] = [f"请针对「{event_name}」用有经验闺蜜口语跟家长说一小段。"]
+    if has_chat:
+        parts.append("必须结合近期陪伴对话，点名上次相关内容。")
+    if has_history:
+        parts.append("必须结合近期喂养记录，点名 1 条近况。")
+    if not has_chat and not has_history:
+        parts.append("没有对话和记录时，不要编造「上次」或「记录里」。")
+    parts.append("大约50字内，别用强制标题结构，关键字加粗，可适度用表情。")
+    return "".join(parts)
 
 
 def build_tip_answer_user_message(
@@ -103,12 +121,13 @@ def build_tip_answer_user_message(
 """
 
     history_info = ""
+    recent_events: List[Dict[str, Any]] = []
     if history_events:
         recent_events = slim_history_events_for_prompt(
             history_events, limit=5, time_style="relative"
         )
         history_info = f"""
-近期喂养记录（背景）：
+近期喂养记录（回应时须点名其中 1 条相关近况）：
 {json.dumps(recent_events, ensure_ascii=False, indent=2)}
 """
 
@@ -116,9 +135,9 @@ def build_tip_answer_user_message(
     if knowledge_results:
         knowledge_texts = [f"- {r['content']}" for r in knowledge_results]
         knowledge_label = (
-            "知识库参考（同月龄宝宝）"
+            "知识库参考（同月龄宝宝，轻背景）"
             if baby_age_months is not None
-            else "知识库参考（不限月龄）"
+            else "知识库参考（不限月龄，轻背景）"
         )
         knowledge_info = f"""
 {knowledge_label}：
@@ -126,8 +145,15 @@ def build_tip_answer_user_message(
 """
 
     chat_block = ""
-    if chat_context and chat_context.strip():
+    has_chat = bool(chat_context and chat_context.strip())
+    if has_chat:
         chat_block = f"\n{chat_context.strip()}\n"
+
+    closing = _tip_closing_instruction(
+        event_name,
+        has_history=bool(recent_events),
+        has_chat=has_chat,
+    )
 
     return f"""
 {event_info_text}
@@ -140,5 +166,5 @@ def build_tip_answer_user_message(
 
 {knowledge_info}
 {chat_block}
-请针对「{event_name}」用闺蜜口语跟家长说一小段（大约50字内，别用强制标题结构，关键字加粗，要善于使用表情符号）。
+{closing}
 """

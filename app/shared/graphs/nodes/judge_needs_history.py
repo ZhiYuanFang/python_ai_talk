@@ -45,7 +45,7 @@ async def judge_needs_history(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if not str(user_text).strip():
         # 无问题文本：保守拉取
-        return {"needs_history": True}
+        return {"needs_history": False}
 
     model_config = LLMModelConfig(**model_config_dict)
     system_prompt = build_needs_history_system_prompt()
@@ -60,7 +60,7 @@ async def judge_needs_history(state: Dict[str, Any]) -> Dict[str, Any]:
         needs = _parse_needs_history(response.content)
     except Exception as e:
         logger.error(f"喂养历史门禁 LLM 调用失败，默认需要历史: {e}")
-        needs = True
+        needs = False
 
     if needs:
         return {"needs_history": True}
