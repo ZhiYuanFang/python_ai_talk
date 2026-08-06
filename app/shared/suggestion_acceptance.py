@@ -216,29 +216,36 @@ async def maybe_apply_implicit_feedback(
     device_no: str,
     user_text: str,
     model_config: Dict[str, Any],
-) -> None:
+) -> Optional[AcceptanceStatus]:
     """
     生成前隐式飞轮（clinic / intent clinic agent 共用）。
 
     业务逻辑：
     1. 读 companion session 的 last_suggestion
-    2. 已 applied 或无文本则跳过
-    3. 三态判定成功后调质量分并 mark_feedback_applied
-    4. accepted 且上轮改写成功时写入全局 Q&A
-    5. 判定失败返回 None 时不置 applied，便于下次重试
+    2. 已 applied 或无文本则跳过，返回 None
+    3. 三态判定成功后调通识质量分并 mark_feedback_applied
+    4. accepted 且未史接地且有改写时写入全局 Q&A
+    5. rejected 且有 qa_match_id 时下调该问答质量分
+    6. 判定失败返回 None 时不置 applied，便于下次重试
+
+    Returns:
+        成功判定时的 AcceptanceStatus；跳过或失败时 None。
+        调用方据此决定是否本轮禁 Q&A 捷径（rejected → block_fast_path）。
 
     调用方应自行 try/except，避免飞轮异常中断主流程。
     """
     from app.shared.companion_session import companion_session_store
     from app.shared.qa_fast_path import promote_accepted_qa
+    from app.shared.vector_store import vector_store
 
     session = await companion_session_store.get(device_no)
     sug = session.last_suggestion
     if not sug or sug.feedback_applied:
-        return
+        return None
     if not (sug.text or "").strip():
-        return
+        return None
 
+    # 三态判定
     status = await judge_suggestion_acceptance(
         user_text=user_text,
         suggestion_text=sug.text,
@@ -246,26 +253,44 @@ async def maybe_apply_implicit_feedback(
     )
     if status is None:
         logger.warning(f"隐式采纳判定失败，本轮跳过飞轮 device_no={device_no}")
-        return
+        return None
 
     await apply_flywheel_for_status(status, sug.knowledge_ids)
 
+    # 捷径答被拒：下调问答库质量，避免脏条目继续服务他人
+    if status == AcceptanceStatus.REJECTED:
+        qa_id = (sug.qa_match_id or "").strip()
+        if qa_id:
+            try:
+                vector_store.update_qa_quality_score(qa_id, -1)
+            except Exception as e:
+                logger.warning(f"Q&A 质量分下调失败 id={qa_id}: {e}")
+
     if status == AcceptanceStatus.ACCEPTED:
-        qa_id = promote_accepted_qa(
-            standalone_question=sug.standalone_question,
-            answer=sug.text,
-            age_band=sug.age_band,
-        )
-        logger.info(
-            "隐式采纳后 Q&A 推广: device_no=%s, qa_id=%s, has_rewrite=%s, age_band=%s",
-            device_no,
-            qa_id,
-            bool(sug.standalone_question),
-            sug.age_band or "",
-        )
+        # 仅无史接地才 promote；缺省/True 保守跳过
+        if sug.history_grounded:
+            logger.info(
+                "隐式采纳后 Q&A 推广跳过: history_grounded=true device_no=%s",
+                device_no,
+            )
+        else:
+            qa_id = promote_accepted_qa(
+                standalone_question=sug.standalone_question,
+                answer=sug.text,
+                age_band=sug.age_band,
+            )
+            logger.info(
+                "隐式采纳后 Q&A 推广: device_no=%s, qa_id=%s, has_rewrite=%s, age_band=%s",
+                device_no,
+                qa_id,
+                bool(sug.standalone_question),
+                sug.age_band or "",
+            )
 
     await companion_session_store.mark_feedback_applied(device_no)
     logger.info(
         f"隐式飞轮完成: device_no={device_no}, status={status.value}, "
-        f"answer_id={sug.answer_id}, kids={len(sug.knowledge_ids)}"
+        f"answer_id={sug.answer_id}, kids={len(sug.knowledge_ids)}, "
+        f"history_grounded={sug.history_grounded}, qa_match_id={sug.qa_match_id!r}"
     )
+    return status

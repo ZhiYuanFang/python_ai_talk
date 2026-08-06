@@ -18,6 +18,7 @@ from app.clinic.graphs.nodes.generate_clinic_answer import generate_clinic_answe
 from app.shared.baby_age import age_band_from_months
 from app.shared.companion_session import (
     companion_session_store,
+    derive_history_grounded,
     extract_knowledge_ids,
     format_chat_turns_for_prompt,
 )
@@ -143,6 +144,12 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
                     suggestion_text=clinic_response,
                     standalone_question=merged_state.get("standalone_question") or "",
                     age_band=age_band or "",
+                    history_grounded=derive_history_grounded(merged_state),
+                    qa_match_id=(
+                        str(merged_state.get("qa_match_id") or "")
+                        if merged_state.get("qa_hit")
+                        else ""
+                    ),
                 )
             except Exception as e:
                 logger.warning(f"写入陪伴会话失败（不中断意图响应）: {e}")

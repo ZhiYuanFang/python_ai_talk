@@ -22,7 +22,11 @@ LangGraph 节点：用于诊疗场景的流式回答生成。
 import logging
 from typing import Any, AsyncGenerator, Dict
 
-from app.clinic.graphs.nodes.prompts.clinic_answer import build_clinic_answer_system_prompt, build_clinic_answer_user_message
+from app.clinic.graphs.nodes.prompts.clinic_answer import (
+    build_clinic_answer_system_prompt,
+    build_clinic_answer_user_message,
+    resolve_clinic_needs_history,
+)
 from app.shared.llm_client import LLMModelConfig, LLMResponse, llm_client
 
 # 初始化日志记录器
@@ -53,12 +57,14 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
     model_config_dict = state.get("model_config", {})
     chat_context = state.get("chat_context") or ""
     baby_age_months = state.get("baby_age_months")
+    # 门禁结果决定提示词分叉与是否注入史/对话块
+    needs_history = resolve_clinic_needs_history(state)
 
     # 构建模型配置对象
     model_config = LLMModelConfig(**model_config_dict)
 
     # 构建提示词
-    system_prompt = build_clinic_answer_system_prompt()
+    system_prompt = build_clinic_answer_system_prompt(needs_history=needs_history)
     user_message = build_clinic_answer_user_message(
         question=question,
         history_events=history_events,
@@ -66,6 +72,7 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
         baby_profile=baby_profile,
         chat_context=chat_context,
         baby_age_months=baby_age_months,
+        needs_history=needs_history,
     )
 
     # 流式调用 LLM

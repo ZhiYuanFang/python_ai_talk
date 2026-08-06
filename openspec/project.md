@@ -88,3 +88,27 @@
 ## 七、详细规范参考
 
 详细的代码生成规范请参考 [docs/coding-standard.md](../docs/coding-standard.md)。
+
+### OpenSpec 基线参考约定（强制）
+
+- 后续 AI 发起任何新变更前，**必须**先读取并对照 **`openspec/specs/v0.0.1.md`**（v0.0.1 合并基线规格），再生成 proposal / design / tasks。
+- 若本次需求涉及已有 capability，必须在 proposal 中明确标注复用/变更了哪些已有 spec 边界；禁止脱离历史 spec 直接重写同类能力。
+- AI 在实现阶段（apply）必须以 v0.0.1 基线中的 Requirement / Scenario 作为验收约束；若实现与基线冲突，需先更新变更规格再改代码。
+- 若变更涉及**用户可见行为、对外 API/契约、兼容性或安全语义**的调整，须在 OpenSpec 制品中落到明确的 **`### Requirement`** 与 **`#### Scenario`**（含 `changes/<name>/specs/**` 内 ADDED/MODIFIED delta）；PR 说明、任务勾选理由或评审记录中应能一句话指回对应能力名与需求标题，禁止「只改代码、规格悬空」。
+
+### OpenSpec 归档约定（强制）
+
+- **快捷用法**：用户只需说 **`archive vX.Y.Z`** / **`/opsx-archive vX.Y.Z`**（例如 `archive v0.0.2`）。AI **必须**按版本整批收版，无需再选单个 change、无需 dated archive。
+- 执行命令（默认）：
+
+  ```bash
+  python scripts/sync_specs_to_version.py vX.Y.Z --remove-changes
+  ```
+
+- **默认删除** `openspec/changes/*` 下各 change 目录（跳过 `archive/` 若存在）；**不**创建 `openspec/changes/archive/YYYY-MM-DD-*` dated 目录。
+- 用户**显式**要求保留 change 目录时（如口头「不要删 change」），才省略 `--remove-changes`。
+- 合并前仍可用 `openspec list --json` 警告 in-progress change，**不阻塞**合并（除非用户要求仅合并 complete）。
+- 收版后 **必须**更新本文件「OpenSpec 基线参考约定」中的版本号（如 `v0.0.1` → 新版本），并同步 `AGENTS.md`、`.cursor/skills/openspec/SKILL.md` 中的基线路径。
+- 合并完成后摘要须说明：**Changes removed: yes**（删除数量）或 **no**（用户要求保留）。
+- 技能入口：`.cursor/skills/openspec-archive-change/SKILL.md`；常驻规则：`.cursor/rules/openspec-archive.mdc`。
+- 所有新增需求涉及代码，必须补全每行代码的中文注释，解释此代码的业务场景。

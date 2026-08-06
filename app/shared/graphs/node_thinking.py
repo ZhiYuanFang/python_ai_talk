@@ -88,12 +88,16 @@ def with_node_thinking(
     """
 
     async def _async_wrapped(state: Dict[str, Any]) -> Dict[str, Any]:
+        # 推送 thinking 文案，供 astream(custom) 消费
         emit_thinking(node_name, get_message(node_name))
         # 让出事件循环，使 astream(custom) 消费者先收到 thinking 再进慢逻辑
         await asyncio.sleep(0)
+        # 执行原节点逻辑，支持 sync/async
         result = node_fn(state)
+        # 如果是 awaitable，则等待结果
         if inspect.isawaitable(result):
             result = await result
+        # 确保返回 dict，避免 None 或其他类型破坏图逻辑
         return result if isinstance(result, dict) else {}
 
     # 统一用 async 包装，LangGraph 支持 async 节点

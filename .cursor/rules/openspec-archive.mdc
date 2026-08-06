@@ -1,0 +1,28 @@
+---
+description: OpenSpec 收版必须按版本合并基线并默认删除 changes（archive vX.Y.Z）
+alwaysApply: true
+---
+
+# OpenSpec 收版约定（强制）
+
+当用户说 **`archive vX.Y.Z`**、**`/opsx-archive vX.Y.Z`**、**收版到 vX.Y.Z** 或同类意图时：
+
+1. **读取** `openspec/project.md` 与当前基线 `openspec/specs/v*.md`（以 project.md 写明的版本为准）。
+2. **执行**（默认删除 changes）：
+
+   ```bash
+   python scripts/sync_specs_to_version.py vX.Y.Z --remove-changes
+   ```
+
+3. **更新** `openspec/project.md`「基线参考约定」中的版本号为新版本；同步 `AGENTS.md` 与 `.cursor/skills/openspec/SKILL.md` 中的基线路径。
+4. 摘要说明：**Changes removed: yes (N)** 或用户要求保留时的 **no**。
+
+## 禁止
+
+- 禁止把 change 挪到 `openspec/changes/archive/YYYY-MM-DD-<name>/`（除非用户显式要求保留 change 目录）。
+- 禁止把权威基线写成 `openspec/specs/<capability>/spec.md` 树；权威产物是 **`openspec/specs/vX.Y.Z.md`**。
+- 禁止在用户已给出版本号时再要求「选单个 change 再 mv 归档」。
+
+## 预警
+
+可用 `openspec list --json` 警告 in-progress change，**默认不阻塞**整批收版。

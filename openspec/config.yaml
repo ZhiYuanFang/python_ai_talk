@@ -1,20 +1,17 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+# Project context shown to AI when creating OpenSpec artifacts.
+context: |
+  权威约束：openspec/project.md、AGENTS.md、当前基线 openspec/specs/v0.0.1.md。
+  收版：用户说 archive vX.Y.Z 时执行
+  python scripts/sync_specs_to_version.py vX.Y.Z --remove-changes
+  然后更新 project.md / AGENTS.md / .cursor/skills/openspec/SKILL.md 中的基线版本。
+  默认删除 openspec/changes/*；禁止 dated archive 目录。
+  代码须中文业务注释；禁止自动生成测试；按 feeding/clinic/tip/shared 模块分离。
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - 新变更前必须对照 openspec/specs/v0.0.1.md 基线
+    - 行为变更必须落到 specs/** 的 Requirement / Scenario（含 SHALL/MUST）
+  tasks:
+    - 禁止包含「编写测试 / 创建测试文件」类任务（除非用户明确要求）

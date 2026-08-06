@@ -17,6 +17,7 @@ from typing import Any, Dict
 from app.clinic.graphs.nodes.prompts.clinic_answer import (
     build_clinic_answer_system_prompt,
     build_clinic_answer_user_message,
+    resolve_clinic_needs_history,
 )
 from app.shared.llm_client import LLMModelConfig, llm_client
 
@@ -40,9 +41,10 @@ async def generate_clinic_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     model_config_dict = state.get("model_config", {})
     chat_context = state.get("chat_context") or ""
     baby_age_months = state.get("baby_age_months")
+    needs_history = resolve_clinic_needs_history(state)
 
     model_config = LLMModelConfig(**model_config_dict)
-    system_prompt = build_clinic_answer_system_prompt()
+    system_prompt = build_clinic_answer_system_prompt(needs_history=needs_history)
     user_message = build_clinic_answer_user_message(
         question=question,
         history_events=history_events,
@@ -50,6 +52,7 @@ async def generate_clinic_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         baby_profile=baby_profile,
         chat_context=chat_context,
         baby_age_months=baby_age_months,
+        needs_history=needs_history,
     )
 
     resp = await llm_client.invoke(

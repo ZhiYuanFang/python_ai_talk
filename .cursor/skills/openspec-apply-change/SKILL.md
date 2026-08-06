@@ -46,9 +46,8 @@ Implement tasks from an OpenSpec change.
 
    **Handle states:**
    - If `state: "blocked"` (missing artifacts): show message, suggest using openspec-continue-change
-   - If `state: "all_done"`: congratulate, suggest archive
+   - If `state: "all_done"`: congratulate, suggest archive with version, e.g. `/opsx-archive vX.Y.Z`（本仓库用 `scripts/sync_specs_to_version.py <version> --remove-changes`，见 openspec-archive-change skill）
    - Otherwise: proceed to implementation
-
 4. **Read context files**
 
    Read the files listed in `contextFiles` from the apply instructions output.
@@ -115,7 +114,7 @@ Working on task 4/7: <task description>
 - [x] Task 2
 ...
 
-All tasks complete! Ready to archive this change.
+All tasks complete! Archive with a version, e.g. `/opsx-archive v0.0.2` (merges all changes into openspec/specs/vX.Y.Z.md and deletes change dirs).
 ```
 
 **Output On Pause (Issue Encountered)**

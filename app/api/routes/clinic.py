@@ -23,6 +23,7 @@ from app.feeding.services.event_cache import event_cache
 from app.shared.baby_age import age_band_from_months
 from app.shared.companion_session import (
     companion_session_store,
+    derive_history_grounded,
     extract_knowledge_ids,
     format_chat_turns_for_prompt,
 )
@@ -142,6 +143,12 @@ async def _stream_clinic_response(
             suggestion_text=full_answer,
             standalone_question=final_state.get("standalone_question") or "",
             age_band=age_band or "",
+            history_grounded=derive_history_grounded(final_state),
+            qa_match_id=(
+                str(final_state.get("qa_match_id") or "")
+                if final_state.get("qa_hit")
+                else ""
+            ),
         )
     except Exception as e:
         logger.warning(f"写入陪伴会话失败（不中断 SSE）: {e}")

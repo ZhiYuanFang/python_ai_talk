@@ -398,6 +398,66 @@ class VectorStore:
         except Exception as e:
             logger.error(f"更新质量分失败: {str(e)}")
 
+    def update_qa_quality_score(self, doc_id: str, feedback: int):
+        """
+        根据隐式反馈更新全局 Q&A 捷径条目质量分。
+
+        业务逻辑：
+        - 操作 qa_fast_path 集合（非通识 mother_baby_knowledge）
+        - 👍（feedback=1）：quality_score += 0.1，helpful_count += 1
+        - 👎（feedback=-1）：quality_score -= 0.2
+        - 同步更新 match_count 与 updated_at
+
+        Args:
+            doc_id: Q&A 文档 id（如 qa_xxx）
+            feedback: 反馈值，1=正面，-1=负面
+        """
+        self._ensure_initialized()
+        if not (doc_id or "").strip():
+            logger.info("Q&A 质量分跳过: 空 doc_id")
+            return
+        try:
+            existing_data = self._qa_collection.get(
+                ids=[doc_id], include=["metadatas"]
+            )
+            if not existing_data.get("metadatas"):
+                logger.warning("Q&A 文档不存在，无法更新质量分: id=%s", doc_id)
+                return
+
+            metadata = existing_data["metadatas"][0].copy()
+            current_score = float(metadata.get("quality_score", 0.8))
+            if feedback == 1:
+                new_score = min(1.0, current_score + 0.1)
+                metadata["quality_score"] = new_score
+                metadata["helpful_count"] = int(metadata.get("helpful_count") or 0) + 1
+                delta = "+0.1"
+            elif feedback == -1:
+                new_score = max(0.0, current_score - 0.2)
+                metadata["quality_score"] = new_score
+                delta = "-0.2"
+            else:
+                logger.warning(
+                    "Q&A 质量分忽略未知 feedback: doc_id=%s, feedback=%s",
+                    doc_id,
+                    feedback,
+                )
+                return
+
+            metadata["match_count"] = int(metadata.get("match_count") or 0) + 1
+            metadata["updated_at"] = datetime.now().isoformat()
+            self._qa_collection.update(ids=[doc_id], metadatas=[metadata])
+            logger.info(
+                "Q&A 质量分更新: doc_id=%s, feedback=%s, delta=%s, "
+                "quality %.4f -> %.4f",
+                doc_id,
+                feedback,
+                delta,
+                current_score,
+                float(metadata["quality_score"]),
+            )
+        except Exception as e:
+            logger.error(f"更新 Q&A 质量分失败: {str(e)}")
+
     def get_document_count(self) -> int:
         """
         获取向量库中文档数量

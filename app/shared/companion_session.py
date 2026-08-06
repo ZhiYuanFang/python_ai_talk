@@ -45,6 +45,9 @@ class LastSuggestion:
 
     feedback_applied=True 后不再对同一条加减分。
     standalone_question / age_band 供 accepted 时写入全局 Q&A。
+    history_grounded=True 表示本轮按需要喂养史路径生成，禁止 promote。
+    旧会话缺省 history_grounded 时按 True 处理（保守不入库）。
+    qa_match_id 记录捷径命中条目，供 rejected 时下调问答质量分。
     """
 
     answer_id: str = ""
@@ -54,6 +57,8 @@ class LastSuggestion:
     source: str = ""  # tip | clinic
     standalone_question: str = ""
     age_band: str = ""
+    history_grounded: bool = True
+    qa_match_id: str = ""
 
 
 @dataclass
@@ -91,6 +96,11 @@ class CompanionSession:
         raw_sug = data.get("last_suggestion")
         last_suggestion = None
         if isinstance(raw_sug, dict):
+            # 缺省 history_grounded → True，避免旧数据误 promote
+            if "history_grounded" in raw_sug:
+                history_grounded = bool(raw_sug.get("history_grounded"))
+            else:
+                history_grounded = True
             last_suggestion = LastSuggestion(
                 answer_id=str(raw_sug.get("answer_id", "")),
                 text=str(raw_sug.get("text", "")),
@@ -101,6 +111,8 @@ class CompanionSession:
                 source=str(raw_sug.get("source", "")),
                 standalone_question=str(raw_sug.get("standalone_question", "")),
                 age_band=str(raw_sug.get("age_band", "")),
+                history_grounded=history_grounded,
+                qa_match_id=str(raw_sug.get("qa_match_id", "") or ""),
             )
         return cls(
             device_no=str(data.get("device_no", "")),
@@ -137,6 +149,26 @@ def extract_knowledge_ids(knowledge: Any) -> List[str]:
         seen.add(kid_s)
         ids.append(kid_s)
     return ids
+
+
+def derive_history_grounded(state: Dict[str, Any]) -> bool:
+    """
+    由 clinic 终态推导本轮是否史接地（供 last_suggestion / promote 门禁）。
+
+    业务逻辑：
+    - Q&A 捷径命中：答案来自全局库，视为未史接地（False）
+    - force_needs_history：强制接地 True
+    - needs_history 显式布尔：原样
+    - 缺省：True（保守，阻止误 promote）
+    """
+    if state.get("qa_hit"):
+        return False
+    if state.get("force_needs_history"):
+        return True
+    needs = state.get("needs_history")
+    if needs is None:
+        return True
+    return bool(needs)
 
 
 def format_chat_turns_for_prompt(turns: List[CompanionTurn]) -> str:
@@ -238,6 +270,8 @@ class CompanionSessionStore:
         suggestion_text: Optional[str] = None,
         standalone_question: Optional[str] = None,
         age_band: Optional[str] = None,
+        history_grounded: Optional[bool] = None,
+        qa_match_id: Optional[str] = None,
     ) -> CompanionSession:
         """
         追加一轮并更新 last_suggestion（新建议默认未飞轮）。
@@ -252,11 +286,15 @@ class CompanionSessionStore:
             suggestion_text: 待判定建议文本，默认用 assistant
             standalone_question: 本轮改写独立问句（供 Q&A 推广）
             age_band: 本轮月龄带
+            history_grounded: 本轮是否史接地；None 时按 True（保守）
+            qa_match_id: Q&A 捷径命中 id；非捷径为空
         """
         session = await self.get(device_no)
         session.turns.append(
             CompanionTurn(user=user or "", assistant=assistant or "", source=source)
         )
+        # None → True：未显式传入时禁止误 promote
+        grounded = True if history_grounded is None else bool(history_grounded)
         session.last_suggestion = LastSuggestion(
             answer_id=answer_id or "",
             text=(suggestion_text if suggestion_text is not None else assistant) or "",
@@ -265,6 +303,8 @@ class CompanionSessionStore:
             source=source,
             standalone_question=(standalone_question or "").strip(),
             age_band=(age_band or "").strip(),
+            history_grounded=grounded,
+            qa_match_id=(qa_match_id or "").strip(),
         )
         await self.save(session)
         return session

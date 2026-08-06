@@ -30,6 +30,7 @@ async def iter_graph_custom_thinking(
         ("thinking", {"type","node","content"}) 或 ("final", merged_state)
     """
     state: Dict[str, Any] = dict(initial_state)
+    """token表示GRAPH_STREAMING的上下文变量状态，确保在异步迭代过程中正确管理上下文。"""
     token = GRAPH_STREAMING.set(True)
     try:
         async for mode, chunk in graph.astream(
