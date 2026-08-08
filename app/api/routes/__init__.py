@@ -10,6 +10,8 @@
 - /analyze/intent：意图分析
 - /clinic/stream：智能陪伴续聊（流式；与 tip 共享 device_no 会话）
 - /tip/stream：事件开场陪伴（流式；写入共享会话，可供 clinic 续聊）
+- /care-alert/analyze：护理留意日分析（Go 内调）
+- /care-alert/feedback：护理留意固定意图飞轮 ACK（Go 内调，无 NLP）
 - /knowledge：知识库管理（上传、列表、详情、更新、删除、统计、分类）
 """
 
@@ -19,6 +21,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.intent import router as intent_router
 from app.api.routes.clinic import router as clinic_router
 from app.api.routes.tip import router as tip_router
+from app.api.routes.care_alert import router as care_alert_router
 from app.api.routes.knowledge import router as knowledge_router
 
 # 创建主路由，统一前缀 /v1
@@ -29,4 +32,5 @@ router.include_router(health_router)
 router.include_router(intent_router)
 router.include_router(clinic_router)
 router.include_router(tip_router)
+router.include_router(care_alert_router)
 router.include_router(knowledge_router)
