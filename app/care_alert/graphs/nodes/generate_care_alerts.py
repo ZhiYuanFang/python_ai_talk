@@ -264,7 +264,6 @@ async def generate_care_alerts(state: Dict[str, Any]) -> Dict[str, Any]:
         knowledge_results=state.get("knowledge") or [],
         baby_profile=state.get("baby_profile") or {},
         history_summary=state.get("history_summary"),
-        kg_context=state.get("kg_context"),
     )
 
     logger.info(

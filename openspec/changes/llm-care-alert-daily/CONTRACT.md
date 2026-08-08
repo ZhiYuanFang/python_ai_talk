@@ -5,11 +5,15 @@ Go 编排契约见 `go_ai_talk/openspec/changes/llm-care-alert-daily/CONTRACT.md
 
 本文件供 Python 实现对照；路由挂在统一前缀 `/v1` 下（与 tip/clinic/intent 一致）。
 
+通识飞轮增量见同仓变更 `care-alert-knowledge-flywheel`（本 CONTRACT 已对齐其行为）。
+
 ## 职责
 
 - 接收 Go 编排请求：宝宝月龄、近期历史、知识图谱上下文、**模型标识**（DeepSeek / Zhipu）。
-- 执行 KG + LLM 分析，产出「值得留意」items 列表（可映射 Flutter / Go DTO）。
-- **不**与 clinic 配额耦合；**不**做忽略/追问自由文本 NLP（飞轮仅固定意图 ACK）。
+- 执行向量通识检索（过相似度/质量门槛）+ LLM 分析，产出「值得留意」items 列表（可映射 Flutter / Go DTO）。
+- **不**与 clinic 配额耦合；**不**做忽略/追问自由文本 NLP。
+- 通识：**准确优先**——未过门槛则 knowledge 为空，**不得**用未达标的 `kg_context` 硬塞进判定。
+- 飞轮：analyze 写入 `suggestionId → knowledge_ids`；feedback 固定意图更新通识质量分。
 
 ## Go → Python 接口（与 Go `PythonAIClient` 对齐）
 
@@ -33,12 +37,13 @@ Go 编排契约见 `go_ai_talk/openspec/changes/llm-care-alert-daily/CONTRACT.md
 }
 ```
 
-响应示例（Go 再补 `suggestionId` / `followUpPrompt` 亦可由 Python 生成）：
+响应示例（**请透传 Python 返回的 `suggestionId`** 供 feedback 飞轮映射）：
 
 ```json
 {
   "items": [
     {
+      "suggestionId": "<uuid>",
       "eventId": "...",
       "eventName": "...",
       "summaryLine": "...",
@@ -62,7 +67,7 @@ Go 编排契约见 `go_ai_talk/openspec/changes/llm-care-alert-daily/CONTRACT.md
 
 亦兼容外层 envelope `{ "code": 0, "data": { "items": [...] } }`。
 
-### `POST /v1/care-alert/feedback`（飞轮 ACK）
+### `POST /v1/care-alert/feedback`（通识质量飞轮）
 
 ```json
 {
@@ -73,22 +78,26 @@ Go 编排契约见 `go_ai_talk/openspec/changes/llm-care-alert-daily/CONTRACT.md
 }
 ```
 
-固定意图；**无**自由文本 NLP、**不** invent 质量分映射（尚无 suggestion→知识 doc 接线）。  
-实现：校验枚举后日志 + `{ "ok": true }`。  
-Go 在本接口失败时仍对客户端返回成功（本地已记日志；**best-effort**）。
+固定意图；**无**自由文本 NLP。  
+- `follow_up`：对 analyze 映射的通识文档质量分上调（同 clinic feedback=1）  
+- `ignore`：质量分下调（同 feedback=-1）  
+- 无映射或空 ids：仅日志，仍返回 `{ "ok": true }`  
+Go 在本接口失败时仍对客户端返回成功（**best-effort**）。
 
 ## 约束
 
 - 语气「值得留意」，非医疗诊断。
 - 返回 **列表**（驱动跑马灯），非仅 Top1。
 - 每项必须有可原样传入陪伴的 `followUpPrompt`（缺省时 Go 会补齐）。
+- LLM 结合本机近史 + 合格通识判定；无合格通识不编造、宁缺毋滥。
 
 ## 状态
 
 - [x] 分析接口 + KG/历史拼装（`POST /v1/care-alert/analyze`）
 - [x] 按 Go 传入模型执行 LLM
-- [x] 输出对齐 DTO（含 followUpPrompt）
-- [x] 飞轮 ACK `POST /v1/care-alert/feedback`（无 NLP）
+- [x] 输出对齐 DTO（含 followUpPrompt / suggestionId）
+- [x] 通识飞轮 `POST /v1/care-alert/feedback`（固定意图 → 质量分；suggestion→ids 映射）
+- [x] 准确优先：不硬塞未过门槛知识
 
 ## Flutter 备注
 

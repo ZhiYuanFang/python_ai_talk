@@ -4,6 +4,8 @@
 业务说明：
 将 HTTP 请求转为图初始状态，执行 care_alert_graph，返回 items。
 不扣 clinic 配额；模型由 Go 指定（deepseek / zhipu）。
+准确优先：不用未过门槛的 kg_context 硬塞进 knowledge。
+analyze 成功后写入 suggestionId → knowledge_ids 飞轮映射。
 """
 
 from __future__ import annotations
@@ -13,7 +15,12 @@ from typing import Any, Dict, List, Optional
 
 from app.care_alert.graphs.care_alert_graph import care_alert_graph
 from app.care_alert.schemas.care_alert import CareAlertAnalyzeRequest
+from app.care_alert.services.flywheel_store import (
+    care_alert_flywheel_store,
+    suggestion_ids_from_items,
+)
 from app.care_alert.services.model_resolve import resolve_model_config
+from app.shared.companion_session import extract_knowledge_ids
 from app.tip.graphs.nodes.derive_baby_age import shanghai_now
 
 logger = logging.getLogger(__name__)
@@ -51,24 +58,6 @@ def _history_from_summary(history_summary: Any) -> Optional[List[Dict[str, Any]]
     return None
 
 
-def _knowledge_from_kg(kg_context: Any) -> Optional[List[Dict[str, Any]]]:
-    """若 Go 透传知识列表则取出。"""
-    if isinstance(kg_context, list):
-        items = [e for e in kg_context if isinstance(e, dict)]
-        return items or None
-    if isinstance(kg_context, dict):
-        for key in ("knowledge", "items", "results"):
-            raw = kg_context.get(key)
-            if isinstance(raw, list):
-                items = [e for e in raw if isinstance(e, dict)]
-                if items:
-                    return items
-        # 非空 dict 当作单条 content 包装
-        if kg_context:
-            return [{"content": str(kg_context), "score": 1.0}]
-    return None
-
-
 async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[str, Any]]:
     """
     执行护理留意日分析。
@@ -99,6 +88,7 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
             "limit": 80,
         },
         "history_summary": request.history_summary,
+        # kg_context 仅保留在 state 供观测；不再填入 knowledge（准确优先）
         "kg_context": request.kg_context,
     }
 
@@ -120,40 +110,51 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         if isinstance(event, dict):
             final_state = event
 
-    # 若本仓历史为空但 Go 透传了列表，补入后再跑一次生成成本过高；仅在空时补 prompt 侧已有 history_summary
+    # 本仓历史为空时可用编排侧历史列表补齐后重跑生成（史可补；通识不硬塞）
     history_events = final_state.get("history_events") or []
+    history_seeded = False
     if not history_events:
         seeded = _history_from_summary(request.history_summary)
         if seeded:
             logger.info("本仓历史为空，使用编排侧 history_summary: n=%s", len(seeded))
             final_state["history_events"] = seeded
+            history_seeded = True
 
+    # 准确优先：向量门槛后 knowledge 为空则保持空，不用 kg_context 顶替
     knowledge = final_state.get("knowledge") or []
-    if not knowledge:
-        seeded_kg = _knowledge_from_kg(request.kg_context)
-        if seeded_kg:
-            logger.info("本仓知识为空，使用编排侧 kg_context: n=%s", len(seeded_kg))
-            final_state["knowledge"] = seeded_kg
+    if not knowledge and request.kg_context not in (None, {}, [], ""):
+        logger.info(
+            "本仓知识为空且存在 kg_context，按准确优先不硬塞进 knowledge device_no=%s",
+            request.device_no,
+        )
 
-    # 若图已生成 items 但历史是后补的且 items 空，可再调 generate（仅空且刚补数据时）
     items = final_state.get("items")
     if not isinstance(items, list):
         items = []
 
-    if not items and (
-        (not history_events and final_state.get("history_events"))
-        or (not knowledge and final_state.get("knowledge"))
-    ):
+    # 仅历史后补且原先 items 空时重跑 LLM
+    if not items and history_seeded:
         from app.care_alert.graphs.nodes.generate_care_alerts import generate_care_alerts
 
-        logger.info("数据由编排侧补齐后重跑 LLM 生成")
+        logger.info("历史由编排侧补齐后重跑 LLM 生成")
         regenerated = await generate_care_alerts(final_state)
         items = regenerated.get("items") or []
 
+    # 飞轮映射：本轮进 prompt 的通识 ids → 各 suggestionId
+    knowledge_ids = extract_knowledge_ids(final_state.get("knowledge") or [])
+    for sid in suggestion_ids_from_items(items):
+        await care_alert_flywheel_store.save_mapping(
+            sid,
+            device_no=request.device_no,
+            day=day,
+            knowledge_ids=knowledge_ids,
+        )
+
     logger.info(
-        "护理留意分析结束: device_no=%s day=%s count=%s",
+        "护理留意分析结束: device_no=%s day=%s count=%s knowledge_ids=%s",
         request.device_no,
         day,
         len(items),
+        len(knowledge_ids),
     )
     return items

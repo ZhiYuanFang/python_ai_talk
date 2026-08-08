@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     companion_session_ttl_days: int = 7
     companion_session_max_turns: int = 3  # 进 prompt / Redis 截断一致，默认 3 轮省 token
 
+    # 护理留意飞轮：suggestionId → knowledge_ids 映射 TTL（天）
+    care_alert_flywheel_ttl_days: int = 7
+
     # 知识注入预算：检索后按 score 过滤，默认 K=1 且 score>=0.6，否则不注入
     knowledge_min_score: float = 0.6
     knowledge_prompt_top_k: int = 1

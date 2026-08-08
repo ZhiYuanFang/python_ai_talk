@@ -238,10 +238,10 @@ class CareAlertAnalyzeRequest(BaseModel):
 
 class CareAlertFeedbackRequest(BaseModel):
     """
-    Go → Python 固定意图飞轮（无 NLP）
+    Go → Python 固定意图通识飞轮（无 NLP）
 
     业务说明：
-    仅接受 ignore|follow_up；Python 侧 ACK + 日志，不解析自由文本。
+    仅接受 ignore|follow_up；按 suggestion_id 映射更新通识质量分。
     Go 在本接口失败时仍对客户端返回成功（best-effort）。
     """
 
@@ -291,7 +291,7 @@ class CareAlertFeedbackRequest(BaseModel):
 
 
 class CareAlertFeedbackResponse(BaseModel):
-    """飞轮 ACK（空体即可；HTTP 200 表示已接收）。"""
+    """飞轮 ACK（HTTP 200 + ok=true；质量更新为 best-effort 副作用）。"""
 
     model_config = ConfigDict(populate_by_name=True)
 

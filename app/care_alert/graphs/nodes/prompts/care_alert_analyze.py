@@ -2,7 +2,8 @@
 护理留意分析提示词
 
 业务说明：
-引导 LLM 基于月龄、近期记录与知识，产出「值得留意」JSON 列表。
+引导 LLM 基于月龄、近期喂养史与「合格」通识知识，判定今天是否值得留意。
+准确优先：无合格通识不编造、不硬塞；史信号不足时 items 可为 []。
 语气非医疗诊断；每项必须含 followUpPrompt。
 """
 
@@ -17,14 +18,20 @@ from app.tip.graphs.nodes.derive_baby_age import shanghai_now
 
 def build_care_alert_system_prompt() -> str:
     """
-    系统提示词：角色与硬输出格式。
+    系统提示词：角色、判定规则与硬输出格式。
 
     Returns:
         系统提示词字符串
     """
     return """
-你是一位有经验的母婴闺蜜，帮家长从「近期喂养/护理记录」里找出今天「值得留意」的点。
+你是一位有经验的母婴闺蜜，帮家长判断今天有没有「值得留意」的护理点。
 态度：温和提醒、不是诊断、不开药、不恐吓。可用「值得留意」「可以多看看」这类措辞。
+
+【判定依据——准确优先】
+1. 「近期喂养/护理记录」提供事实信号（间隔偏长、进行中偏久、近两日未见等）。
+2. 「相关知识摘录」若非空：用通识校准同月龄是否「值得提」；不得把通识写成对方宝宝的记录。
+3. 「相关知识摘录」为「（无）」时：禁止编造通识依据；可仅凭清晰史信号谨慎出项，史不够可靠则 items 必须为 []。
+4. 禁止为凑列表硬出条目；宁可少出、不出。
 
 你必须只输出一个 JSON 对象（不要 Markdown 代码块，不要其它说明），格式：
 {
@@ -74,7 +81,7 @@ def _format_age(baby_age_months: Optional[int]) -> str:
 
 
 def _compact_knowledge(knowledge_results: List[Dict[str, Any]], *, limit: int = 3) -> str:
-    """将向量知识压成短文本块。"""
+    """将已过门槛的向量知识压成短文本块；空则「（无）」。"""
     if not knowledge_results:
         return "（无）"
     lines: List[str] = []
@@ -99,19 +106,21 @@ def build_care_alert_user_message(
     knowledge_results: List[Dict[str, Any]],
     baby_profile: Dict[str, Any],
     history_summary: Any = None,
-    kg_context: Any = None,
 ) -> str:
     """
-    组装用户消息：日键、月龄、画像、近史、知识。
+    组装用户消息：日键、月龄、画像、近史、合格通识。
+
+    业务逻辑：
+    仅注入已过向量门槛的 knowledge_results；不附带编排侧 kg_context，
+    避免未达标知识硬塞进判定。
 
     Args:
         day: 上海逻辑日
         baby_age_months: 月龄或 None
         history_events: 原始历史列表
-        knowledge_results: 向量检索结果
+        knowledge_results: 向量检索（已过滤）结果
         baby_profile: 宝宝画像
-        history_summary: Go 可选透传摘要
-        kg_context: Go 可选透传知识上下文
+        history_summary: Go 可选透传历史摘要
 
     Returns:
         用户消息字符串
@@ -125,32 +134,28 @@ def build_care_alert_user_message(
     )
     history_json = json.dumps(slim, ensure_ascii=False)
     profile_json = json.dumps(baby_profile or {}, ensure_ascii=False, default=str)
+    knowledge_block = _compact_knowledge(knowledge_results)
 
     parts = [
         f"分析日（Asia/Shanghai）：{day or now.date().isoformat()}",
         f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}",
         _format_age(baby_age_months),
         f"宝宝画像：{profile_json}",
-        "请根据下列近期记录与知识，找出今天值得留意的护理点，并严格按系统要求输出 JSON。",
+        (
+            "请结合「近期记录」的事实信号与「相关知识摘录」（若有）判断今天是否值得留意；"
+            "知识为「（无）」时不要编造通识，史不够清楚就返回空 items。严格按系统要求输出 JSON。"
+        ),
         f"近期喂养/护理记录（已裁剪）：\n{history_json}",
-        f"相关知识摘录：\n{_compact_knowledge(knowledge_results)}",
+        f"相关知识摘录（仅向量检索过门槛条目；无为「（无）」）：\n{knowledge_block}",
     ]
 
-    # Go 透传上下文：非空时附加，便于编排侧预拼
+    # 仅历史摘要可作补充；不作通识硬塞
     if history_summary not in (None, {}, [], ""):
         try:
             hs = json.dumps(history_summary, ensure_ascii=False, default=str)
         except TypeError:
             hs = str(history_summary)
         if hs and hs not in ("{}", "[]", "null"):
-            parts.append(f"编排侧历史摘要（参考）：\n{hs}")
-
-    if kg_context not in (None, {}, [], ""):
-        try:
-            kg = json.dumps(kg_context, ensure_ascii=False, default=str)
-        except TypeError:
-            kg = str(kg_context)
-        if kg and kg not in ("{}", "[]", "null"):
-            parts.append(f"编排侧知识上下文（参考）：\n{kg}")
+            parts.append(f"编排侧历史摘要（参考，非通识库）：\n{hs}")
 
     return "\n\n".join(parts)
