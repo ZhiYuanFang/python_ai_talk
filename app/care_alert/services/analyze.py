@@ -81,11 +81,12 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         "model_config": model_config,
         # 供 search_vectors 使用
         "question": _KG_QUERY,
-        # 近 7 天、不限 event_ids，拉多条供间隔/缺记判断
+        # 近两日、不限 event_ids，拉多条供间隔/缺记判断
         "data_requirement": {
             "event_ids": [],
-            "time_range": "last_7_days",
-            "limit": 80,
+            # 近两日（昨 00:00 上海 → now），缩短拉取与提示词
+            "time_range": "last_2_days",
+            "limit": 60,
         },
         "history_summary": request.history_summary,
         # kg_context 仅保留在 state 供观测；不再填入 knowledge（准确优先）

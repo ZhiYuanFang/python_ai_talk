@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 VALID_TIME_RANGES = {
     "today",
     "yesterday",
+    "last_2_days",
     "last_7_days",
     "last_30_days",
     "custom",

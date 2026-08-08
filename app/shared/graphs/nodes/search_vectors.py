@@ -38,7 +38,11 @@ def _item_quality_score(item: Dict[str, Any]) -> float:
         return 0.8
 
 
-def filter_knowledge_for_prompt(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def filter_knowledge_for_prompt(
+    results: List[Dict[str, Any]],
+    *,
+    top_k: int | None = None,
+) -> List[Dict[str, Any]]:
     """
     按配置收紧进 LLM 的知识列表。
 
@@ -46,14 +50,16 @@ def filter_knowledge_for_prompt(results: List[Dict[str, Any]]) -> List[Dict[str,
     1. 丢弃 quality_score < knowledge_quality_min 的条目（硬过滤）
     2. 按相似度 score 降序
     3. 丢弃 score < knowledge_min_score 的条目
-    4. 最多保留 knowledge_prompt_top_k 条（默认 1）
+    4. 最多保留 top_k 条（参数优先，否则 settings.knowledge_prompt_top_k，默认 1）
     """
     if not results:
         return []
 
     min_score = float(settings.knowledge_min_score)
     quality_min = float(settings.knowledge_quality_min)
-    top_k = max(0, int(settings.knowledge_prompt_top_k))
+    if top_k is None:
+        top_k = int(settings.knowledge_prompt_top_k)
+    top_k = max(0, int(top_k))
     if top_k == 0:
         return []
 

@@ -16,7 +16,7 @@ class CareAlertState(TypedDict, total=False):
     字段说明：
     - device_no / day / model_config：路由注入
     - question：供 search_vectors 检索用查询词
-    - data_requirement：驱动 fetch_history（近 7 天）
+    - data_requirement：驱动 fetch_history（近两日 last_2_days）
     - baby_age_months：请求透传或 derive_baby_age 写入
     - history_events / knowledge / baby_profile：数据准备结果
     - items：generate_care_alerts 产出的 DTO 列表（dict）

@@ -109,6 +109,22 @@ async def _fetch_with_filter(
         today_start = now - (now % 86400) + 8 * 3600
         start_time = today_start - 86400
         end_time = today_start
+    elif time_range == "last_2_days":
+        # 昨天 00:00（上海）到现在：护理留意紧凑史窗口
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        try:
+            tz = ZoneInfo("Asia/Shanghai")
+        except Exception:
+            from datetime import timezone as _tz
+
+            tz = _tz(timedelta(hours=8))
+        now_dt = datetime.now(tz=tz)
+        today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_dt = today_start - timedelta(days=1)
+        start_time = int(start_dt.timestamp())
+        end_time = int(now_dt.timestamp())
     elif time_range == "last_7_days":
         # 最近7天
         start_time = now - 7 * 86400
