@@ -52,7 +52,15 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
         "护理留意分析请求: device_no=%s day=%s model=%s",
         request.device_no,
         request.day,
-        request.model if isinstance(request.model, str) else getattr(request.model, "provider", "?"),
+        (
+            "(fallback-only)"
+            if request.model is None
+            else (
+                request.model
+                if isinstance(request.model, str)
+                else getattr(request.model, "provider", "?")
+            )
+        ),
     )
     try:
         raw_items = await run_care_alert_analyze(request)

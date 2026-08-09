@@ -19,7 +19,7 @@ from app.care_alert.graphs.nodes.prompts.care_alert_analyze import (
     build_care_alert_user_message,
 )
 from app.care_alert.schemas.care_alert import CareAlertItemDto, CareAlertReasonDto
-from app.shared.llm_client import LLMModelConfig, llm_client
+from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -247,8 +247,7 @@ async def generate_care_alerts(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         {"items": [...]}；解析失败时 items=[]
     """
-    model_config_dict = state.get("model_config") or {}
-    model_config = LLMModelConfig(**model_config_dict)
+    model_config = llm_model_config_from_mapping(state.get("model_config"))
 
     # 月龄：请求透传优先已在 state；未知为 None
     if "baby_age_months" not in state:

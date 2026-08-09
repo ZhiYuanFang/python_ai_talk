@@ -35,7 +35,7 @@ from app.shared.constants import (
     TargetType,
     VALID_RESOLVE_OPS,
 )
-from app.shared.llm_client import LLMModelConfig, llm_client
+from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -568,11 +568,7 @@ async def llm_resolve_pending_reply(
     """
     model_cfg = pending.model_config or {}
     try:
-        llm_model_config = LLMModelConfig(
-            provider=model_cfg.get("provider", "deepseek"),
-            name=model_cfg.get("name", "deepseek-v4-flash"),
-            max_in_flight=model_cfg.get("max_in_flight", 3),
-        )
+        llm_model_config = llm_model_config_from_mapping(model_cfg)
         user_message = build_pending_reply_user_message(
             text,
             kind=pending.kind,

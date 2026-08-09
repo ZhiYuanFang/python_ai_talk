@@ -50,12 +50,14 @@ class Settings(BaseSettings):
     modelscope_api_key: str = ""
     modelscope_base_url: str = "https://api-inference.modelscope.cn/v1"
 
-    # 免费保底链：逗号分隔 provider:model（model 可含 /）；空则仅打请求首选
-    # 默认不含 deepseek；型号以控制台当前永久免费为准，可用环境变量覆盖
+    # 免费保底链（仅 llm_client.invoke；stream 不使用）
+    # 逗号分隔 provider:model（model 可含 /）；未传 model 时整表即候选序
+    # 含智谱 Flash，便于仅靠 env 调整免费顺序；不含付费 deepseek
     llm_fallback_models: str = (
-        "siliconflow:Qwen/Qwen3-8B,"
-        "siliconflow:THUDM/glm-4-9b-chat,"
-        "modelscope:Qwen/Qwen2.5-7B-Instruct"
+        "glm:glm-4.7-flash,"
+        "siliconflow:Qwen/Qwen3.5-4B,"
+        "siliconflow:Qwen/Qwen2.5-7B-Instruct,"
+        "modelscope:Qwen/Qwen3-8B"
     )
 
     # 兄弟仓服务地址

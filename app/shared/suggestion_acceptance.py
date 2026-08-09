@@ -20,7 +20,7 @@ import re
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from app.shared.llm_client import LLMModelConfig, llm_client
+from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +158,7 @@ async def judge_suggestion_acceptance(
     )
 
     try:
-        cfg = LLMModelConfig(
-            provider=model_config.get("provider", "deepseek"),
-            name=model_config.get("name", "deepseek-chat"),
-            max_in_flight=int(model_config.get("max_in_flight") or 3),
-        )
+        cfg = llm_model_config_from_mapping(model_config)
         resp = await llm_client.invoke(
             messages=[{"role": "user", "content": user_message}],
             model_config=cfg,

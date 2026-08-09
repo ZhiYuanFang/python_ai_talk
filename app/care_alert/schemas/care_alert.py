@@ -161,21 +161,27 @@ class CareAlertAnalyzeResponse(BaseModel):
     items: List[CareAlertItemDto] = Field(default_factory=list)
 
 
-def _normalize_model_field(value: Any) -> Union[str, ModelConfig, Dict[str, Any]]:
+def _normalize_model_field(
+    value: Any,
+) -> Union[str, ModelConfig, Dict[str, Any], None]:
     """
-    规范 model 字段：允许字符串提供商或完整 ModelConfig。
+    规范 model 字段：允许省略、字符串提供商或完整 ModelConfig。
 
     业务逻辑：
+    - None / 空串 → None（非 VIP：走纯保底序）
     - "deepseek" / "zhipu" / "glm" → 原样字符串（服务层再补默认模型名）
     - dict / ModelConfig → 交给 ModelConfig 校验
     """
+    if value is None:
+        return None
     if isinstance(value, ModelConfig):
         return value
     if isinstance(value, str):
-        return value.strip().lower()
+        stripped = value.strip().lower()
+        return stripped or None
     if isinstance(value, dict):
         return value
-    raise TypeError("model 须为 deepseek|zhipu 字符串或 {provider,name,...} 对象")
+    raise TypeError("model 须省略，或为 deepseek|zhipu 字符串 / {provider,name,...} 对象")
 
 
 class CareAlertAnalyzeRequest(BaseModel):
@@ -204,12 +210,15 @@ class CareAlertAnalyzeRequest(BaseModel):
             description="逻辑日 YYYY-MM-DD（Asia/Shanghai）；可选，仅日志/上下文",
         ),
     ] = None
-    # 字符串 deepseek|zhipu，或完整模型配置
+    # 非 VIP 可省略；否则字符串 deepseek|zhipu 或完整模型配置
     model: Annotated[
-        Union[str, ModelConfig, Dict[str, Any]],
+        Optional[Union[str, ModelConfig, Dict[str, Any]]],
         BeforeValidator(_normalize_model_field),
-        Field(..., description="模型：deepseek|zhipu 或完整 ModelConfig"),
-    ]
+        Field(
+            default=None,
+            description="首选模型（VIP）；缺省则走本地免费保底序",
+        ),
+    ] = None
     age_months: Optional[int] = Field(
         None,
         validation_alias=AliasChoices("age_months", "ageMonths"),

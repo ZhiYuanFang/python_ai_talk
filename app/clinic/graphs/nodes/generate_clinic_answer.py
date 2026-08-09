@@ -19,7 +19,7 @@ from app.clinic.graphs.nodes.prompts.clinic_answer import (
     build_clinic_answer_user_message,
     resolve_clinic_needs_history,
 )
-from app.shared.llm_client import LLMModelConfig, llm_client
+from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +38,11 @@ async def generate_clinic_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     history_events = state.get("history_events", [])
     knowledge = state.get("knowledge", [])
     baby_profile = state.get("baby_profile", {})
-    model_config_dict = state.get("model_config", {})
     chat_context = state.get("chat_context") or ""
     baby_age_months = state.get("baby_age_months")
     needs_history = resolve_clinic_needs_history(state)
 
-    model_config = LLMModelConfig(**model_config_dict)
+    model_config = llm_model_config_from_mapping(state.get("model_config"))
     system_prompt = build_clinic_answer_system_prompt(needs_history=needs_history)
     user_message = build_clinic_answer_user_message(
         question=question,

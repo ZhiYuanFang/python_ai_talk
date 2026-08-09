@@ -2,14 +2,14 @@
 护理留意模型解析
 
 业务说明：
-Go 可传字符串 deepseek|zhipu，或完整 ModelConfig。
+Go 可省略 model（非 VIP → 纯保底序），或传字符串 deepseek|zhipu，或完整 ModelConfig。
 zhipu 与 glm 等价，沿用 llm_client.normalize_llm_provider。
 无 clinic 配额逻辑。
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 from app.feeding.schemas.intent import ModelConfig
 from app.shared.llm_client import normalize_llm_provider
@@ -22,25 +22,29 @@ _DEFAULT_MODEL_BY_PROVIDER = {
 
 
 def resolve_model_config(
-    model: Union[str, ModelConfig, Dict[str, Any]],
-) -> Dict[str, Any]:
+    model: Optional[Union[str, ModelConfig, Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
     """
-    将请求中的 model 规范为图/LLM 使用的 dict。
+    将请求中的 model 规范为图/LLM 使用的 dict；缺省返回 None（纯保底）。
 
     业务逻辑：
-    1. 字符串 → provider + 默认 name
-    2. ModelConfig / dict → 取 provider/name/max_in_flight
-    3. provider 经 normalize（zhipu→glm）
+    1. None → None
+    2. 字符串 → provider + 默认 name
+    3. ModelConfig / dict → 取 provider/name/max_in_flight
+    4. provider 经 normalize（zhipu→glm）
 
     Args:
-        model: 请求字段
+        model: 请求字段；None 表示未传
 
     Returns:
-        {"provider", "name", "max_in_flight"}
+        {"provider", "name", "max_in_flight"} 或 None
 
     Raises:
-        ValueError: 缺少 provider/name 或未知提供商
+        ValueError: 传入了不完整/未知的 model
     """
+    if model is None:
+        return None
+
     if isinstance(model, str):
         provider = normalize_llm_provider(model)
         name = _DEFAULT_MODEL_BY_PROVIDER.get(provider)

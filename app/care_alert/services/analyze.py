@@ -3,7 +3,7 @@
 
 业务说明：
 将 HTTP 请求转为图初始状态，执行 care_alert_graph，返回 items。
-不扣 clinic 配额；模型由 Go 指定（deepseek / zhipu）。
+不扣 clinic 配额；VIP 由 Go 传入首选 model，非 VIP 可省略走免费保底序。
 准确优先：不用未过门槛的 kg_context 硬塞进 knowledge。
 analyze 成功后写入 suggestionId → knowledge_ids 飞轮映射。
 """
@@ -69,10 +69,11 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         camelCase items 列表（可为空）
 
     Raises:
-        ValueError: 模型解析失败
+        ValueError: 模型解析失败（传了非法 model）
         Exception: 图/LLM 底层异常向上抛，由路由转 500
     """
-    model_config = resolve_model_config(request.model)
+    # None → 空 dict，节点侧解析为无首选
+    model_config = resolve_model_config(request.model) or {}
     day = _resolve_day(request.day)
 
     initial_state: Dict[str, Any] = {
@@ -101,8 +102,8 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         "护理留意分析开始: device_no=%s day=%s provider=%s name=%s age=%s",
         request.device_no,
         day,
-        model_config.get("provider"),
-        model_config.get("name"),
+        model_config.get("provider") or "(fallback-only)",
+        model_config.get("name") or "-",
         request.age_months,
     )
 

@@ -14,7 +14,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config.settings import settings
-from app.shared.llm_client import LLMModelConfig, llm_client
+from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +158,7 @@ async def rewrite_standalone_question(
         f"近期对话：\n{(chat_context or '')[:1200] or '（无）'}\n\n"
         f"家长本轮：\n{q[:500]}"
     )
-    cfg = LLMModelConfig(
-        provider=model_config.get("provider", "deepseek"),
-        name=model_config.get("name", "deepseek-chat"),
-        max_in_flight=int(model_config.get("max_in_flight") or 3),
-    )
+    cfg = llm_model_config_from_mapping(model_config)
 
     async def _invoke() -> str:
         resp = await llm_client.invoke(

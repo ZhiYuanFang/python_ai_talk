@@ -23,7 +23,7 @@ import logging
 from typing import Any, AsyncGenerator, Dict, Optional
 
 from app.tip.graphs.nodes.prompts.tip_answer import build_tip_answer_system_prompt, build_tip_answer_user_message
-from app.shared.llm_client import LLMModelConfig, LLMResponse, llm_client
+from app.shared.llm_client import LLMResponse, llm_client, llm_model_config_from_mapping
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -56,11 +56,10 @@ async def stream_tip_response(state: Dict[str, Any]) -> AsyncGenerator[LLMRespon
     history_events = state.get("history_events", [])   # 近期喂养历史记录
     knowledge = state.get("knowledge", [])             # 向量检索结果
     baby_profile = state.get("baby_profile", {})       # 宝宝画像
-    model_config_dict = state.get("model_config", {})  # 模型配置
     chat_context = state.get("chat_context") or ""     # tip/clinic 共享陪伴对话
 
-    # 构建模型配置对象
-    model_config = LLMModelConfig(**model_config_dict)
+    # 流式必带 model；缺省由 llm_client.stream 抛错（不走保底）
+    model_config = llm_model_config_from_mapping(state.get("model_config"))
 
     # 构建提示词（时间上下文在 tip_answer 内用 Asia/Shanghai 生成）
     system_prompt = build_tip_answer_system_prompt()

@@ -34,7 +34,7 @@ services:
       SILICONFLOW_BASE_URL: "${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}"
       MODELSCOPE_API_KEY: "${MODELSCOPE_API_KEY:-}"
       MODELSCOPE_BASE_URL: "${MODELSCOPE_BASE_URL:-https://api-inference.modelscope.cn/v1}"
-      LLM_FALLBACK_MODELS: "${LLM_FALLBACK_MODELS:-siliconflow:Qwen/Qwen3-8B,siliconflow:THUDM/glm-4-9b-chat,modelscope:Qwen/Qwen2.5-7B-Instruct}"
+      LLM_FALLBACK_MODELS: "${LLM_FALLBACK_MODELS:-glm:glm-4.7-flash,siliconflow:Qwen/Qwen3.5-4B,siliconflow:Qwen/Qwen2.5-7B-Instruct,modelscope:Qwen/Qwen3-8B}"
       # --- 向量数据库 ---
       CHROMA_PERSIST_DIR: "${CHROMA_PERSIST_DIR:-/app/data/chroma_db}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}"

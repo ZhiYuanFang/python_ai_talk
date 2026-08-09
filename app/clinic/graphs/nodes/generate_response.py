@@ -18,7 +18,7 @@ from app.clinic.graphs.nodes.prompts.history_answer import (
     build_history_answer_system_prompt,
     build_history_answer_user_message,
 )
-from app.shared.llm_client import LLMModelConfig, llm_client
+from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,7 @@ async def generate_response(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     user_input = state.get("user_input", "")
     history_events = state.get("history_events", [])
-    model_config_dict = state.get("model_config", {})
-    model_config = LLMModelConfig(**model_config_dict)
+    model_config = llm_model_config_from_mapping(state.get("model_config"))
 
     try:
         system_prompt = build_history_answer_system_prompt()

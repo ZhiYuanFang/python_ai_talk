@@ -24,7 +24,7 @@ from app.feeding.graphs.nodes.prompts.intent_classification import (
 from app.feeding.schemas.intent import IntentResponse
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
 from app.shared.constants import EventType, IntentAction, MatchSource, TargetType
-from app.shared.llm_client import LLMModelConfig, llm_client
+from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -127,28 +127,22 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     event_dictionary = state.get("event_dictionary", [])
     device_no = state.get("device_no", "")
 
-    # 获取模型配置（优先 model_config，兼容旧字段 model）
-    model_config = state.get("model_config") or state.get(
-        "model", {"provider": "deepseek", "name": "deepseek-v4-flash"}
-    )
+    # 优先 model_config，兼容旧字段 model；空则纯保底序
+    model_config = state.get("model_config") or state.get("model") or {}
+    llm_model_config = llm_model_config_from_mapping(model_config)
 
     logger.info(
-        f"开始意图分类: device_no={device_no}, "
-        f"text={text[:20]}..., "
-        f"model={model_config.get('provider')}/{model_config.get('name')}"
+        "开始意图分类: device_no=%s, text=%s..., model=%s/%s",
+        device_no,
+        text[:20],
+        (llm_model_config.provider if llm_model_config else "(fallback-only)"),
+        (llm_model_config.name if llm_model_config else "-"),
     )
 
     try:
         # 构建提示词
         system_prompt = build_intent_classification_system_prompt(event_dictionary)
         user_message = build_intent_classification_user_message(text)
-
-        # 对齐 generate_response：模块级 llm_client + LLMModelConfig
-        llm_model_config = LLMModelConfig(
-            provider=model_config.get("provider", "deepseek"),
-            name=model_config.get("name", "deepseek-v4-flash"),
-            max_in_flight=model_config.get("max_in_flight", 3),
-        )
 
         response = await llm_client.invoke(
             messages=[{"role": "user", "content": user_message}],

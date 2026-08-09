@@ -21,7 +21,7 @@ from app.shared.graphs.nodes.prompts.needs_history import (
     build_needs_history_system_prompt,
     build_needs_history_user_message,
 )
-from app.shared.llm_client import LLMModelConfig, llm_client
+from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +41,11 @@ async def judge_needs_history(state: Dict[str, Any]) -> Dict[str, Any]:
         return {"needs_history": True}
 
     user_text = state.get("user_input") or state.get("question", "")
-    model_config_dict = state.get("model_config", {}) or {}
-
     if not str(user_text).strip():
         # 无问题文本：保守拉取
         return {"needs_history": False}
 
-    model_config = LLMModelConfig(**model_config_dict)
+    model_config = llm_model_config_from_mapping(state.get("model_config"))
     system_prompt = build_needs_history_system_prompt()
     user_message = build_needs_history_user_message(str(user_text))
 

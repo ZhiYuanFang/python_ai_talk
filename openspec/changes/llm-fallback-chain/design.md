@@ -1,20 +1,22 @@
 ## Context
 
-`llm_client` 仅支持 deepseek / glm(zhipu)，`invoke`/`stream` 失败即上抛。生产日志显示非 VIP 路径常用 `glm-4.7-flash` 遇 429 导致 care_alert 等业务 500。Go 负责选首选模型（含 VIP）；Python 负责可用性保底。
+`llm_client` 需支持多国内免费提供商与保底切换。生产曾出现：智谱 429、硅基型号下架、魔搭无效型号。Go 负责选模型；非 VIP 的非流式可省略 model，由 Python 按 env 保底序调用。流式（clinic/tip）由 Go 必带 model，Python 不换模。
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- 全仓：`llm_client.invoke` / `stream` 统一保底链。
-- 首选 = 调用方传入的 `LLMModelConfig`；失败后按本地配置的国内永久免费列表依次试。
-- 接入硅基流动、魔搭；env 占位 + 中文备注哪家；空 key 跳过。
-- 可恢复错误才切换；stream 仅首包前切换。
+- **仅 `invoke`** 走保底链：有 primary → 首选 + 保底；无 primary → 仅保底（顺序=env 可调）。
+- **`stream` 不保底**：只打调用方传入的唯一 model；失败直接上抛；未传 model 则失败。
+- 保底可含智谱 Flash、硅基流动、魔搭；env 可调序。
+- 非流式 HTTP（intent / care_alert）`model` 可选；clinic / tip（真 LLM stream）`model` 必填。
+- 可恢复错误才在 invoke 上切换；型号不可用视为可切换。
 
 **Non-Goals:**
 
 - Python 不解析 VIP / 会员。
-- 保底不包含付费 DeepSeek、不包含新人赠金型通道（百炼新人额度、月之暗面赠金等）。
+- 本期不做流式专用保底列表 / 流式换模。
+- 保底默认不包含付费 DeepSeek、不包含新人赠金型通道。
 - 不在此 change 改提示词长度或 care_alert 业务逻辑。
 - 不自动生成测试。
 
@@ -22,64 +24,65 @@
 
 ### D1: 中枢落点
 
-在 `LLMClient.invoke` / `stream` 内建「试候选序列」，调用方零改动。Redis `max_in_flight` 仍按**当前候选**的 model name 取闸。
+保底序列仅在 `LLMClient.invoke` 内构建。`stream` 单次 `_stream_once`，不做候选循环。Redis `max_in_flight` 按当前 model name 取闸。
 
-### D2: 候选序列
+### D2: invoke 候选序列
 
-1. primary = 入参 `model_config`  
-2. 其后为 `settings.llm_fallback_models` 解析出的 `(provider, name)` 列表  
-3. 跳过与 primary 相同的 `(provider, name)`（provider 经 normalize）  
-4. 跳过：该 provider 的 api_key 为空；或构建 client 时明确不可用  
+1. 若传入 primary → 先入队  
+2. 其后为 `settings.llm_fallback_models` 解析出的 `(provider, name)`  
+3. 与已入队项同 `(provider, name)` 则跳过  
+4. 保底项：provider 未接入或 api_key 为空则跳过  
+5. 最终无候选 → `ValueError`
 
-默认列表示例（可被 env 覆盖，型号以控制台当前永久免费为准）：
+### D3: 可恢复失败（仅 invoke）
 
-`siliconflow:Qwen/Qwen3-8B,siliconflow:THUDM/glm-4-9b-chat,modelscope:Qwen/Qwen2.5-7B-Instruct`
+切换：HTTP 429、401/403、5xx、超时、连接错误、型号不可用、本候选 API Key 未配置。  
+不切换：其它明确 400「请求内容/参数非法」。
 
-### D3: 可恢复失败
-
-切换：HTTP 429、5xx、超时、连接错误、以及等价的 OpenAI/SDK 异常。  
-不切换：明确的 400 类「请求内容/参数非法」（换模无益且掩盖 bug）。  
-某候选因「未配置 key」：记日志并试下一个，不视为整链终结。
-
-### D4: 新提供商（国内永久免费语义）
+### D4: 新提供商
 
 | provider | key / base_url settings | 默认 base_url |
 |----------|-------------------------|---------------|
 | `siliconflow` | `SILICONFLOW_API_KEY` / `SILICONFLOW_BASE_URL` | `https://api.siliconflow.cn/v1` |
 | `modelscope` | `MODELSCOPE_API_KEY` / `MODELSCOPE_BASE_URL` | `https://api-inference.modelscope.cn/v1` |
 
-智谱继续用现有 `GLM_*`；deepseek 仅作 Go 传入的付费首选，**默认不进** `LLM_FALLBACK_MODELS`。
+智谱用 `GLM_*`，可写入保底列表。deepseek **默认不进** `LLM_FALLBACK_MODELS`。
 
-### D5: stream 策略
+### D5: stream 不保底 + Go 必带 model
 
-在拿到第一个可向调用方 yield 的 content/thinking 之前失败 → 可换下一候选重开流。  
-已 yield 过非空增量后失败 → 不再换模，按现网上抛（避免半截答案拼接错乱）。
+- clinic / tip：Go **一律**传入完整 `model`（VIP 付费或非 VIP 自选免费流式型号）。  
+- Python：`stream` 仅使用该 model；不读 `LLM_FALLBACK_MODELS`；失败不上保底。  
+- 未传 / 无法解析 model → 明确错误（schema 必填 + `stream` 内校验）。  
+- intent 的 HTTP `/stream` 图内 LLM 仍是 `invoke`，继续吃保底（与 clinic/tip token 流无关）。
 
-### D6: 配置与 env 备注
+### D6: 非流式可选 model
 
-- `LLM_FALLBACK_MODELS`：逗号分隔 `provider:model_name`（model 名可含 `/`）。  
-- `.env.prod` 增加空 key 与 base_url，注释写明「硅基流动」「魔搭 ModelScope」；现有 GLM/DeepSeek 行补充「永久免费档 / 付费不进保底」类备注。
+- Go：非流式非 VIP 可省略 model。  
+- intent / care_alert：`model` Optional → 空配置 → invoke 纯保底序。
+
+### D7: 配置
+
+- `LLM_FALLBACK_MODELS`：逗号分隔 `provider:model_name`（仅影响 invoke）。  
+- env / compose 中文备注标明「仅非流式保底」。
 
 ### Alternatives considered
 
-- 仅 care_alert 保底 → 否决：用户要求全仓。  
-- 保底含 deepseek → 否决：现网 deepseek 为付费。  
-- 保底含百炼/月之暗面 → 否决：偏新人额度，非永久免费。
+- stream 首包前换模 → 否决：流式型号能力不一，本期不做。  
+- 双列表 stream/invoke → 搁置；需要时再开。  
+- 非 VIP 流式省略 model → 否决：与「stream 不保底」冲突；改为 Go 流式必带。
 
 ## Risks / Trade-offs
 
-- [免费型号 ID 变更] → env 可改列表；默认 ID 在注释标明「以控制台为准」。  
-- [魔搭日次耗尽仍 429] → 链上下一家；全挂则原错误上抛。  
-- [同账号智谱多 Flash] → 默认保底不以智谱为主，避免 429 连坐。  
-- [stream 半截失败] → 不静默换模，可能仍失败（接受）。  
-- [延迟叠加] → 每次失败才切换；打 WARN 便于观测。
+- [流式上游 429] → 无保底，直接失败（接受；由 Go 选型与重试策略负责）。  
+- [免费型号 ID 变更] → env 改 invoke 列表即可。  
+- [Go 未带 clinic/tip model] → 400，尽快暴露契约问题。
 
 ## Migration Plan
 
-1. 部署代码；key 为空时行为≈仅多试空列表（等同只打 primary）。  
-2. 运维填硅基/魔搭 key 后保底生效。  
-3. 回滚：去掉保底逻辑或清空 `LLM_FALLBACK_MODELS`。
+1. 部署 Python：invoke 保底；stream 单模。  
+2. Go：clinic/tip 始终带 model；非流式非 VIP 可省略。  
+3. 回滚：清空保底列表或回退代码。
 
 ## Open Questions
 
-- 无（型号以填 key 时控制台永久免费列表最终校准即可）。
+- 无。

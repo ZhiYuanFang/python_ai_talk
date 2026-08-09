@@ -62,7 +62,8 @@ class TipRequest(BaseModel):
             description="设备编号（内部契约 snake_case，可过渡双收 camel）",
         ),
     ]
-    model: ModelConfig = Field(..., description="模型配置")
+    # 流式必带：Go 一律传入；Python stream 不走保底
+    model: ModelConfig = Field(..., description="流式调用模型（必填，不走保底）")
 
 
 # 小贴士流式响应复用 ClinicStreamResponse

@@ -23,7 +23,7 @@ from app.shared.graphs.nodes.prompts.data_requirement import (
     build_data_requirement_system_prompt,
     build_data_requirement_user_message,
 )
-from app.shared.llm_client import LLMModelConfig, llm_client
+from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -67,15 +67,12 @@ async def judge_data_requirement(state: Dict[str, Any]) -> Dict[str, Any]:
     # 读取输入参数：优先用 user_input（intent_graph），其次用 question（clinic_graph）
     user_text = state.get("user_input") or state.get("question", "")
     event_dictionary = state.get("event_dictionary", [])
-    model_config_dict = state.get("model_config", {})
-
     # 如果没有事件字典，使用默认配置（全部事件）
     if not event_dictionary:
         logger.warning("事件字典为空，使用默认数据需求")
         return {"data_requirement": DEFAULT_DATA_REQUIREMENT.copy()}
 
-    # 构建模型配置对象
-    model_config = LLMModelConfig(**model_config_dict)
+    model_config = llm_model_config_from_mapping(state.get("model_config"))
 
     # 构建提示词
     system_prompt = build_data_requirement_system_prompt()

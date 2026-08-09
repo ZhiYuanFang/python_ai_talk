@@ -57,7 +57,11 @@ class IntentRequest(BaseModel):
             description="设备编号（内部契约 snake_case，可过渡双收 camel）",
         ),
     ]
-    model: ModelConfig = Field(..., description="模型配置")
+    # 非 VIP 可省略：Python 仅按 LLM_FALLBACK_MODELS 保底序调用
+    model: Optional[ModelConfig] = Field(
+        default=None,
+        description="首选模型（VIP）；缺省则走本地免费保底序",
+    )
     # 流式返回开关，默认 false（非流式），true 时通过 SSE 返回 thinking 事件
     stream: Optional[bool] = Field(default=False, description="是否流式返回，默认false")
     # 可选会话 ID：存在 pending 消歧/澄清时带回，用于同一输入框续聊
@@ -172,7 +176,8 @@ class ClinicRequest(BaseModel):
             description="设备编号（内部契约 snake_case，可过渡双收 camel）",
         ),
     ]
-    model: ModelConfig = Field(..., description="模型配置")
+    # 流式必带：Go 一律传入（VIP 付费或非 VIP 自选流式型号）；Python 不保底
+    model: ModelConfig = Field(..., description="流式调用模型（必填，不走保底）")
 
 
 class ClinicStreamResponse(BaseModel):

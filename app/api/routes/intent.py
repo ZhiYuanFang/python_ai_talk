@@ -45,6 +45,9 @@ def _run_config(thread_id: str) -> Dict[str, Any]:
 
 
 def _model_config_dict(request: IntentRequest) -> Dict[str, Any]:
+    """请求未带 model 时返回空 dict，供 llm_client 走纯保底序。"""
+    if request.model is None:
+        return {}
     return {
         "provider": request.model.provider,
         "name": request.model.name,

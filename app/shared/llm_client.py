@@ -3,15 +3,14 @@ LLM 客户端封装模块
 
 业务说明：
 本模块负责封装对不同 LLM 提供商的调用，提供统一的接口。
-支持同步和流式调用；首选为调用方传入的 model，失败后按国内永久免费保底链切换。
+invoke：可按国内永久免费保底链切换；stream：只打调用方传入的唯一 model，不保底。
 
 设计思路：
 1. 使用 langchain-openai 库作为统一接口，通过不同的 base_url 区分提供商
-2. 支持动态选择模型，由调用方传入 provider 和 model 参数（Go 已选好首选）
+2. 支持动态选择模型，由调用方传入 provider 和 model 参数
 3. 实现 Redis 闸门控制，避免超过并发限制
-4. 可恢复失败（429/5xx/超时等）时依次尝试本地配置的保底模型
+4. invoke 可恢复失败时依次尝试本地配置的保底模型；stream 不做换模
 5. 流式 thinking：经底层 OpenAI 客户端读 reasoning_content（ChatOpenAI 会丢该字段）
-6. stream 仅在首包产出前允许换模，避免半截答案拼接错乱
 """
 
 from __future__ import annotations
@@ -113,6 +112,17 @@ def _provider_base_url(canonical: str) -> str:
     return ""
 
 
+def _is_bad_model_availability_error(msg: str) -> bool:
+    """型号下架/未挂推理等：属候选问题，应换下一家。"""
+    m = (msg or "").lower()
+    return (
+        "has no provider supported" in m
+        or "model disabled" in m
+        or "model not found" in m
+        or "不支持的模型" in msg
+    )
+
+
 def is_recoverable_llm_error(exc: BaseException) -> bool:
     """
     判断是否值得切换到下一个保底模型。
@@ -120,16 +130,20 @@ def is_recoverable_llm_error(exc: BaseException) -> bool:
     业务逻辑：
     - 429 / 5xx / 超时 / 连接失败 → 可切换
     - 本候选 API Key 未配置 → 可跳过试下一个
-    - 明确 400 请求非法 → 不可切换（换模无益）
+    - 型号不可用（disabled / no provider）→ 可切换
+    - 其它明确 400 请求非法 → 不可切换（换模无益）
     """
+    msg = str(exc)
     if isinstance(exc, ValueError):
-        msg = str(exc)
         # 空 key 或未知提供商：链上下一家；真正的业务 ValueError 少见
         if "API Key" in msg or "未配置" in msg:
             return True
         if "不支持的 LLM 提供商" in msg:
             return True
         return False
+
+    if _is_bad_model_availability_error(msg):
+        return True
 
     status = getattr(exc, "status_code", None)
     if status is None:
@@ -138,13 +152,13 @@ def is_recoverable_llm_error(exc: BaseException) -> bool:
             status = getattr(resp, "status_code", None)
 
     if status == 400:
-        return False
+        return _is_bad_model_availability_error(msg)
     if status in (401, 403, 429):
         return True
     if isinstance(status, int) and status >= 500:
         return True
 
-    msg_l = str(exc).lower()
+    msg_l = msg.lower()
     name_l = type(exc).__name__.lower()
     if "timeout" in name_l or "timeout" in msg_l:
         return True
@@ -159,7 +173,7 @@ def is_recoverable_llm_error(exc: BaseException) -> bool:
         import openai
 
         if isinstance(exc, openai.BadRequestError):
-            return False
+            return _is_bad_model_availability_error(msg)
         if isinstance(
             exc,
             (
@@ -175,7 +189,7 @@ def is_recoverable_llm_error(exc: BaseException) -> bool:
         if isinstance(exc, openai.APIStatusError):
             code = getattr(exc, "status_code", None)
             if code == 400:
-                return False
+                return _is_bad_model_availability_error(msg)
             if code in (401, 403, 429) or (isinstance(code, int) and code >= 500):
                 return True
     except ImportError:
@@ -285,6 +299,33 @@ class LLMResponse(BaseModel):
 
     content: str = Field("", description="LLM 回答内容")
     thinking: str = Field("", description="思考过程（流式诊疗场景）")
+
+
+def llm_model_config_from_mapping(raw: Any) -> Optional[LLMModelConfig]:
+    """
+    从 state / 请求 dict 解析首选模型；缺省或字段不全返回 None（走纯保底序）。
+
+    Args:
+        raw: 通常为 {"provider","name","max_in_flight"} 或空
+
+    Returns:
+        LLMModelConfig 或 None
+    """
+    if not isinstance(raw, dict):
+        return None
+    provider = str(raw.get("provider") or "").strip()
+    name = str(raw.get("name") or "").strip()
+    if not provider or not name:
+        return None
+    try:
+        max_in_flight = int(raw.get("max_in_flight") or _DEFAULT_FALLBACK_MAX_IN_FLIGHT)
+    except (TypeError, ValueError):
+        max_in_flight = _DEFAULT_FALLBACK_MAX_IN_FLIGHT
+    return LLMModelConfig(
+        provider=provider,
+        name=name,
+        max_in_flight=max_in_flight,
+    )
 
 
 class LLMClient:
@@ -398,26 +439,34 @@ class LLMClient:
         logger.info("--- LLM response END ---")
 
     def _build_candidate_configs(
-        self, primary: LLMModelConfig
+        self, primary: Optional[LLMModelConfig]
     ) -> List[LLMModelConfig]:
         """
-        构建尝试序列：首选 + 保底列表（去重、跳过空 key）。
+        构建 invoke 尝试序列（stream 不调用本方法）。
 
         业务逻辑：
-        1. primary 始终第一（即使 key 暂时为空，由 _get_client 报错再跳过）
-        2. 保底项与 primary 同 provider+name 则跳过
-        3. 保底项 key 为空则跳过并打日志
+        1. 有 primary → 首选 + 保底列表
+        2. 无 primary → 仅保底列表（顺序=env 可调）
+        3. 与已加入项同 provider+name 则跳过；保底项 key 为空则跳过
+        4. 最终无可用候选 → ValueError
         """
-        primary_provider = normalize_llm_provider(primary.provider)
-        primary_name = (primary.name or "").strip()
-        seen = {(primary_provider, primary_name)}
-        candidates: List[LLMModelConfig] = [
-            LLMModelConfig(
-                provider=primary_provider,
-                name=primary_name,
-                max_in_flight=int(primary.max_in_flight or _DEFAULT_FALLBACK_MAX_IN_FLIGHT),
-            )
-        ]
+        candidates: List[LLMModelConfig] = []
+        seen: set[tuple[str, str]] = set()
+
+        if primary is not None:
+            primary_provider = normalize_llm_provider(primary.provider)
+            primary_name = (primary.name or "").strip()
+            if primary_provider and primary_name:
+                seen.add((primary_provider, primary_name))
+                candidates.append(
+                    LLMModelConfig(
+                        provider=primary_provider,
+                        name=primary_name,
+                        max_in_flight=int(
+                            primary.max_in_flight or _DEFAULT_FALLBACK_MAX_IN_FLIGHT
+                        ),
+                    )
+                )
 
         for provider, name in parse_llm_fallback_models(settings.llm_fallback_models):
             key = (provider, name)
@@ -425,7 +474,9 @@ class LLMClient:
                 continue
             seen.add(key)
             if provider not in _KNOWN_PROVIDERS:
-                logger.warning("保底候选提供商未接入，跳过: provider=%s name=%s", provider, name)
+                logger.warning(
+                    "保底候选提供商未接入，跳过: provider=%s name=%s", provider, name
+                )
                 continue
             if not _provider_api_key(provider):
                 logger.info(
@@ -440,6 +491,16 @@ class LLMClient:
                     name=name,
                     max_in_flight=_DEFAULT_FALLBACK_MAX_IN_FLIGHT,
                 )
+            )
+
+        if not candidates:
+            raise ValueError(
+                "未传 model 且免费保底列表为空或均无可用 API Key，无法调用 LLM"
+            )
+        if primary is None:
+            logger.info(
+                "请求未传 model，按保底序尝试: %s",
+                [(c.provider, c.name) for c in candidates],
             )
         return candidates
 
@@ -522,20 +583,20 @@ class LLMClient:
     async def invoke(
         self,
         messages: List[Dict[str, str]],
-        model_config: LLMModelConfig,
+        model_config: Optional[LLMModelConfig] = None,
         system_prompt: Optional[str] = None,
     ) -> LLMResponse:
         """
         同步调用 LLM（带国内永久免费保底链）
 
         业务逻辑：
-        1. 先打调用方传入的首选模型
-        2. 可恢复失败则按配置列表依次尝试
+        1. 有 model_config → 先打首选，失败再走保底列表
+        2. 无 model_config → 仅按 LLM_FALLBACK_MODELS 顺序尝试
         3. 全失败则抛出最后一次异常
 
         Args:
             messages: 消息列表，格式为 [{"role": "user", "content": "..."}]
-            model_config: 模型配置（首选）
+            model_config: 首选模型；None 表示走纯保底序
             system_prompt: 系统提示词（可选）
 
         Returns:
@@ -648,66 +709,51 @@ class LLMClient:
     async def stream(
         self,
         messages: List[Dict[str, str]],
-        model_config: LLMModelConfig,
+        model_config: Optional[LLMModelConfig] = None,
         system_prompt: Optional[str] = None,
         thinking_enabled: bool = False,
     ) -> AsyncGenerator[LLMResponse, None]:
         """
-        流式调用 LLM（带保底；仅首包前可换模）
+        流式调用 LLM（不保底）
 
         业务逻辑：
-        1. 按候选序列尝试
-        2. 尚未向调用方产出非空 content/thinking 前失败且可恢复 → 换下一候选
-        3. 已产出非空增量后失败 → 不再换模，直接上抛
+        1. 必须传入可用 model_config（clinic/tip 由 Go 必带）
+        2. 仅对该 model 发起一次 stream；失败直接上抛
+        3. 不读取 LLM_FALLBACK_MODELS，不做换模
 
         Args:
             messages: 消息列表
-            model_config: 首选模型配置
+            model_config: 唯一模型；None / 缺字段则报错
             system_prompt: 系统提示词（可选）
             thinking_enabled: 是否启用提供商原生思考模式
 
         Yields:
             LLMResponse 响应结果（流式返回；thinking 增量不加尾部换行）
         """
-        candidates = self._build_candidate_configs(model_config)
-        last_error: Optional[BaseException] = None
-        for index, cfg in enumerate(candidates):
-            yielded_nonempty = False
-            try:
-                async for item in self._stream_once(
-                    messages, cfg, system_prompt, thinking_enabled
-                ):
-                    if (item.content or "") or (item.thinking or ""):
-                        yielded_nonempty = True
-                    yield item
-                return
-            except Exception as e:
-                last_error = e
-                logger.error(
-                    "LLM 流式调用失败: provider=%s model=%s err=%s yielded=%s",
-                    cfg.provider,
-                    cfg.name,
-                    str(e),
-                    yielded_nonempty,
-                )
-                # 已吐 token：禁止静默换模
-                if yielded_nonempty:
-                    raise
-                has_next = index + 1 < len(candidates)
-                if has_next and is_recoverable_llm_error(e):
-                    nxt = candidates[index + 1]
-                    logger.warning(
-                        "LLM 流式保底切换: from=%s/%s -> to=%s/%s reason=%s",
-                        cfg.provider,
-                        cfg.name,
-                        nxt.provider,
-                        nxt.name,
-                        str(e),
-                    )
-                    continue
-                raise
-        assert last_error is not None
-        raise last_error
+        cfg = model_config
+        if cfg is None or not (cfg.provider or "").strip() or not (cfg.name or "").strip():
+            raise ValueError(
+                "流式调用必须传入 model（Go 流式必带），不走免费保底列表"
+            )
+        # 规范化 provider，与 invoke 首选一致
+        cfg = LLMModelConfig(
+            provider=normalize_llm_provider(cfg.provider),
+            name=cfg.name.strip(),
+            max_in_flight=int(cfg.max_in_flight or _DEFAULT_FALLBACK_MAX_IN_FLIGHT),
+        )
+        try:
+            async for item in self._stream_once(
+                messages, cfg, system_prompt, thinking_enabled
+            ):
+                yield item
+        except Exception as e:
+            logger.error(
+                "LLM 流式调用失败（无保底）: provider=%s model=%s err=%s",
+                cfg.provider,
+                cfg.name,
+                str(e),
+            )
+            raise
 
 
 # 创建全局 LLM 客户端实例

@@ -27,7 +27,7 @@ from app.clinic.graphs.nodes.prompts.clinic_answer import (
     build_clinic_answer_user_message,
     resolve_clinic_needs_history,
 )
-from app.shared.llm_client import LLMModelConfig, LLMResponse, llm_client
+from app.shared.llm_client import LLMResponse, llm_client, llm_model_config_from_mapping
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -54,14 +54,13 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
     history_events = state.get("history_events", [])
     knowledge = state.get("knowledge", [])
     baby_profile = state.get("baby_profile", {})
-    model_config_dict = state.get("model_config", {})
     chat_context = state.get("chat_context") or ""
     baby_age_months = state.get("baby_age_months")
     # 门禁结果决定提示词分叉与是否注入史/对话块
     needs_history = resolve_clinic_needs_history(state)
 
-    # 构建模型配置对象
-    model_config = LLMModelConfig(**model_config_dict)
+    # 流式必带 model；缺省由 llm_client.stream 抛错（不走保底）
+    model_config = llm_model_config_from_mapping(state.get("model_config"))
 
     # 构建提示词
     system_prompt = build_clinic_answer_system_prompt(needs_history=needs_history)
