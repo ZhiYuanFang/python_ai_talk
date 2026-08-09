@@ -92,8 +92,8 @@ def _compact_knowledge(knowledge_results: List[Dict[str, Any]], *, limit: int = 
         content = (item.get("content") or "").strip()
         if not content:
             continue
-        if len(content) > 400:
-            content = content[:400] + "…"
+        if len(content) > 100:
+            content = content[:100] + "…"
         score = item.get("score")
         score_part = f" score={score}" if score is not None else ""
         lines.append(f"{i}.{score_part} {content}")
@@ -131,16 +131,15 @@ def build_care_alert_user_message(
     knowledge_block = _compact_knowledge(knowledge_results)
 
     parts = [
-        f"分析日（Asia/Shanghai）：{day or now.date().isoformat()}",
-        f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}",
         _format_age(baby_age_months),
-        f"宝宝画像：{profile_json}",
+        # 宝宝性别,sex = 0 女, 1 男
+        f"宝宝性别：{'女' if baby_profile.get('sex') == 0 else '男'}",
         (
             "请结合「近两日记录」与「相关知识摘录」（若有）判断今天是否值得留意；"
             "知识为「（无）」时不要编造通识，史不够清楚就返回空 items。"
             "eventId 必须来自「事件名与 id」对照表。严格按系统要求输出 JSON。"
         ),
-        f"近两日记录（今天/昨天；相对时间；无 id）：\n{history_text}",
+        f"近两日记录（今天/昨天；相对次数/时间；无 id）：\n{history_text}",
     ]
     if legend:
         parts.append(
