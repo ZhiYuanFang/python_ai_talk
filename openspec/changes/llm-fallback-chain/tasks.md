@@ -16,6 +16,7 @@
 - [x] 3.1 intent / care_alert：`model` Optional；空 → invoke 纯保底
 - [x] 3.2 clinic / tip：`model` 必填（Go 流式必带）；路由注入完整 model_config
 - [x] 3.3 节点统一 `llm_model_config_from_mapping`，去掉硬编码 deepseek 默认
+- [x] 3.4 care_alert：无 model 时日志空安全，避免 `None.provider` 在 invoke 前崩溃
 
 ## 4. 校验
 
