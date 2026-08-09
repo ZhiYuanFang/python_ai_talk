@@ -2,22 +2,25 @@
 LLM 客户端封装模块
 
 业务说明：
-本模块负责封装对不同 LLM 提供商（DeepSeek、Zhipu）的调用，提供统一的接口。
-支持同步和流式调用，用于意图分析和诊疗场景。
+本模块负责封装对不同 LLM 提供商的调用，提供统一的接口。
+支持同步和流式调用；首选为调用方传入的 model，失败后按国内永久免费保底链切换。
 
 设计思路：
 1. 使用 langchain-openai 库作为统一接口，通过不同的 base_url 区分提供商
-2. 支持动态选择模型，由调用方传入 provider 和 model 参数
+2. 支持动态选择模型，由调用方传入 provider 和 model 参数（Go 已选好首选）
 3. 实现 Redis 闸门控制，避免超过并发限制
-4. 提供统一的错误处理和重试机制
+4. 可恢复失败（429/5xx/超时等）时依次尝试本地配置的保底模型
 5. 流式 thinking：经底层 OpenAI 客户端读 reasoning_content（ChatOpenAI 会丢该字段）
+6. stream 仅在首包产出前允许换模，避免半截答案拼接错乱
 """
 
-import logging
-from typing import Any, Dict, List, Optional, AsyncGenerator, Tuple
+from __future__ import annotations
 
+import logging
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from pydantic import BaseModel, Field
 
 from app.config.settings import settings
@@ -28,6 +31,12 @@ logger = logging.getLogger(__name__)
 # DeepSeek / 智谱 OpenAI 兼容接口的原生思考开关（经 extra_body 传递）
 _THINKING_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "enabled"}}
 
+# 已接入的提供商（规范名）
+_KNOWN_PROVIDERS = frozenset({"deepseek", "glm", "siliconflow", "modelscope"})
+
+# 默认保底并发（与历史默认 max_in_flight 对齐）
+_DEFAULT_FALLBACK_MAX_IN_FLIGHT = 3
+
 
 def normalize_llm_provider(provider: str) -> str:
     """
@@ -36,19 +45,143 @@ def normalize_llm_provider(provider: str) -> str:
     业务逻辑：
     1. strip + lower，兼容 Zhipu / ZHIPU 等大小写
     2. zhipu 与 glm 同属智谱，统一为内部名 glm（共用 GLM_* 配置）
-    3. deepseek 保持 deepseek；其它原样返回，由 _get_client 拒绝
+    3. deepseek / siliconflow / modelscope 保持规范小写名
 
     Args:
         provider: 请求中的提供商字符串
 
     Returns:
-        规范化后的提供商名（如 glm、deepseek）
+        规范化后的提供商名（如 glm、deepseek、siliconflow）
     """
     canonical = (provider or "").strip().lower()
     # 智谱别名：Go 常传 zhipu，本仓配置键为 glm
     if canonical == "zhipu":
         return "glm"
     return canonical
+
+
+def parse_llm_fallback_models(raw: str | None) -> List[Tuple[str, str]]:
+    """
+    解析 LLM_FALLBACK_MODELS：逗号分隔的 provider:model（model 可含 /）。
+
+    Args:
+        raw: 环境变量或 settings 字符串
+
+    Returns:
+        [(provider_norm, model_name), ...]；非法片段跳过
+    """
+    if not raw or not str(raw).strip():
+        return []
+    out: List[Tuple[str, str]] = []
+    for part in str(raw).split(","):
+        item = part.strip()
+        if not item or ":" not in item:
+            continue
+        # 只按第一个冒号切开，保留 Qwen/Qwen3-8B 这类型号
+        provider_raw, name = item.split(":", 1)
+        provider = normalize_llm_provider(provider_raw)
+        name = name.strip()
+        if not provider or not name:
+            continue
+        out.append((provider, name))
+    return out
+
+
+def _provider_api_key(canonical: str) -> str:
+    """读取规范提供商对应的 API Key（可能为空串）。"""
+    if canonical == "deepseek":
+        return (settings.deepseek_api_key or "").strip()
+    if canonical == "glm":
+        return (settings.glm_api_key or "").strip()
+    if canonical == "siliconflow":
+        return (settings.siliconflow_api_key or "").strip()
+    if canonical == "modelscope":
+        return (settings.modelscope_api_key or "").strip()
+    return ""
+
+
+def _provider_base_url(canonical: str) -> str:
+    """读取规范提供商对应的 Base URL。"""
+    if canonical == "deepseek":
+        return settings.deepseek_base_url
+    if canonical == "glm":
+        return settings.glm_base_url
+    if canonical == "siliconflow":
+        return settings.siliconflow_base_url
+    if canonical == "modelscope":
+        return settings.modelscope_base_url
+    return ""
+
+
+def is_recoverable_llm_error(exc: BaseException) -> bool:
+    """
+    判断是否值得切换到下一个保底模型。
+
+    业务逻辑：
+    - 429 / 5xx / 超时 / 连接失败 → 可切换
+    - 本候选 API Key 未配置 → 可跳过试下一个
+    - 明确 400 请求非法 → 不可切换（换模无益）
+    """
+    if isinstance(exc, ValueError):
+        msg = str(exc)
+        # 空 key 或未知提供商：链上下一家；真正的业务 ValueError 少见
+        if "API Key" in msg or "未配置" in msg:
+            return True
+        if "不支持的 LLM 提供商" in msg:
+            return True
+        return False
+
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        resp = getattr(exc, "response", None)
+        if resp is not None:
+            status = getattr(resp, "status_code", None)
+
+    if status == 400:
+        return False
+    if status in (401, 403, 429):
+        return True
+    if isinstance(status, int) and status >= 500:
+        return True
+
+    msg_l = str(exc).lower()
+    name_l = type(exc).__name__.lower()
+    if "timeout" in name_l or "timeout" in msg_l:
+        return True
+    if "connect" in name_l or "connection" in msg_l:
+        return True
+    if "429" in msg_l or "too many requests" in msg_l or "rate limit" in msg_l:
+        return True
+    if "500" in msg_l or "502" in msg_l or "503" in msg_l or "504" in msg_l:
+        return True
+
+    try:
+        import openai
+
+        if isinstance(exc, openai.BadRequestError):
+            return False
+        if isinstance(
+            exc,
+            (
+                openai.RateLimitError,
+                openai.APITimeoutError,
+                openai.APIConnectionError,
+                openai.InternalServerError,
+                openai.AuthenticationError,
+                openai.PermissionDeniedError,
+            ),
+        ):
+            return True
+        if isinstance(exc, openai.APIStatusError):
+            code = getattr(exc, "status_code", None)
+            if code == 400:
+                return False
+            if code in (401, 403, 429) or (isinstance(code, int) and code >= 500):
+                return True
+    except ImportError:
+        pass
+
+    return False
 
 
 def _coerce_text(value: Any) -> str:
@@ -102,16 +235,41 @@ def _build_openai_chat_messages(
     return openai_messages
 
 
+def _build_langchain_messages(
+    messages: List[Dict[str, str]],
+    system_prompt: Optional[str],
+) -> list:
+    """组装 langchain 消息列表（system + 多轮）。"""
+    langchain_messages = []
+    if system_prompt:
+        langchain_messages.append(SystemMessage(content=system_prompt))
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            langchain_messages.append(SystemMessage(content=content))
+        elif role == "user":
+            langchain_messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            langchain_messages.append(AIMessage(content=content))
+    return langchain_messages
+
+
 class LLMModelConfig(BaseModel):
     """
     LLM 模型配置类
 
     业务说明：
-    用于封装调用 LLM 时的模型配置参数，由 Go 服务传入。
+    用于封装调用 LLM 时的模型配置参数，由 Go 服务传入（首选）；
+    保底链也会构造同类配置。
     """
+
     provider: str = Field(
         ...,
-        description="LLM 提供商，可选值: deepseek, glm, zhipu（zhipu 与 glm 等价）",
+        description=(
+            "LLM 提供商: deepseek, glm, zhipu, siliconflow, modelscope"
+            "（zhipu 与 glm 等价）"
+        ),
     )
     name: str = Field(..., description="模型名称")
     max_in_flight: int = Field(3, description="最大并发数")
@@ -124,6 +282,7 @@ class LLMResponse(BaseModel):
     业务说明：
     封装 LLM 调用的返回结果，包含回答内容和思考过程（如果有）。
     """
+
     content: str = Field("", description="LLM 回答内容")
     thinking: str = Field("", description="思考过程（流式诊疗场景）")
 
@@ -133,7 +292,7 @@ class LLMClient:
     LLM 客户端类
 
     业务说明：
-    提供统一的 LLM 调用接口，支持 DeepSeek 和 Zhipu 双提供商。
+    提供统一的 LLM 调用接口；支持多提供商与免费保底切换。
     包含并发控制（Redis 闸门）和错误处理。
     采用延迟初始化模式，import 阶段不连接 Redis，第一次调用时才初始化。
     """
@@ -153,6 +312,7 @@ class LLMClient:
         self._clients: Dict[str, ChatOpenAI] = {}
         # 线程锁，用于延迟初始化的并发安全
         import threading
+
         self._init_lock = threading.Lock()
 
     def _get_redis_gate(self):
@@ -166,14 +326,11 @@ class LLMClient:
         Returns:
             RedisGate 实例
         """
-        # 第一次检查：无锁快速路径
         if self._redis_gate is None:
-            # 获取锁
             with self._init_lock:
-                # 第二次检查：确保只有一个线程创建实例
                 if self._redis_gate is None:
-                    # 延迟导入，避免循环依赖
                     from app.shared.redis_gate import RedisGate
+
                     logger.info("延迟初始化 Redis 闸门控制器")
                     self._redis_gate = RedisGate()
         return self._redis_gate
@@ -202,7 +359,6 @@ class LLMClient:
             if thinking_enabled is not None
             else ""
         )
-        # 统一前缀便于日志检索
         logger.info(
             "--- LLM request payload BEGIN --- "
             f"mode={mode}, provider={model_config.provider}, "
@@ -241,42 +397,80 @@ class LLMClient:
         logger.info(f"--- LLM response content ---\n{text}")
         logger.info("--- LLM response END ---")
 
+    def _build_candidate_configs(
+        self, primary: LLMModelConfig
+    ) -> List[LLMModelConfig]:
+        """
+        构建尝试序列：首选 + 保底列表（去重、跳过空 key）。
+
+        业务逻辑：
+        1. primary 始终第一（即使 key 暂时为空，由 _get_client 报错再跳过）
+        2. 保底项与 primary 同 provider+name 则跳过
+        3. 保底项 key 为空则跳过并打日志
+        """
+        primary_provider = normalize_llm_provider(primary.provider)
+        primary_name = (primary.name or "").strip()
+        seen = {(primary_provider, primary_name)}
+        candidates: List[LLMModelConfig] = [
+            LLMModelConfig(
+                provider=primary_provider,
+                name=primary_name,
+                max_in_flight=int(primary.max_in_flight or _DEFAULT_FALLBACK_MAX_IN_FLIGHT),
+            )
+        ]
+
+        for provider, name in parse_llm_fallback_models(settings.llm_fallback_models):
+            key = (provider, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            if provider not in _KNOWN_PROVIDERS:
+                logger.warning("保底候选提供商未接入，跳过: provider=%s name=%s", provider, name)
+                continue
+            if not _provider_api_key(provider):
+                logger.info(
+                    "保底候选 API Key 未配置，跳过: provider=%s name=%s",
+                    provider,
+                    name,
+                )
+                continue
+            candidates.append(
+                LLMModelConfig(
+                    provider=provider,
+                    name=name,
+                    max_in_flight=_DEFAULT_FALLBACK_MAX_IN_FLIGHT,
+                )
+            )
+        return candidates
+
     def _get_client(self, provider: str, model_name: str) -> ChatOpenAI:
         """
         获取指定提供商的 LLM 客户端
 
         业务逻辑：
         1. 规范化 provider（zhipu→glm，大小写不敏感）
-        2. 用规范名生成缓存 key，使 zhipu/glm 共享同一客户端
+        2. 用规范名生成缓存 key
         3. 按规范名选择 API Key / Base URL；未知提供商报错
 
         Args:
-            provider: LLM 提供商（deepseek、glm 或 zhipu）
+            provider: LLM 提供商
             model_name: 模型名称
 
         Returns:
             ChatOpenAI 客户端实例
         """
-        # 保留原始值仅用于报错提示；选路与缓存一律用规范名
         original_provider = provider
         canonical = normalize_llm_provider(provider)
-
-        # 缓存 key 用规范名，避免 zhipu:model 与 glm:model 各建一份
         cache_key = f"{canonical}:{model_name}"
 
         if cache_key in self._clients:
             return self._clients[cache_key]
 
-        if canonical == "deepseek":
-            api_key = settings.deepseek_api_key
-            base_url = settings.deepseek_base_url
-        elif canonical == "glm":
-            # glm / zhipu 共用智谱配置
-            api_key = settings.glm_api_key
-            base_url = settings.glm_base_url
-        else:
+        if canonical not in _KNOWN_PROVIDERS:
             raise ValueError(f"不支持的 LLM 提供商: {original_provider}")
 
+        api_key = _provider_api_key(canonical)
+        base_url = _provider_base_url(canonical)
         if not api_key:
             raise ValueError(f"{canonical} API Key 未配置")
 
@@ -284,14 +478,46 @@ class LLMClient:
             model=model_name,
             api_key=api_key,
             base_url=base_url,
-            temperature=0.7,  # 温度参数，控制输出的随机性
-            max_tokens=4096,  # 最大输出 token 数
-            timeout=30,  # 请求超时时间（秒）
+            temperature=0.7,
+            max_tokens=4096,
+            timeout=30,
         )
-
         self._clients[cache_key] = client
-
         return client
+
+    async def _invoke_once(
+        self,
+        messages: List[Dict[str, str]],
+        model_config: LLMModelConfig,
+        system_prompt: Optional[str],
+    ) -> LLMResponse:
+        """单次 invoke（含闸门）；失败抛异常供保底链捕获。"""
+        async with self._get_redis_gate().acquire(
+            model_config.name, model_config.max_in_flight
+        ):
+            client = self._get_client(model_config.provider, model_config.name)
+            langchain_messages = _build_langchain_messages(messages, system_prompt)
+            self._log_request_payload(
+                mode="invoke",
+                model_config=model_config,
+                system_prompt=system_prompt,
+                messages=messages,
+            )
+            logger.info(
+                "开始调用 LLM: provider=%s, model=%s",
+                model_config.provider,
+                model_config.name,
+            )
+            response = await client.ainvoke(langchain_messages)
+            content = response.content if response.content is not None else ""
+            if not isinstance(content, str):
+                content = str(content)
+            self._log_response_content(
+                mode="invoke",
+                model_config=model_config,
+                content=content,
+            )
+            return LLMResponse(content=content)
 
     async def invoke(
         self,
@@ -300,72 +526,124 @@ class LLMClient:
         system_prompt: Optional[str] = None,
     ) -> LLMResponse:
         """
-        同步调用 LLM
+        同步调用 LLM（带国内永久免费保底链）
 
         业务逻辑：
-        1. 获取 Redis 闸门许可（并发控制）
-        2. 将消息转换为 langchain 格式
-        3. 调用 LLM 并返回结果
-        4. 释放 Redis 闸门许可
+        1. 先打调用方传入的首选模型
+        2. 可恢复失败则按配置列表依次尝试
+        3. 全失败则抛出最后一次异常
 
         Args:
             messages: 消息列表，格式为 [{"role": "user", "content": "..."}]
-            model_config: 模型配置
+            model_config: 模型配置（首选）
             system_prompt: 系统提示词（可选）
 
         Returns:
             LLMResponse 响应结果
         """
-        # 获取 Redis 闸门许可，控制并发数
-        async with self._get_redis_gate().acquire(model_config.name, model_config.max_in_flight):
+        candidates = self._build_candidate_configs(model_config)
+        last_error: Optional[BaseException] = None
+        for index, cfg in enumerate(candidates):
             try:
-                # 获取对应的 LLM 客户端
-                client = self._get_client(model_config.provider, model_config.name)
-
-                # 构建 langchain 格式的消息列表
-                langchain_messages = []
-
-                # 如果提供了系统提示词，添加到消息列表开头
-                if system_prompt:
-                    langchain_messages.append(SystemMessage(content=system_prompt))
-
-                # 将输入消息转换为 langchain 格式
-                for msg in messages:
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-
-                    if role == "system":
-                        langchain_messages.append(SystemMessage(content=content))
-                    elif role == "user":
-                        langchain_messages.append(HumanMessage(content=content))
-                    elif role == "assistant":
-                        langchain_messages.append(AIMessage(content=content))
-
-                # INFO 全量打印发送载荷，便于核对实际发给模型的内容
-                self._log_request_payload(
-                    mode="invoke",
-                    model_config=model_config,
-                    system_prompt=system_prompt,
-                    messages=messages,
-                )
-                # 调用 LLM
-                logger.info(f"开始调用 LLM: provider={model_config.provider}, model={model_config.name}")
-                response = await client.ainvoke(langchain_messages)
-                content = response.content if response.content is not None else ""
-                if not isinstance(content, str):
-                    content = str(content)
-                # 成功后打印回复正文（失败走 except，不打残缺 response）
-                self._log_response_content(
-                    mode="invoke",
-                    model_config=model_config,
-                    content=content,
-                )
-                return LLMResponse(content=content)
-
+                return await self._invoke_once(messages, cfg, system_prompt)
             except Exception as e:
-                # 记录错误日志
-                logger.error(f"LLM 调用失败: {str(e)}")
+                last_error = e
+                logger.error(
+                    "LLM 调用失败: provider=%s model=%s err=%s",
+                    cfg.provider,
+                    cfg.name,
+                    str(e),
+                )
+                has_next = index + 1 < len(candidates)
+                if has_next and is_recoverable_llm_error(e):
+                    nxt = candidates[index + 1]
+                    logger.warning(
+                        "LLM 保底切换: from=%s/%s -> to=%s/%s reason=%s",
+                        cfg.provider,
+                        cfg.name,
+                        nxt.provider,
+                        nxt.name,
+                        str(e),
+                    )
+                    continue
                 raise
+        assert last_error is not None
+        raise last_error
+
+    async def _stream_once(
+        self,
+        messages: List[Dict[str, str]],
+        model_config: LLMModelConfig,
+        system_prompt: Optional[str],
+        thinking_enabled: bool,
+    ) -> AsyncGenerator[LLMResponse, None]:
+        """
+        单次 stream；成功结束后打累积日志。
+
+        Yields:
+            LLMResponse 增量
+        """
+        async with self._get_redis_gate().acquire(
+            model_config.name, model_config.max_in_flight
+        ):
+            client = self._get_client(model_config.provider, model_config.name)
+            self._log_request_payload(
+                mode="stream",
+                model_config=model_config,
+                system_prompt=system_prompt,
+                messages=messages,
+                thinking_enabled=thinking_enabled,
+            )
+            logger.info(
+                "开始流式调用 LLM: provider=%s, model=%s, thinking_enabled=%s",
+                model_config.provider,
+                model_config.name,
+                thinking_enabled,
+            )
+
+            answer_buffer = ""
+            if thinking_enabled:
+                openai_messages = _build_openai_chat_messages(messages, system_prompt)
+                create_kwargs: Dict[str, Any] = {
+                    "model": model_config.name,
+                    "messages": openai_messages,
+                    "stream": True,
+                    "temperature": 0.7,
+                    "max_tokens": 4096,
+                    "extra_body": dict(_THINKING_EXTRA_BODY),
+                }
+                stream = await client.root_async_client.chat.completions.create(
+                    **create_kwargs
+                )
+                async for chunk in stream:
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    delta = chunk.choices[0].delta
+                    thinking_part, content_part = extract_stream_thinking_and_content(
+                        delta
+                    )
+                    if not thinking_part and not content_part:
+                        continue
+                    if content_part:
+                        answer_buffer += content_part
+                    yield LLMResponse(
+                        content=content_part,
+                        thinking=thinking_part,
+                    )
+            else:
+                langchain_messages = _build_langchain_messages(messages, system_prompt)
+                async for chunk in client.astream(langchain_messages):
+                    chunk_content = _coerce_text(chunk.content)
+                    if not chunk_content:
+                        continue
+                    answer_buffer += chunk_content
+                    yield LLMResponse(content=chunk_content, thinking="")
+
+            self._log_response_content(
+                mode="stream",
+                model_config=model_config,
+                content=answer_buffer,
+            )
 
     async def stream(
         self,
@@ -375,110 +653,61 @@ class LLMClient:
         thinking_enabled: bool = False,
     ) -> AsyncGenerator[LLMResponse, None]:
         """
-        流式调用 LLM
+        流式调用 LLM（带保底；仅首包前可换模）
 
         业务逻辑：
-        1. 获取 Redis 闸门许可（并发控制）
-        2. thinking_enabled 时经底层 OpenAI 客户端开启原生思考并映射 reasoning_content
-        3. 否则走 ChatOpenAI.astream，仅推送正文
-        4. 释放 Redis 闸门许可
+        1. 按候选序列尝试
+        2. 尚未向调用方产出非空 content/thinking 前失败且可恢复 → 换下一候选
+        3. 已产出非空增量后失败 → 不再换模，直接上抛
 
         Args:
-            messages: 消息列表，格式为 [{"role": "user", "content": "..."}]
-            model_config: 模型配置
+            messages: 消息列表
+            model_config: 首选模型配置
             system_prompt: 系统提示词（可选）
             thinking_enabled: 是否启用提供商原生思考模式
 
         Yields:
             LLMResponse 响应结果（流式返回；thinking 增量不加尾部换行）
         """
-        # 获取 Redis 闸门许可，控制并发数
-        async with self._get_redis_gate().acquire(model_config.name, model_config.max_in_flight):
+        candidates = self._build_candidate_configs(model_config)
+        last_error: Optional[BaseException] = None
+        for index, cfg in enumerate(candidates):
+            yielded_nonempty = False
             try:
-                # 获取对应的 LLM 客户端（缓存实例；thinking 仅在本次 create 传入）
-                client = self._get_client(model_config.provider, model_config.name)
-
-                # INFO 全量打印发送载荷，便于核对实际发给模型的内容
-                self._log_request_payload(
-                    mode="stream",
-                    model_config=model_config,
-                    system_prompt=system_prompt,
-                    messages=messages,
-                    thinking_enabled=thinking_enabled,
-                )
-                # 开始流式调用
-                logger.info(
-                    f"开始流式调用 LLM: provider={model_config.provider}, "
-                    f"model={model_config.name}, thinking_enabled={thinking_enabled}"
-                )
-
-                answer_buffer = ""
-
-                if thinking_enabled:
-                    # ChatOpenAI.astream 会丢弃非标 reasoning_content，改走底层 OpenAI 流
-                    openai_messages = _build_openai_chat_messages(
-                        messages, system_prompt
-                    )
-                    create_kwargs: Dict[str, Any] = {
-                        "model": model_config.name,
-                        "messages": openai_messages,
-                        "stream": True,
-                        "temperature": 0.7,
-                        "max_tokens": 4096,
-                        # 仅本次请求开启；不写回缓存 ChatOpenAI.extra_body
-                        "extra_body": dict(_THINKING_EXTRA_BODY),
-                    }
-                    stream = await client.root_async_client.chat.completions.create(
-                        **create_kwargs
-                    )
-                    async for chunk in stream:
-                        if not getattr(chunk, "choices", None):
-                            continue
-                        delta = chunk.choices[0].delta
-                        thinking_part, content_part = extract_stream_thinking_and_content(
-                            delta
-                        )
-                        if not thinking_part and not content_part:
-                            continue
-                        if content_part:
-                            answer_buffer += content_part
-                        yield LLMResponse(
-                            content=content_part,
-                            thinking=thinking_part,
-                        )
-                else:
-                    # 非思考模式：沿用 langchain 消息格式与 astream
-                    langchain_messages = []
-                    if system_prompt:
-                        langchain_messages.append(SystemMessage(content=system_prompt))
-                    for msg in messages:
-                        role = msg.get("role", "user")
-                        content = msg.get("content", "")
-                        if role == "system":
-                            langchain_messages.append(SystemMessage(content=content))
-                        elif role == "user":
-                            langchain_messages.append(HumanMessage(content=content))
-                        elif role == "assistant":
-                            langchain_messages.append(AIMessage(content=content))
-
-                    async for chunk in client.astream(langchain_messages):
-                        chunk_content = _coerce_text(chunk.content)
-                        if not chunk_content:
-                            continue
-                        answer_buffer += chunk_content
-                        yield LLMResponse(content=chunk_content, thinking="")
-
-                # 流正常结束后打一次累积回答（不打 thinking；不逐 chunk）
-                self._log_response_content(
-                    mode="stream",
-                    model_config=model_config,
-                    content=answer_buffer,
-                )
-
+                async for item in self._stream_once(
+                    messages, cfg, system_prompt, thinking_enabled
+                ):
+                    if (item.content or "") or (item.thinking or ""):
+                        yielded_nonempty = True
+                    yield item
+                return
             except Exception as e:
-                # 记录错误日志
-                logger.error(f"LLM 流式调用失败: {str(e)}")
+                last_error = e
+                logger.error(
+                    "LLM 流式调用失败: provider=%s model=%s err=%s yielded=%s",
+                    cfg.provider,
+                    cfg.name,
+                    str(e),
+                    yielded_nonempty,
+                )
+                # 已吐 token：禁止静默换模
+                if yielded_nonempty:
+                    raise
+                has_next = index + 1 < len(candidates)
+                if has_next and is_recoverable_llm_error(e):
+                    nxt = candidates[index + 1]
+                    logger.warning(
+                        "LLM 流式保底切换: from=%s/%s -> to=%s/%s reason=%s",
+                        cfg.provider,
+                        cfg.name,
+                        nxt.provider,
+                        nxt.name,
+                        str(e),
+                    )
+                    continue
                 raise
+        assert last_error is not None
+        raise last_error
 
 
 # 创建全局 LLM 客户端实例

@@ -34,13 +34,29 @@ class Settings(BaseSettings):
     server_port: int = 8000  # 服务端口
     log_level: str = "INFO"  # 日志级别
 
-    # LLM 配置 - DeepSeek
+    # LLM 配置 - DeepSeek（付费通道；默认不进免费保底列表）
     deepseek_api_key: str = ""  # DeepSeek API Key
     deepseek_base_url: str = "https://api.deepseek.com/v1"  # DeepSeek API 地址
 
-    # LLM 配置 - Zhipu (GLM)
+    # LLM 配置 - Zhipu (GLM，Flash 等永久免费档常作 Go 首选)
     glm_api_key: str = ""  # Zhipu API Key
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"  # Zhipu API 地址
+
+    # LLM 配置 - 硅基流动（国内永久免费模型，$0 + 限速）
+    siliconflow_api_key: str = ""
+    siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+
+    # LLM 配置 - 魔搭 ModelScope（国内，每日免费推理次数重置）
+    modelscope_api_key: str = ""
+    modelscope_base_url: str = "https://api-inference.modelscope.cn/v1"
+
+    # 免费保底链：逗号分隔 provider:model（model 可含 /）；空则仅打请求首选
+    # 默认不含 deepseek；型号以控制台当前永久免费为准，可用环境变量覆盖
+    llm_fallback_models: str = (
+        "siliconflow:Qwen/Qwen3-8B,"
+        "siliconflow:THUDM/glm-4-9b-chat,"
+        "modelscope:Qwen/Qwen2.5-7B-Instruct"
+    )
 
     # 兄弟仓服务地址
     history_service_url: str = "http://localhost:9801"  # 历史服务地址
