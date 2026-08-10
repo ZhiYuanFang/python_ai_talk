@@ -78,8 +78,20 @@ class Settings(BaseSettings):
     companion_session_ttl_days: int = 7
     companion_session_max_turns: int = 3  # 进 prompt / Redis 截断一致，默认 3 轮省 token
 
-    # 护理留意飞轮：suggestionId → knowledge_ids 映射 TTL（天）
+    # 护理留意飞轮：suggestionId → 建议快照映射 TTL（天）
     care_alert_flywheel_ttl_days: int = 7
+    # 全局 prompt / ledger 目录（Docker 挂载卷；本地默认相对项目 data/）
+    care_alert_prompt_dir: str = "data/care_alert"
+    # 对比样例块硬顶字符数（防 prompt 无限增长）
+    care_alert_examples_max_chars: int = 1200
+    # 每累计多少条新反馈触发一次样例重写
+    care_alert_flywheel_rewrite_every: int = 20
+    # 距上次重写最少间隔（秒）；与条数阈值任一满足即可重写
+    care_alert_flywheel_rewrite_min_interval_s: int = 3600
+    # 对比样例槽位最低证据条数（单侧）
+    care_alert_flywheel_min_evidence: int = 2
+    # ledger 滚动保留最近行数
+    care_alert_ledger_max_lines: int = 500
 
     # 知识注入预算：检索后按 score 过滤，默认 K=1 且 score>=0.6，否则不注入
     knowledge_min_score: float = 0.6

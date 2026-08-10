@@ -12,11 +12,14 @@ import json
 import logging
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.care_alert.graphs.nodes.prompts.care_alert_analyze import (
     build_care_alert_system_prompt,
     build_care_alert_user_message,
+)
+from app.care_alert.graphs.nodes.prompts.history_compact import (
+    build_care_alert_history_prompt_blocks,
 )
 from app.care_alert.schemas.care_alert import CareAlertItemDto, CareAlertReasonDto
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
@@ -158,6 +161,136 @@ def _default_follow_up(event_name: str, summary_line: str) -> str:
     return f"闺蜜，关于宝宝的「{name}」最近情况，你觉得有什么值得我留意的吗？"
 
 
+def _parse_legend_pairs(legend: str) -> List[Tuple[str, str]]:
+    """解析「事件名=id」对照表行为 (name, id) 列表。"""
+    pairs: List[Tuple[str, str]] = []
+    for line in (legend or "").splitlines():
+        s = line.strip()
+        if not s or "=" not in s:
+            continue
+        name, eid = s.split("=", 1)
+        name, eid = name.strip(), eid.strip()
+        if name and eid:
+            pairs.append((name, eid))
+    return pairs
+
+
+def _pick_fallback_event(
+    history_events: List[Dict[str, Any]],
+    legend_pairs: List[Tuple[str, str]],
+) -> Optional[Tuple[str, str, int]]:
+    """
+    启发式挑选兜底事件：近两日出现次数最多的对照表事件；并列取对照表靠前。
+
+    Returns:
+        (event_name, event_id, recent_count) 或 None
+    """
+    if not legend_pairs:
+        return None
+    # 统计近两日各 name 出现次数（仅对照表内）
+    allowed = {n: eid for n, eid in legend_pairs}
+    counts: Dict[str, int] = {n: 0 for n in allowed}
+    for raw in history_events or []:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("eventName") or raw.get("event_name") or "").strip()
+        if name in counts:
+            counts[name] += 1
+    # 次数降序，同次数按 legend 顺序
+    best_name = None
+    best_count = -1
+    for name, _eid in legend_pairs:
+        c = counts.get(name, 0)
+        if c > best_count:
+            best_count = c
+            best_name = name
+    if best_name is None:
+        best_name, _ = legend_pairs[0]
+        best_count = counts.get(best_name, 0)
+    return best_name, allowed[best_name], max(0, best_count)
+
+
+def synthesize_soft_care_alert_item(
+    *,
+    history_events: List[Dict[str, Any]],
+    age_months: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """
+    有史+legend 时合成一条软提醒（LLM 空列表兜底）。
+
+    业务逻辑：
+    - 对照表取合法 eventId
+    - 低 score、expectationUsed=false；已知月龄写入 ageMonths，不编造常模数字
+    - 文案标明结合近两日记录的温和提醒
+
+    Returns:
+        camelCase item dict，或无法合成时 None
+    """
+    from app.tip.graphs.nodes.derive_baby_age import shanghai_now
+
+    history_text, legend = build_care_alert_history_prompt_blocks(
+        history_events, now=shanghai_now()
+    )
+    if not history_text or history_text.strip() == "（无）":
+        return None
+    pairs = _parse_legend_pairs(legend)
+    picked = _pick_fallback_event(history_events, pairs)
+    if not picked:
+        return None
+    event_name, event_id, recent_count = picked
+
+    summary_line = f"值得留意 · {event_name}：结合近两日记录可多看看"
+    detail = "近两日有相关记录，结合月龄做温和提醒（非诊断）"
+    if recent_count > 0:
+        detail = f"近两日约出现 {recent_count} 次相关记录；{detail}"
+
+    reason = CareAlertReasonDto(
+        type="softHistoryReminder",
+        score=0.35,
+        expectation_used=False,
+        age_months=age_months if isinstance(age_months, int) else None,
+        recent_48h_count=recent_count if recent_count > 0 else None,
+        detail_lines=[detail],
+    )
+    item = CareAlertItemDto(
+        suggestion_id=str(uuid.uuid4()),
+        event_id=event_id,
+        event_name=event_name,
+        summary_line=summary_line,
+        follow_up_prompt=_default_follow_up(event_name, summary_line),
+        reasons=[reason],
+    )
+    return item.model_dump(by_alias=True, exclude_none=True)
+
+
+def ensure_min_one_care_alert_item(
+    items: List[Dict[str, Any]],
+    *,
+    history_events: List[Dict[str, Any]],
+    age_months: Optional[int],
+) -> List[Dict[str, Any]]:
+    """
+    有史+legend 且 items 为空时注入一条软兜底。
+
+    Returns:
+        原列表或含兜底的单元素列表
+    """
+    if items:
+        return items
+    soft = synthesize_soft_care_alert_item(
+        history_events=history_events,
+        age_months=age_months,
+    )
+    if soft is None:
+        return items
+    logger.info(
+        "护理留意 LLM 空列表，已合成软兜底: eventId=%s age=%s",
+        soft.get("eventId"),
+        age_months,
+    )
+    return [soft]
+
+
 def normalize_care_alert_items(
     raw_items: Any,
     *,
@@ -242,10 +375,10 @@ async def generate_care_alerts(state: Dict[str, Any]) -> Dict[str, Any]:
     调用 LLM 生成护理留意 items。
 
     Args:
-        state: 含 day、月龄、历史、知识、画像、model_config
+        state: 含 day、月龄、历史、画像、model_config
 
     Returns:
-        {"items": [...]}；解析失败时 items=[]
+        {"items": [...]}；有史+legend 时保证至少 1 条（含软兜底）
     """
     model_config = llm_model_config_from_mapping(state.get("model_config"))
 
@@ -254,24 +387,25 @@ async def generate_care_alerts(state: Dict[str, Any]) -> Dict[str, Any]:
         baby_age_months = None
     else:
         baby_age_months = state.get("baby_age_months")
+    age_for_norm = baby_age_months if isinstance(baby_age_months, int) else None
+    history_events = state.get("history_events") or []
 
+    # system：本地 prompt 静态块；user：运行时月龄/历史
     system_prompt = build_care_alert_system_prompt()
     user_message = build_care_alert_user_message(
         day=str(state.get("day") or ""),
         baby_age_months=baby_age_months,
-        history_events=state.get("history_events") or [],
-        knowledge_results=state.get("knowledge") or [],
+        history_events=history_events,
         baby_profile=state.get("baby_profile") or {},
         history_summary=state.get("history_summary"),
     )
 
     # 无首选时 model_config 为 None，走 invoke 纯保底；日志勿解引用
     logger.info(
-        "护理留意 LLM 调用: provider=%s name=%s history=%s knowledge=%s",
+        "护理留意 LLM 调用: provider=%s name=%s history=%s",
         model_config.provider if model_config else "(fallback-only)",
         model_config.name if model_config else "-",
-        len(state.get("history_events") or []),
-        len(state.get("knowledge") or []),
+        len(history_events),
     )
 
     resp = await llm_client.invoke(
@@ -282,12 +416,19 @@ async def generate_care_alerts(state: Dict[str, Any]) -> Dict[str, Any]:
     raw_text = (resp.content or "").strip()
     data = _extract_json_object(raw_text)
     if data is None:
-        logger.warning("护理留意 LLM 输出无法解析为 JSON，返回空列表")
-        return {"items": []}
+        logger.warning("护理留意 LLM 输出无法解析为 JSON，尝试软兜底")
+        items: List[Dict[str, Any]] = []
+    else:
+        items = normalize_care_alert_items(
+            data.get("items"),
+            age_months=age_for_norm,
+        )
 
-    items = normalize_care_alert_items(
-        data.get("items"),
-        age_months=baby_age_months if isinstance(baby_age_months, int) else None,
+    # 有史+legend 且仍空 → 确定性软兜底（仍会进入 analyze 快照写入）
+    items = ensure_min_one_care_alert_item(
+        items,
+        history_events=history_events,
+        age_months=age_for_norm,
     )
     logger.info("护理留意生成完成: count=%s", len(items))
     return {"items": items}

@@ -38,6 +38,14 @@ services:
       # --- 向量数据库 ---
       CHROMA_PERSIST_DIR: "${CHROMA_PERSIST_DIR:-/app/data/chroma_db}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}"
+      # --- 护理留意全局 prompt / 反馈账本（挂载卷，重启不丢）---
+      CARE_ALERT_PROMPT_DIR: "${CARE_ALERT_PROMPT_DIR:-/app/data/care_alert}"
+      CARE_ALERT_EXAMPLES_MAX_CHARS: "${CARE_ALERT_EXAMPLES_MAX_CHARS:-1200}"
+      CARE_ALERT_FLYWHEEL_REWRITE_EVERY: "${CARE_ALERT_FLYWHEEL_REWRITE_EVERY:-20}"
+      CARE_ALERT_FLYWHEEL_REWRITE_MIN_INTERVAL_S: "${CARE_ALERT_FLYWHEEL_REWRITE_MIN_INTERVAL_S:-3600}"
+      CARE_ALERT_FLYWHEEL_MIN_EVIDENCE: "${CARE_ALERT_FLYWHEEL_MIN_EVIDENCE:-2}"
+      CARE_ALERT_LEDGER_MAX_LINES: "${CARE_ALERT_LEDGER_MAX_LINES:-500}"
+      CARE_ALERT_FLYWHEEL_TTL_DAYS: "${CARE_ALERT_FLYWHEEL_TTL_DAYS:-7}"
       # 一次性重建 feeding_events 的 source=standard（默认 false；用完改回）
       REBUILD_FEEDING_STANDARD_EVENTS: "${REBUILD_FEEDING_STANDARD_EVENTS:-false}"
     healthcheck:
@@ -49,5 +57,7 @@ services:
       # ChromaDB 持久化目录，包含 knowledge 和 feeding_events 等多个集合
       # feeding_events 集合在服务启动后首次获取事件字典时自动创建
       - ./data/chroma_db:/app/data/chroma_db
+      # 护理留意全局 prompt.json / ledger.jsonl（飞轮落盘；与 chroma 卷独立）
+      - ./data/care_alert:/app/data/care_alert
       # 注意：不要挂载 ./data/models —— Embedding 模型已在镜像构建时预下载到 /app/data/models
       # 挂载宿主机空目录会覆盖镜像内模型，导致运行时访问 huggingface.co 失败

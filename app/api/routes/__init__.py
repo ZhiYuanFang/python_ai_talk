@@ -11,7 +11,7 @@
 - /clinic/stream：智能陪伴续聊（流式；与 tip 共享 device_no 会话）
 - /tip/stream：事件开场陪伴（流式；写入共享会话，可供 clinic 续聊）
 - /care-alert/analyze：护理留意日分析（Go 内调）
-- /care-alert/feedback：护理留意固定意图飞轮 ACK（Go 内调，无 NLP）
+- /care-alert/feedback：护理留意固定意图 prompt 飞轮 ACK（Go 内调，无 NLP）
 - /knowledge：知识库管理（上传、列表、详情、更新、删除、统计、分类）
 """
 

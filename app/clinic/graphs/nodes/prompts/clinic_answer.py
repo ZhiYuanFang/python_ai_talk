@@ -164,11 +164,11 @@ def _clinic_closing_instruction(
     else:
         parts.append("月龄未知时不要假设同月龄娃。")
 
-    if needs_history:
-        parts.append("尽量以一句引导式话题收尾。约 80 字内。")
-    else:
+    # if needs_history:
+    #     parts.append("尽量以一句引导式话题收尾。约 80 字内。")
+    # else:
         # 无史：引导式收尾优先落在「是否肯定本段回应」
-        parts.append("约 80 字内；收尾以征求肯定为主，可兼带轻引导。")
+        parts.append("约 80 字内；收尾以征求肯定为主。")
     parts.append(f"用有经验闺蜜口语回家长。家长说：{question}")
     return "".join(parts)
 

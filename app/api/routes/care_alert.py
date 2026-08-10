@@ -3,15 +3,17 @@
 
 业务说明：
 提供 Go 可内调的 POST /v1/care-alert/analyze 与 POST /v1/care-alert/feedback。
-analyze：按传入模型（deepseek / zhipu）执行 KG+LLM，返回可映射 Flutter DTO 的 items，
-并写入 suggestionId→knowledge_ids 飞轮映射。
-feedback：固定意图 ignore|follow_up，对映射通识文档更新质量分；无 NLP、不扣 clinic 配额。
+analyze：按传入模型执行史+LLM（无通识检索），返回可映射 Flutter DTO 的 items，
+并写入 suggestionId→建议快照。
+feedback：固定意图 ignore|follow_up，写入本地 ledger 并按阈值重写全局对比样例 prompt；
+无 NLP、不扣 clinic 配额、不通识质量分。
 Go 转发 feedback 为 best-effort：本接口失败不阻断客户端忽略/追问主路径。
 """
 
 from __future__ import annotations
 
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException
 
@@ -24,6 +26,7 @@ from app.care_alert.schemas.care_alert import (
 )
 from app.care_alert.services.analyze import run_care_alert_analyze
 from app.care_alert.services.flywheel_store import care_alert_flywheel_store
+from app.care_alert.services.prompt_flywheel import record_feedback_and_maybe_rewrite
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +45,8 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
 
     业务逻辑：
     1. 校验 device_no 与 model
-    2. 拉取历史 / 合格通识 / 画像（可与 Go 透传历史合并；不通识硬塞）
-    3. 按模型调用 LLM，产出 items 列表并写飞轮映射
+    2. 拉取历史 / 画像（可与 Go 透传历史合并；不通识检索）
+    3. 按模型调用 LLM，产出 items 列表并写建议快照
 
     Returns:
         {"items": [...]}，字段 camelCase 对齐 Flutter CareAlertEventItem
@@ -84,42 +87,44 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
 )
 async def care_alert_feedback(request: CareAlertFeedbackRequest) -> CareAlertFeedbackResponse:
     """
-    固定意图通识飞轮。
+    固定意图 prompt 飞轮。
 
     业务逻辑：
     1. 校验 intent ∈ {ignore, follow_up}
-    2. 按 suggestion_id 读映射 knowledge_ids
-    3. follow_up → +1、ignore → -1 更新通识质量分；无映射/失败仅打日志
-    4. 始终返回 ok=true（不阻断 Go/客户端）
+    2. 按 suggestion_id 读建议快照
+    3. 有快照则写入本地 ledger，并按阈值重写全局对比样例；无快照/失败仅打日志
+    4. 始终返回 ok=true（不阻断 Go/客户端）；不通识质量分
     """
-    feedback = 1 if request.intent == "follow_up" else -1
     try:
-        knowledge_ids = await care_alert_flywheel_store.get_knowledge_ids(
-            request.suggestion_id
-        )
-        if not knowledge_ids:
+        snapshot = await care_alert_flywheel_store.get_snapshot(request.suggestion_id)
+        if not snapshot:
             logger.info(
-                "护理留意飞轮无映射或空 ids: device_no=%s suggestion_id=%s intent=%s",
+                "护理留意飞轮无快照: device_no=%s suggestion_id=%s intent=%s",
                 request.device_no,
                 request.suggestion_id,
                 request.intent,
             )
         else:
-            from app.shared.vector_store import vector_store
-
-            for kid in knowledge_ids:
-                try:
-                    vector_store.update_quality_score(str(kid), feedback)
-                except Exception as e:
-                    logger.warning(
-                        "护理留意通识质量更新失败 id=%s: %s", kid, e
-                    )
+            entry = {
+                "ts": int(time.time()),
+                "device_no": request.device_no,
+                "suggestion_id": request.suggestion_id,
+                "intent": request.intent,
+                "day": request.day or snapshot.get("day") or "",
+                "event_name": snapshot.get("event_name") or "",
+                "event_id": snapshot.get("event_id") or "",
+                "reason_type": snapshot.get("reason_type") or "other",
+                "score_band": snapshot.get("score_band") or "weak",
+                "summary_line": snapshot.get("summary_line") or "",
+            }
+            record_feedback_and_maybe_rewrite(entry)
             logger.info(
-                "护理留意飞轮完成: device_no=%s suggestion_id=%s intent=%s kids=%s",
+                "护理留意 prompt 飞轮已记: device_no=%s suggestion_id=%s intent=%s type=%s band=%s",
                 request.device_no,
                 request.suggestion_id,
                 request.intent,
-                len(knowledge_ids),
+                entry["reason_type"],
+                entry["score_band"],
             )
     except Exception as e:
         # 飞轮异常不阻断 ACK

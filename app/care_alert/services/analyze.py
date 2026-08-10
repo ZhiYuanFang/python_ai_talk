@@ -4,8 +4,8 @@
 业务说明：
 将 HTTP 请求转为图初始状态，执行 care_alert_graph，返回 items。
 不扣 clinic 配额；VIP 由 Go 传入首选 model，非 VIP 可省略走免费保底序。
-准确优先：不用未过门槛的 kg_context 硬塞进 knowledge。
-analyze 成功后写入 suggestionId → knowledge_ids 飞轮映射。
+不调用通识向量检索；kg_context 不硬塞进判定。
+analyze 成功后写入 suggestionId → 建议快照（供 prompt 飞轮归因）。
 """
 
 from __future__ import annotations
@@ -17,16 +17,12 @@ from app.care_alert.graphs.care_alert_graph import care_alert_graph
 from app.care_alert.schemas.care_alert import CareAlertAnalyzeRequest
 from app.care_alert.services.flywheel_store import (
     care_alert_flywheel_store,
-    suggestion_ids_from_items,
+    snapshot_from_item,
 )
 from app.care_alert.services.model_resolve import resolve_model_config
-from app.shared.companion_session import extract_knowledge_ids
 from app.tip.graphs.nodes.derive_baby_age import shanghai_now
 
 logger = logging.getLogger(__name__)
-
-# 向量检索查询：覆盖间隔/缺记/进行中过久等留意主题
-_KG_QUERY = "宝宝护理留意 喂养间隔偏长 进行中过久 突然没有记录 同月龄注意"
 
 
 def _resolve_day(day: Optional[str]) -> str:
@@ -66,7 +62,7 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         request: 已校验的分析请求
 
     Returns:
-        camelCase items 列表（可为空）
+        camelCase items 列表（有史+legend 时至少 1 条；否则可为空）
 
     Raises:
         ValueError: 模型解析失败（传了非法 model）
@@ -80,8 +76,6 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         "device_no": request.device_no,
         "day": day,
         "model_config": model_config,
-        # 供 search_vectors 使用
-        "question": _KG_QUERY,
         # 近两日、不限 event_ids，拉多条供间隔/缺记判断
         "data_requirement": {
             "event_ids": [],
@@ -90,7 +84,7 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
             "limit": 60,
         },
         "history_summary": request.history_summary,
-        # kg_context 仅保留在 state 供观测；不再填入 knowledge（准确优先）
+        # kg_context 仅保留观测；不进 prompt / 飞轮
         "kg_context": request.kg_context,
     }
 
@@ -112,7 +106,7 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         if isinstance(event, dict):
             final_state = event
 
-    # 本仓历史为空时可用编排侧历史列表补齐后重跑生成（史可补；通识不硬塞）
+    # 本仓历史为空时可用编排侧历史列表补齐后重跑生成
     history_events = final_state.get("history_events") or []
     history_seeded = False
     if not history_events:
@@ -122,11 +116,9 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
             final_state["history_events"] = seeded
             history_seeded = True
 
-    # 准确优先：向量门槛后 knowledge 为空则保持空，不用 kg_context 顶替
-    knowledge = final_state.get("knowledge") or []
-    if not knowledge and request.kg_context not in (None, {}, [], ""):
+    if request.kg_context not in (None, {}, [], ""):
         logger.info(
-            "本仓知识为空且存在 kg_context，按准确优先不硬塞进 knowledge device_no=%s",
+            "护理留意收到 kg_context，按无知识库策略不注入 prompt device_no=%s",
             request.device_no,
         )
 
@@ -142,21 +134,20 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         regenerated = await generate_care_alerts(final_state)
         items = regenerated.get("items") or []
 
-    # 飞轮映射：本轮进 prompt 的通识 ids → 各 suggestionId
-    knowledge_ids = extract_knowledge_ids(final_state.get("knowledge") or [])
-    for sid in suggestion_ids_from_items(items):
-        await care_alert_flywheel_store.save_mapping(
-            sid,
-            device_no=request.device_no,
-            day=day,
-            knowledge_ids=knowledge_ids,
-        )
+    # 飞轮快照：每条 suggestion → 归因字段（非 knowledge_ids）
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("suggestionId") or item.get("suggestion_id") or "").strip()
+        if not sid:
+            continue
+        snap = snapshot_from_item(item, device_no=request.device_no, day=day)
+        await care_alert_flywheel_store.save_snapshot(sid, snap)
 
     logger.info(
-        "护理留意分析结束: device_no=%s day=%s count=%s knowledge_ids=%s",
+        "护理留意分析结束: device_no=%s day=%s count=%s",
         request.device_no,
         day,
         len(items),
-        len(knowledge_ids),
     )
     return items

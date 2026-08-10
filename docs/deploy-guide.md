@@ -222,6 +222,18 @@ python_ai_talk/
 
 > **注意**：`feeding_events` 和 `mother_baby_knowledge` 共用同一个 ChromaDB 持久化目录（`CHROMA_PERSIST_DIR`），通过 Collection 名称隔离。数据备份和恢复时需同时包含两个 Collection。
 
+### 2.1.5 护理留意 Prompt Volume 挂载路径
+
+护理留意全局 prompt 飞轮将 `prompt.json` / `ledger.jsonl` 写在独立目录（与 chroma 卷并列），**必须挂载**，否则容器重建后飞轮优化会丢失。
+
+| 环境 | 容器内路径 | 宿主机挂载 |
+|------|-----------|-----------|
+| 本地开发 | `/app/data/care_alert` | 项目 `data/care_alert/` 目录 |
+| 测试环境 | `/app/data/care_alert` | 同基线 bind 或独立 Volume |
+| 生产环境 | `/app/data/care_alert` | 同基线 bind 或独立 Volume |
+
+> **注意**：多副本部署时各实例须共享同一 care_alert 卷，飞轮写依赖文件锁；未共享则会分叉。
+
 ---
 
 ## 2.2 确认流程部署说明
@@ -872,6 +884,13 @@ docker compose --env-file env/.env.prod \
 | `GLM_API_KEY` | 智谱 GLM API 密钥 | 是 | `xxx` | `xxx` | `xxx` |
 | `CHROMA_PERSIST_DIR` | 向量库存储路径 | 否 | `/app/data/chroma_db` | `/app/data/chroma_db` | `/app/data/chroma_db` |
 | `EMBEDDING_MODEL` | Embedding 模型 | 否 | `BAAI/bge-small-zh-v1.5` | `BAAI/bge-small-zh-v1.5` | `BAAI/bge-small-zh-v1.5` |
+| `CARE_ALERT_PROMPT_DIR` | 护理留意全局 prompt/ledger 目录 | 否 | `data/care_alert` | `/app/data/care_alert` | `/app/data/care_alert` |
+| `CARE_ALERT_EXAMPLES_MAX_CHARS` | 对比样例块最大字符数 | 否 | `1200` | `1200` | `1200` |
+| `CARE_ALERT_FLYWHEEL_REWRITE_EVERY` | 累计多少条反馈触发重写 | 否 | `20` | `20` | `20` |
+| `CARE_ALERT_FLYWHEEL_REWRITE_MIN_INTERVAL_S` | 重写最小间隔（秒） | 否 | `3600` | `3600` | `3600` |
+| `CARE_ALERT_FLYWHEEL_MIN_EVIDENCE` | 样例槽位单侧最低证据条数 | 否 | `2` | `2` | `2` |
+| `CARE_ALERT_LEDGER_MAX_LINES` | ledger 滚动保留行数 | 否 | `500` | `500` | `500` |
+| `CARE_ALERT_FLYWHEEL_TTL_DAYS` | suggestion 快照 Redis TTL（天） | 否 | `7` | `7` | `7` |
 | `REBUILD_FEEDING_STANDARD_EVENTS` | 一次性重建喂养标准向量（`source=standard`） | 否 | `false` | `false` | `false` |
 
 ### 7.2 变量获取途径
