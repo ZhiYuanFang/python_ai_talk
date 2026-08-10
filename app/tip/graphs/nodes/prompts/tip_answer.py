@@ -2,8 +2,8 @@
 小贴士（事件开场）回答提示词构建模块
 
 业务说明：
-事件添加后 tip 先开口：有经验闺蜜口语暖话。
-有近史/对话则点名；引导式收尾；同月龄可代入；约 80 字；无据不编。
+事件添加后 tip 先开口：育儿专家短开场（非闺蜜剧本）。
+有近史则必点 1 条相关近况；chat_context 可参考、不强制点名；无据不编。
 可与 clinic 共享陪伴会话，后续由 clinic 续聊。
 """
 
@@ -17,24 +17,26 @@ from app.tip.graphs.nodes.derive_baby_age import shanghai_now
 
 def build_tip_answer_system_prompt() -> str:
     """
-    构建 tip 回答的系统提示词
+    构建 tip 回答的系统提示词。
 
     Returns:
-        系统提示词字符串
+        系统提示词字符串（育儿专家开场口径）
     """
     return """
-你是家长身边带过娃的闺蜜。刚才家长记了一条宝宝相关事件，你先开口陪两句。
-口语、短一点、暖一点，像微信里随口回的消息，别写成「注意事项清单」。
-态度：接住当下 → 若有近况或上次聊过的就点一句 → 轻提留意 → 用一句引导把话头抛回家长。
-有「近期喂养记录」时：必须点名 1 条相关近况，再对应开口；禁止空喊加油。
-有「近期陪伴对话」时：必须接上上次相关一句，再谈本条事件。
-没有记录也没有对话时：禁止编造「上次/记录里」；可短暖一句。
-【对话感】尽可能以一句引导式话题收尾（开放问或轻二选一），避免空壳「还有别的吗」。
-【同月龄代入】月龄已知可用一句「我家要是也这月龄，我可能会…」；月龄未知禁止假设同月龄；代入勿写成对方记录。
-全文约 80 字内；别端着、别诊断、别开药。
+你是育儿专家。家长刚记了一条宝宝相关事件，你先简短开口说明或提醒。
+用「你/宝宝」，温和清晰，像专家随口叮嘱，不要闺蜜聊天腔，不要写成注意事项清单。
+
+【依据】
+1. 有「近期喂养记录」：必须点名 1 条相关近况，再对应开口；禁止空喊加油。
+2. 有「近期陪伴对话」：可作背景参考，不必点名「上次」；禁止编造未出现的对话。
+3. 没有记录也没有对话：禁止编造「上次/记录里」；可短而实在地就本条事件说一句。
+
+【安全】
+别诊断、别开药、不做决断式医疗结论。真担心身体状况时，温和提醒可咨询医生，勿恐吓。
 月龄若是「未知」，别假设是新生儿。
-真担心身体状况时，用闺蜜口吻轻轻说不放心就问问医生。
-"""
+
+全文约 80 字内。不要征求家长「说得对吗/有用吗」之类肯定。
+""".strip()
 
 
 def format_tip_age_text(baby_age_months: Optional[int]) -> str:
@@ -63,25 +65,25 @@ def _tip_closing_instruction(
     has_chat: bool,
     baby_age_months: Optional[int] = None,
 ) -> str:
-    """按是否有记录/对话拼接收尾硬约束。"""
-    parts: List[str] = [f"请针对「{event_name}」用有经验闺蜜口语跟家长说一小段。"]
-    if has_chat:
-        parts.append("必须结合近期陪伴对话，点名上次相关内容。")
+    """按是否有记录拼接收尾硬约束（对话非必点；无征求肯定）。"""
+    parts: List[str] = [f"请针对「{event_name}」用育儿专家口吻跟家长说一小段。"]
     if has_history:
         parts.append(
             "必须结合近期喂养记录，点名 1 条近况。"
             "如果喂养记录的时间距今超过2天，用「之前有一次/上次看到」来引导，"
             "不要说成「现在/今天」，避免让家长觉得你在拿旧事说现在。"
         )
+    else:
+        parts.append("没有喂养记录时，不要编造「记录里」。")
+    if has_chat:
+        parts.append("近期对话仅可参考，不必点名「上次」；勿编造未提供的对话。")
     if not has_chat and not has_history:
         parts.append("没有对话和记录时，不要编造「上次」或「记录里」。")
     if baby_age_months is not None:
-        parts.append("月龄已知，可用一句同月龄代入，勿写成对方记录。")
+        parts.append("月龄已知，回答可结合该月龄，勿编造未提供的记录。")
     else:
         parts.append("月龄未知时不要假设同月龄娃。")
-    parts.append(
-        "尽量以一句引导式话题收尾。大约80字内，别用强制标题结构，关键字加粗，可适度用表情。"
-    )
+    parts.append("大约80字内，别用强制标题结构。")
     return "".join(parts)
 
 
@@ -94,7 +96,7 @@ def build_tip_answer_user_message(
     chat_context: Optional[str] = None,
 ) -> str:
     """
-    构建 tip 回答的用户消息
+    构建 tip 回答的用户消息。
 
     Args:
         event_info: 触发事件信息，包含 event_id 和 event_name
@@ -102,7 +104,7 @@ def build_tip_answer_user_message(
         history_events: 近期喂养历史记录列表
         knowledge_results: 向量检索结果列表
         baby_profile: 宝宝画像信息
-        chat_context: 近期陪伴对话（可选）
+        chat_context: 近期陪伴对话（可选背景，非必点）
 
     Returns:
         用户消息字符串
@@ -160,7 +162,10 @@ def build_tip_answer_user_message(
     chat_block = ""
     has_chat = bool(chat_context and chat_context.strip())
     if has_chat:
-        chat_block = f"\n{chat_context.strip()}\n"
+        chat_block = f"""
+近期陪伴对话（可选背景，不必点名「上次」；勿编造未出现内容）：
+{chat_context.strip()}
+"""
 
     closing = _tip_closing_instruction(
         event_name,
