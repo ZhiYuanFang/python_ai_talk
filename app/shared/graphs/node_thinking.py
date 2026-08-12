@@ -41,20 +41,21 @@ def is_graph_streaming() -> bool:
 
 def ensure_orchestration_thinking_content(content: str) -> str:
     """
-    编排阶段 thinking 条目分隔：非空且不以 \\r 结尾时补一个 \\r。
-    幂等只认 \\r；已以 \\n 结尾时仍追加 \\r（可得 …\\n\\r）。
-    LLM 流式 thinking 不得调用本函数（正文换行与条目分隔分离）。
+    thinking 段首开泡：非空且不以 \\r 开头时前置一个 \\r。
+    幂等只认 startswith("\\r")。
+    用于编排字幕；clinic/tip 亦可对「本流首次」LLM thinking 增量调用。
+    后续 LLM thinking 增量不得再调用（避免一字一泡）。
     """
     text = content if content is not None else ""
-    if text and not text.endswith("\r"):
-        return text + "\r"
+    if text and not text.startswith("\r"):
+        return "\r" + text
     return text
 
 
 def emit_thinking(node_name: str, content: str) -> None:
     """
     向当前图 custom 流写入一条 thinking；无 writer 时静默跳过。
-    编排字幕末尾保证有条目分隔符 \\r；LLM 增量勿走本函数。
+    编排字幕保证段首 \\r（新气泡）；LLM 增量勿经本函数，由路由对首包单独处理。
     """
     try:
         writer = get_stream_writer()

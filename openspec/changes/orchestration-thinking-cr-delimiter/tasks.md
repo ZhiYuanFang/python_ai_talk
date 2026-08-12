@@ -1,9 +1,13 @@
-## 1. Helper 与注释
+## 1. Helper：段首 \r
 
-- [x] 1.1 将 `ensure_orchestration_thinking_content` 尾部分隔符从 `\n` 改为 `\r`（幂等只认 `\r`；已以 `\n` 结尾时仍追加 `\r`）
-- [x] 1.2 更新该函数与 `emit_thinking` 的中文注释，标明编排条目分隔为 CR、LLM 路径不得调用
+- [x] 1.1 将 `ensure_orchestration_thinking_content` 改为非空且不以 `\r` 开头时前置 `\r`（幂等 `startswith`）
+- [x] 1.2 更新 helper 与 `emit_thinking` 中文注释（段首开泡；可供 LLM 首包复用）
 
-## 2. 调用点核对
+## 2. 路由：LLM 首包开泡
 
-- [x] 2.1 确认 clinic/tip 路由层 `llm_start` 等编排字幕仍只经该 helper，无旁路硬编码 `\n`
-- [x] 2.2 确认 LLM 流式 thinking 转发路径不调用该 helper、不加尾部 `\r`
+- [x] 2.1 clinic 流式：首次非空 `chunk.thinking` 经 helper 保证段首 `\r`，其后原样转发
+- [x] 2.2 tip 流式：同上
+
+## 3. 编排调用点
+
+- [x] 3.1 确认 `emit_thinking` / `llm_start` 仍走 helper，无旁路硬编码尾部 `\r` 或 `\n`

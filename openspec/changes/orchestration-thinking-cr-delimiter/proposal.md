@@ -1,13 +1,13 @@
 ## Why
 
-客户端将多条编排阶段 thinking 字幕拼成 buffer 后按分隔符切「条目」。当前尾部分隔符是 `\n`，与 LLM 思考正文里的换行冲突，易误切。改用 `\r` 作为条目边界，与客户端同步切换，可把「条目分隔」与「行内换行」拆开。
+客户端按「段首 `\r` = 新气泡、否则追加」解析 thinking SSE。编排字幕与 LLM 思考段均需在段首带 `\r` 开新气泡；正文内 `\n` 仅作行内换行。相对曾用的尾部 `\r`/`\n`，段首标记更贴合流式开泡语义。
 
 ## What Changes
 
-- **BREAKING**：编排阶段 thinking 字幕（`emit_thinking`、路由层 `llm_start` 等）尾部分隔符由 `\n` 改为 `\r`；非空且不以 `\r` 结尾时追加 `\r`。
-- 幂等规则只认 `\r`：若文案已以 `\n` 结尾但不以 `\r` 结尾，仍追加 `\r`（可能得到 `…\n\r`），不剥离既有 `\n`。
-- LLM 流式 thinking 增量仍原样转发，不追加 `\r` 或 `\n` 作为条目分隔。
-- 更新 `llm-native-stream-thinking` 中「编排 thinking 尾部换行」相关 Requirement / Scenario。
+- **BREAKING**：编排阶段 thinking（`emit_thinking`、`llm_start` 等）由尾部 `\r` 改为**段首** `\r`；非空且不以 `\r` 开头时前置 `\r`。
+- **BREAKING**：clinic/tip 路由在**首次**非空 LLM `thinking` 增量前同样保证段首 `\r`；后续 thinking 增量原样转发，不再加 `\r`。
+- 幂等只认段首 `\r`（`startswith`）；不剥离正文中的 `\n`。
+- 更新 `llm-native-stream-thinking` 相关 Requirement / Scenario。
 
 ## Capabilities
 
@@ -17,10 +17,10 @@
 
 ### Modified Capabilities
 
-- `llm-native-stream-thinking`：编排 thinking 尾部分隔符从 LF (`\n`) 改为 CR (`\r`)；LLM 增量仍不加强制尾部分隔符（表述与编排要求对齐）。
+- `llm-native-stream-thinking`：编排 thinking 与 LLM 思考「段」以段首 `\r` 开泡；LLM 仅首包加前缀，后续增量不加。
 
 ## Impact
 
-- 代码：`app/shared/graphs/node_thinking.py` 的 `ensure_orchestration_thinking_content`；`clinic`/`tip` 路由已复用该 helper，行为随 helper 变更。
-- API：SSE `thinking` 事件中编排字幕 `content` 尾字符变化（**BREAKING**，客户端须同步 `split('\r')`）。
-- 测试：不生成、不修改测试文件（仓库不使用测试）。
+- 代码：`ensure_orchestration_thinking_content`（段首）；`clinic`/`tip` 路由对首次 `chunk.thinking` 调用同一 helper。
+- API：SSE thinking `content` 段首字符约定（**BREAKING**，客户端已约定段首 `\r` = 新气泡）。
+- 不生成、不修改测试文件。

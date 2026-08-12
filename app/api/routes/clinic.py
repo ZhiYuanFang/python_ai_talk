@@ -115,10 +115,15 @@ async def _stream_clinic_response(
         )
         yield f"data: {json.dumps(llm_start_event.model_dump(), ensure_ascii=False)}\n\n"
 
+        # 本流首次 LLM thinking 需段首 \r 开新气泡；其后原样追加
+        first_llm_thinking = True
         async for chunk in stream_response(final_state):
-            # LLM thinking 原样转发，不加尾部条目分隔符 \r
             if chunk.thinking:
-                event = ClinicStreamResponse(type="thinking", content=chunk.thinking)
+                thinking_text = chunk.thinking
+                if first_llm_thinking:
+                    thinking_text = ensure_orchestration_thinking_content(thinking_text)
+                    first_llm_thinking = False
+                event = ClinicStreamResponse(type="thinking", content=thinking_text)
                 yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
             if chunk.content:
