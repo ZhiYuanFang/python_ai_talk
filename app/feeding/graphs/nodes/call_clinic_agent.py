@@ -2,7 +2,7 @@
 调用诊疗 Agent 节点
 
 业务说明：
-当意图为 history / conversation / suggest 时，同进程走 clinic 数据准备 + 闺蜜生成，
+当意图为 history / conversation / suggest 时，同进程走 clinic 数据准备 + 同步生成，
 并与 tip/clinic 共享 companion session（读 chat_context、写轮次）。
 隐式飞轮由 clinic_graph 入口节点执行。
 history 设 skip_knowledge + force_needs_history。
@@ -48,7 +48,7 @@ def _build_preserved_result(
 
 async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    调用诊疗 Agent：读会话 → clinic_graph 数据准备（含飞轮）→ 闺蜜生成 → 写会话。
+    调用诊疗 Agent：读会话 → clinic_graph 数据准备（含飞轮）→ 同步生成 → 写会话。
 
     Returns:
         更新 intent_result 与 response；写会话失败不影响返回值。
@@ -121,7 +121,7 @@ async def call_clinic_agent(state: Dict[str, Any]) -> Dict[str, Any]:
             generate_result = await generate_clinic_answer(merged_state)
             clinic_response = (generate_result.get("response") or "").strip()
             if not clinic_response:
-                logger.warning("诊疗 Agent 闺蜜生成返回为空，使用兜底文案")
+                logger.warning("诊疗 Agent 同步生成返回为空，使用兜底文案")
                 clinic_response = CLINIC_FALLBACK
                 used_fallback = True
 

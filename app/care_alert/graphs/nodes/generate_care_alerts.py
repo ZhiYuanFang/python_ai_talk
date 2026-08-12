@@ -157,8 +157,8 @@ def _default_follow_up(event_name: str, summary_line: str) -> str:
     name = (event_name or "这条记录").strip()
     summary = (summary_line or "").strip()
     if summary:
-        return f"闺蜜，关于「{name}」我想再问问：{summary}，你觉得我需要留意什么吗？"
-    return f"闺蜜，关于宝宝的「{name}」最近情况，你觉得有什么值得我留意的吗？"
+        return f"关于「{name}」我想再问问：{summary}，你觉得我需要留意什么吗？"
+    return f"关于宝宝的「{name}」最近情况，你觉得有什么值得我留意的吗？"
 
 
 def _parse_legend_pairs(legend: str) -> List[Tuple[str, str]]:

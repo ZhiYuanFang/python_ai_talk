@@ -3,7 +3,7 @@
 
 业务说明：
 按 device_no 在 Redis 中维护近 N 轮 user+assistant 对话（默认 3 轮，可配置），
-TTL 7 天滑动续期。tip 开场与 clinic 续聊读写同一会话，供口语化闺蜜上下文与隐式飞轮使用。
+TTL 7 天滑动续期。tip 开场与 clinic 续聊读写同一会话，供口语化上下文与隐式飞轮使用。
 
 设计思路：
 1. key = companion:session:{device_no}
@@ -31,7 +31,7 @@ _KEY_PREFIX = "companion:session:"
 
 @dataclass
 class CompanionTurn:
-    """一轮对话：家长一句 + 闺蜜一句。"""
+    """一轮对话：家长一句 + 回复一句。"""
 
     user: str
     assistant: str
@@ -175,14 +175,14 @@ def format_chat_turns_for_prompt(turns: List[CompanionTurn]) -> str:
     """
     将会话轮次格式化为提示词中的「近期对话」块。
 
-    与喂养 history_events 分离，仅作闺蜜续聊上下文。
+    与喂养 history_events 分离，仅作续聊上下文。
     """
     if not turns:
         return ""
     lines: List[str] = ["近期陪伴对话（从旧到新）："]
     for i, turn in enumerate(turns, start=1):
-        lines.append(f"第{i}轮-家长：{turn.user}")
-        lines.append(f"第{i}轮-闺蜜：{turn.assistant}")
+        lines.append(f"第{i}轮-提问：{turn.user}")
+        lines.append(f"第{i}轮-回复：{turn.assistant}")
     return "\n".join(lines)
 
 
@@ -279,7 +279,7 @@ class CompanionSessionStore:
         Args:
             device_no: 设备号
             user: 家长侧文本
-            assistant: 闺蜜侧全文
+            assistant: 回复侧全文
             source: tip | clinic
             answer_id: 本轮回答 id
             knowledge_ids: 本轮检索命中的文档 id

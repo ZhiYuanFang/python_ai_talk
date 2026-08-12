@@ -145,7 +145,7 @@ async def judge_suggestion_acceptance(
     if ruled is not None:
         return ruled
 
-    system_prompt = """你是对话态度分类器。根据「家长本轮回复」判断其对「上一条闺蜜建议」的态度。
+    system_prompt = """你是对话态度分类器。根据「家长本轮回复」判断其对「上一条建议」的态度。
 只输出 JSON：{"status":"accepted"|"rejected"|"unclear"}
 - accepted：认可有用
 - rejected：认为没用

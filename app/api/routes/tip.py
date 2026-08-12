@@ -2,7 +2,7 @@
 事件开场陪伴流式路由（tip）
 
 业务说明：
-提供 /v1/tip/stream：添加事件后闺蜜先开口，写入按 device_no 的 Python Redis 会话。
+提供 /v1/tip/stream：添加事件后先开口，写入按 device_no 的 Python Redis 会话。
 与 /v1/clinic/stream 共享同一陪伴会话；知识飞轮仅依赖多轮隐式采纳
 （已下线显式 /feedback；Go/Flutter 旧调用将 404）。
 
@@ -118,7 +118,7 @@ async def _stream_tip_response(
 
     answer_parts: list[str] = []
     async for chunk in stream_tip_response(final_state):
-        # LLM thinking 原样转发，不加尾部换行
+        # LLM thinking 原样转发，不加尾部条目分隔符 \r
         if chunk.thinking:
             event = TipStreamResponse(type="thinking", content=chunk.thinking)
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"

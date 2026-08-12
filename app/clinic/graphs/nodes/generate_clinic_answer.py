@@ -1,5 +1,5 @@
 """
-闺蜜陪伴同步回答生成
+陪伴同步回答生成
 
 业务说明：
 与 stream_response 使用同一套 clinic_answer 提示词，改为 llm_client.invoke 拿全文。
@@ -7,7 +7,7 @@
 
 设计思路：
 1. 从 state 读取 question、chat_context、history、knowledge、baby_profile、model_config
-2. 拼装闺蜜 system/user 消息
+2. 拼装 system/user 消息
 3. invoke 返回 {"response": "..."}
 """
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 async def generate_clinic_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    同步闺蜜回答：clinic_answer + invoke。
+    同步回答：clinic_answer + invoke。
 
     Args:
         state: 含 question（或 user_input）、chat_context、数据准备结果、model_config
@@ -61,5 +61,5 @@ async def generate_clinic_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     text = (resp.content or "").strip()
     if not text:
-        logger.warning("闺蜜同步生成返回空内容")
+        logger.warning("同步生成返回空内容")
     return {"response": text}

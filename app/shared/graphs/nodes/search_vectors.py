@@ -4,7 +4,7 @@
 业务说明：
 LangGraph 节点：根据用户问题从向量库中检索相关知识。
 检索后按相似度过滤：默认只保留最高分且 score>=门槛的条目（K=1, T=0.6），
-不够像则 knowledge 为空，由闺蜜口语陪聊，降低 token。
+不够像则 knowledge 为空，由口语陪聊，降低 token。
 
 设计思路：
 1. 从 State 中读取用户问题（user_input / question / tip 事件名）
