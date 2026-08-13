@@ -2,30 +2,21 @@
 喂养事件向量存储模块
 
 业务说明：
-本模块负责管理喂养事件的向量存储，用于意图识别中的事件匹配和数据飞轮闭环。
-使用独立的 ChromaDB Collection（feeding_events）存储事件向量，与母婴知识向量库隔离。
-支持标准事件和用户表达两种数据来源，标准事件来自事件字典，用户表达来自用户实际输入。
+本模块负责管理喂养事件的向量存储，用于意图识别中的标准事件名匹配。
+使用独立的 ChromaDB Collection（feeding_events），与母婴知识向量库隔离。
+只同步事件字典标准条目；检索排除 source=user。单事件用户表达飞轮已拆除。
 
 设计思路：
 1. 复用与知识向量库相同的 ChromaDB 客户端和 Embedding 模型（BAAI/bge-small-zh-v1.5）
 2. 使用独立的 feeding_events Collection，避免与知识库数据混淆
 3. 标准事件生成动作变体（开始/结束/记录 + 事件名），覆盖常见用户表达模式
-4. 用户表达作为数据飞轮的输入，持续优化事件匹配准确率
-5. 提供质量评估和清理机制，防止低质量样本污染向量库
-
-使用场景：
-- 意图识别：根据用户输入检索最相似的喂养事件
-- 数据飞轮：记录用户实际表达，持续优化匹配效果
-- 事件同步：当事件字典变更时，增量同步标准事件向量
-- 质量治理：定期清理低质量用户表达，保持向量库健康
+4. 事件字典变更时增量同步标准事件向量
 """
 
 import logging
-import math
 import os
-import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import chromadb
 from chromadb.config import Settings
@@ -218,10 +209,11 @@ class EventVectorStore:
 
         # 在 ChromaDB 中检索相似向量
         logger.debug(f"开始检索相似事件，返回数量: {n_results}")
+        # 多取若干条，再排除 source=user，避免旧标准条目缺 source 字段时 where 漏检
         results = self._collection.query(
-            query_embeddings=[query_embedding],  # 查询向量
-            n_results=n_results,  # 返回结果数量
-            include=["documents", "metadatas", "distances"],  # 包含文档内容、元数据和距离
+            query_embeddings=[query_embedding],
+            n_results=max(n_results * 3, n_results),
+            include=["documents", "metadatas", "distances"],
         )
 
         # 处理检索结果，将 ChromaDB 返回格式转换为业务友好的格式
@@ -233,171 +225,22 @@ class EventVectorStore:
             score = 1 / (1 + distance)
 
             # 构建单条结果字典，包含 id、分数和元数据
+            metadata = results["metadatas"][0][i] or {}
+            # 存量用户表达不再参与事件名快路径
+            if metadata.get("source") == VectorSource.USER.value:
+                continue
             formatted_results.append({
-                "id": results["ids"][0][i],  # 向量记录 ID
-                "score": round(score, 4),  # 相似度分数，保留 4 位小数
-                "metadata": results["metadatas"][0][i],  # 元数据信息
+                "id": results["ids"][0][i],
+                "score": round(score, 4),
+                "metadata": metadata,
             })
+            if len(formatted_results) >= n_results:
+                break
 
         # 记录检索完成日志
         logger.debug(f"事件检索完成，找到 {len(formatted_results)} 个相似事件")
 
         return formatted_results
-
-    def add_user_expression(self, event_id: str, event_name: str, expression: str, action: Optional[str] = None) -> str:
-        """
-        添加用户表达到向量库（数据飞轮）
-
-        业务逻辑：
-        1. 确保向量存储已初始化（延迟加载）
-        2. 为用户表达生成唯一 ID
-        3. 构建元数据，记录事件关联信息和统计数据
-        4. 将用户表达文本转换为向量并存入 Collection
-
-        Args:
-            event_id: 关联的事件 ID
-            event_name: 关联的事件名称
-            expression: 用户的自然语言表达
-            action: 动作类型（IntentAction：start/end/one），可选
-
-        Returns:
-            生成的向量记录 ID
-
-        Side Effects:
-            - 向 feeding_events Collection 添加一条新记录
-            - 新记录的 match_count 和 success_count 初始为 0
-        """
-        # 确保向量存储已初始化（延迟加载）
-        self._ensure_initialized()
-
-        # 生成唯一的向量记录 ID，使用 uuid4 确保全局唯一
-        vector_id = f"user_{uuid.uuid4().hex}"
-
-        # 获取当前时间作为创建时间，格式为 ISO 8601
-        created_at = datetime.now().isoformat()
-
-        # 构建元数据字典，包含事件关联信息和统计数据
-        metadata = {
-            "event_id": event_id,  # 关联的事件 ID
-            "event_name": event_name,  # 关联的事件名称
-            "source": VectorSource.USER.value,
-            "action": action or "",  # IntentAction 英文值，未指定则为空
-            "match_count": 0,  # 匹配次数，初始为 0
-            "success_count": 0,  # 成功次数，初始为 0
-            "created_at": created_at,  # 创建时间
-        }
-
-        # 将用户表达文本转换为向量
-        embedding = self._embed([expression])[0]
-
-        # 将用户表达添加到 feeding_events Collection
-        self._collection.add(
-            ids=[vector_id],  # 唯一 ID
-            embeddings=[embedding],  # 向量
-            documents=[expression],  # 原始文本
-            metadatas=[metadata],  # 元数据
-        )
-
-        # 记录添加成功日志
-        logger.info(f"添加用户表达到向量库: event_id={event_id}, expression={expression[:30]}..., vector_id={vector_id}")
-
-        return vector_id
-
-    def increment_match_count(self, vector_id: str):
-        """
-        递增向量记录的匹配次数
-
-        业务逻辑：
-        1. 确保向量存储已初始化（延迟加载）
-        2. 根据 vector_id 获取当前记录的元数据
-        3. 将 match_count 加 1
-        4. 更新记录的元数据
-
-        Args:
-            vector_id: 向量记录 ID
-
-        Returns:
-            无
-
-        Side Effects:
-            - 修改指定记录的 match_count 元数据值
-        """
-        # 确保向量存储已初始化（延迟加载）
-        self._ensure_initialized()
-
-        # 根据 ID 获取记录的元数据
-        result = self._collection.get(
-            ids=[vector_id],  # 目标记录 ID
-            include=["metadatas"],  # 只获取元数据
-        )
-
-        # 检查记录是否存在
-        if not result["metadatas"]:
-            logger.warning(f"未找到向量记录: {vector_id}")
-            return
-
-        # 获取当前元数据
-        metadata = result["metadatas"][0]
-        # 将匹配次数加 1
-        current_count = metadata.get("match_count", 0)
-        metadata["match_count"] = current_count + 1
-
-        # 更新记录的元数据
-        self._collection.update(
-            ids=[vector_id],  # 目标记录 ID
-            metadatas=[metadata],  # 更新后的元数据
-        )
-
-        # 记录更新日志
-        logger.debug(f"递增匹配次数: vector_id={vector_id}, match_count={metadata['match_count']}")
-
-    def increment_success_count(self, vector_id: str):
-        """
-        递增向量记录的成功次数
-
-        业务逻辑：
-        1. 确保向量存储已初始化（延迟加载）
-        2. 根据 vector_id 获取当前记录的元数据
-        3. 将 success_count 加 1
-        4. 更新记录的元数据
-
-        Args:
-            vector_id: 向量记录 ID
-
-        Returns:
-            无
-
-        Side Effects:
-            - 修改指定记录的 success_count 元数据值
-        """
-        # 确保向量存储已初始化（延迟加载）
-        self._ensure_initialized()
-
-        # 根据 ID 获取记录的元数据
-        result = self._collection.get(
-            ids=[vector_id],  # 目标记录 ID
-            include=["metadatas"],  # 只获取元数据
-        )
-
-        # 检查记录是否存在
-        if not result["metadatas"]:
-            logger.warning(f"未找到向量记录: {vector_id}")
-            return
-
-        # 获取当前元数据
-        metadata = result["metadatas"][0]
-        # 将成功次数加 1
-        current_count = metadata.get("success_count", 0)
-        metadata["success_count"] = current_count + 1
-
-        # 更新记录的元数据
-        self._collection.update(
-            ids=[vector_id],  # 目标记录 ID
-            metadatas=[metadata],  # 更新后的元数据
-        )
-
-        # 记录更新日志
-        logger.debug(f"递增成功次数: vector_id={vector_id}, success_count={metadata['success_count']}")
 
     def delete_vector(self, vector_id: str):
         """
@@ -690,7 +533,7 @@ class EventVectorStore:
             include=["metadatas"],  # 只获取元数据
         )
 
-        # 删除所有现有的标准数据，保留用户表达数据
+        # 只重写标准条目；不触碰知识库，也不再写入用户表达飞轮
         if standard_results["ids"]:
             # 批量删除标准记录
             self._collection.delete(ids=standard_results["ids"])
@@ -712,97 +555,6 @@ class EventVectorStore:
 
         # 记录初始化完成日志
         logger.info(f"喂养事件向量库初始化完成，共处理 {len(event_dictionary)} 个事件")
-
-    def check_and_cleanup(self, max_records: int = 10000, cleanup_ratio: float = 0.2):
-        """
-        检查向量库记录数量并清理低质量用户表达
-
-        业务逻辑：
-        1. 确保向量存储已初始化（延迟加载）
-        2. 检查记录总数是否超过阈值
-        3. 获取所有用户表达记录
-        4. 计算每条记录的质量分数（质量分 = 准确率 × 置信度）
-        5. 按质量分数排序，删除最低的 cleanup_ratio 比例记录
-
-        Args:
-            max_records: 最大记录数阈值，默认 10000
-            cleanup_ratio: 清理比例，默认 0.2（删除最低质量的 20%）
-
-        Returns:
-            无
-
-        Side Effects:
-            - 从 feeding_events Collection 中删除低质量的用户表达记录
-        """
-        # 确保向量存储已初始化（延迟加载）
-        self._ensure_initialized()
-
-        # 获取当前记录总数
-        total_count = self._collection.count()
-
-        # 检查是否超过最大记录阈值
-        if total_count <= max_records:
-            # 未超过阈值，无需清理
-            logger.debug(f"记录总数 {total_count} 未超过阈值 {max_records}，无需清理")
-            return
-
-        # 记录清理开始日志
-        logger.info(f"记录总数 {total_count} 超过阈值 {max_records}，开始清理低质量用户表达...")
-
-        # 获取所有用户表达记录
-        user_results = self._collection.get(
-            where={"source": VectorSource.USER.value},  # 只查询用户表达记录
-            include=["metadatas"],  # 获取元数据用于质量评估
-        )
-
-        # 如果没有用户表达记录，无需清理
-        if not user_results["ids"]:
-            logger.info("没有用户表达记录，无需清理")
-            return
-
-        # 计算每条用户表达记录的质量分数
-        # 质量分 = 准确率 × 置信度
-        # 准确率 = success_count / match_count（匹配成功比例）
-        # 置信度 = match_count 归一化值（匹配次数越多越可信）
-        scored_records = []
-        for i, record_id in enumerate(user_results["ids"]):
-            # 获取元数据
-            metadata = user_results["metadatas"][i]
-            # 获取匹配次数和成功次数
-            match_count = metadata.get("match_count", 0)
-            success_count = metadata.get("success_count", 0)
-
-            # 计算准确率：成功次数 / 匹配次数，避免除零错误
-            accuracy = success_count / match_count if match_count > 0 else 0.0
-
-            # 计算置信度：使用 match_count 的对数作为置信度
-            # 匹配次数越多，置信度越高，但增长递减
-            confidence = math.log1p(match_count)  # log1p(x) = ln(1+x)，避免 log(0)
-
-            # 计算质量分数 = 准确率 × 置信度
-            quality_score = accuracy * confidence
-
-            # 将记录 ID 和质量分数加入列表
-            scored_records.append({
-                "id": record_id,  # 记录 ID
-                "quality_score": quality_score,  # 质量分数
-            })
-
-        # 按质量分数升序排序，分数低的排在前面
-        scored_records.sort(key=lambda x: x["quality_score"])
-
-        # 计算需要清理的记录数量
-        cleanup_count = max(1, int(len(scored_records) * cleanup_ratio))
-
-        # 取质量分数最低的记录 ID 列表
-        cleanup_ids = [record["id"] for record in scored_records[:cleanup_count]]
-
-        # 批量删除低质量记录
-        if cleanup_ids:
-            # 执行删除操作
-            self._collection.delete(ids=cleanup_ids)
-            # 记录清理完成日志
-            logger.info(f"清理低质量用户表达完成，删除 {len(cleanup_ids)} 条记录")
 
     def get_event_count(self) -> int:
         """

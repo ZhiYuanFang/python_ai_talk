@@ -3,7 +3,7 @@
 
 业务说明：
 与 stream_response 使用同一套 clinic_answer 提示词，改为 llm_client.invoke 拿全文。
-供 intent 的 call_clinic_agent 使用（非 SSE）；clinic HTTP 流式仍走 stream_response。
+供 POST /v1/clinic 非流式同步生成；clinic HTTP 流式仍走 stream_response。
 
 设计思路：
 1. 从 state 读取 question、chat_context、history、knowledge、baby_profile、model_config

@@ -16,6 +16,7 @@
 """
 
 import logging
+import re
 from typing import Any, Dict
 
 from app.feeding.services.event_vector_store import event_vector_store
@@ -23,14 +24,17 @@ from app.feeding.utils.quantity_extractor import extract_quantity_from_text
 from app.feeding.utils.query_utterance import looks_like_history_query
 from app.shared.constants import IntentAction, MatchSource, TargetType
 
+# 复合句：不得因单事件高置信直接 END
+_MULTI_HINT_RE = re.compile(r"[，,、]|又|然后|接着|还|同时")
+
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
 
 # 向量匹配的高置信度阈值（≥此值直接匹配，无需 LLM 或确认）
-VECTOR_MATCH_HIGH_CONFIDENCE_THRESHOLD = 0.8
+VECTOR_MATCH_HIGH_CONFIDENCE_THRESHOLD = 0.6
 
 # 向量匹配的中等置信度阈值（<此值降级至 LLM，≥此值但 < 高阈值需要确认）
-VECTOR_MATCH_MEDIUM_CONFIDENCE_THRESHOLD = 0.60
+VECTOR_MATCH_MEDIUM_CONFIDENCE_THRESHOLD = 0.4
 
 
 def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -56,8 +60,8 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
     # 业务说明：路由注入的是 user_input；兼容旧字段 text 作 fallback
     text = state.get("user_input") or state.get("text", "")
 
-    # 查询句（上次/什么时候/分别…）禁止向量直接落 feeding，交给 LLM 分类
-    if looks_like_history_query(text):
+    # 查询句或复合句禁止向量直接落 feeding
+    if looks_like_history_query(text) or _MULTI_HINT_RE.search(text or ""):
         logger.info(
             f"检测到历史查询句式，跳过向量 feeding: text={text[:40]}..."
         )
@@ -109,6 +113,7 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
             )
             intent_result = {
                 "target_type": TargetType.FEEDING.value,
+                "op": "create",
                 "action": action,
                 "event_name": metadata["event_name"],
                 # 存量 Chroma metadata 可能仍为 int，出站统一为 str
@@ -131,6 +136,7 @@ def match_event_by_vector(state: Dict[str, Any]) -> Dict[str, Any]:
             logger.info(f"中等置信度向量匹配，需要确认: confidence={confidence}")
             intent_result = {
                 "target_type": TargetType.FEEDING.value,
+                "op": "create",
                 "action": action,
                 "event_name": metadata["event_name"],
                 "event_id": "" if metadata.get("event_id") is None else str(metadata["event_id"]),

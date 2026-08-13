@@ -14,19 +14,12 @@
 # 节点名→中文思考文案映射表
 # 业务说明：每个 key 对应意图图中注册的节点名，value 为推送给前端的中文文案
 NODE_THINKING_MESSAGES = {
-    # 喂养事件向量匹配节点：基于向量相似度匹配用户输入与已记录的喂养事件
-    "match_event_by_vector": "正在匹配喂养事件...",
-    # 意图分类节点：LLM 分析用户输入，判断意图类型（记录/查询/确认/反馈等）
-    "classify_intent": "正在分析意图...",
-    # 数据需求判断：history 短链判断需拉取的事件范围与时间窗
-    "judge_data_requirement": "正在判断数据需求...",
-    # 历史拉取：按 data_requirement 拉取喂养历史
-    "fetch_history": "正在拉取历史记录...",
-    # 同步回答生成：基于历史上下文生成回答
-    "generate_response": "正在生成回答...",
-    # conversation/suggest：转交 clinic agent 获取带上下文的回答
-    "call_clinic_agent": "正在获取喂养建议...",
-    # LLM 回答开始标记：上下文准备完成，开始调用 LLM 生成最终回答
+    "match_intent_cache": "正在回忆你常说的话...",
+    "remark_probe": "正在按备注查找相关记录...",
+    "match_event_by_vector": "正在匹配事件...",
+    "classify_intent": "正在判断是否要操作事件...",
+    "execute_history_crud": "正在写入喂养记录...",
+    "speak_history": "正在整理历史记录...",
     "llm_start": "正在生成回答...",
 }
 

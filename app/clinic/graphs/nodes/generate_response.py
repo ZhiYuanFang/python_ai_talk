@@ -2,8 +2,7 @@
 同步回答生成节点（仅 history 短链）
 
 业务说明：
-Intent 图在 history 分支：judge → fetch_history → 本节点。
-suggest / conversation 已走 call_clinic_agent + clinic_answer，不再经此节点。
+陪伴图内的同步答题节点；意图查记录已改走模板，不再经本节点。
 
 设计思路：
 1. 读取 user_input、history_events、model_config

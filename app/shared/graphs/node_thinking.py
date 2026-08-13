@@ -28,7 +28,7 @@ NodeFn = Callable[
     Union[Dict[str, Any], Awaitable[Dict[str, Any]]],
 ]
 
-# 路由层 astream 消费时置 True，供 call_clinic_agent 选择内层 astream 并转发
+# 路由层 astream 消费时置 True，供流式节点选择内层 astream 并转发
 GRAPH_STREAMING: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "graph_streaming", default=False
 )

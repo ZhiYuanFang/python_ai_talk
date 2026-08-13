@@ -91,62 +91,22 @@ async def _fetch_with_filter(
         httpx.HTTPError: HTTP 请求失败
     """
     event_ids = data_requirement.get("event_ids", [])
-    time_range = data_requirement.get("time_range", "last_7_days")
     limit = data_requirement.get("limit", 20)
+    remark = data_requirement.get("remark") or data_requirement.get("remark_keyword")
 
-    # 计算时间范围
-    import time
-    now = int(time.time())
-    start_time = None
-    end_time = None
+    # 优先用调用方已算好的 unix；仅当缺省时才把遗留枚举换成 unix
+    from app.shared.history_window import resolve_window
 
-    if time_range == "today":
-        # 今天 00:00 到现在
-        start_time = now - (now % 86400) + 8 * 3600  # 北京时间 00:00
-        end_time = now
-    elif time_range == "yesterday":
-        # 昨天
-        today_start = now - (now % 86400) + 8 * 3600
-        start_time = today_start - 86400
-        end_time = today_start
-    elif time_range == "last_2_days":
-        # 昨天 00:00（上海）到现在：护理留意紧凑史窗口
-        from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo
+    start_time, end_time = resolve_window(data_requirement)
 
-        try:
-            tz = ZoneInfo("Asia/Shanghai")
-        except Exception:
-            from datetime import timezone as _tz
-
-            tz = _tz(timedelta(hours=8))
-        now_dt = datetime.now(tz=tz)
-        today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_dt = today_start - timedelta(days=1)
-        start_time = int(start_dt.timestamp())
-        end_time = int(now_dt.timestamp())
-    elif time_range == "last_7_days":
-        # 最近7天
-        start_time = now - 7 * 86400
-        end_time = now
-    elif time_range == "last_30_days":
-        # 最近30天
-        start_time = now - 30 * 86400
-        end_time = now
-    # custom 类型的话，由调用方在 data_requirement 中提供具体的 startTime/endTime
-
-    # 如果是 custom 类型，从 data_requirement 读取具体时间
-    if time_range == "custom":
-        start_time = data_requirement.get("start_time")
-        end_time = data_requirement.get("end_time")
-
-    # 调用 filter API
+    # 调用 filter API（可带备注模糊）
     history_events = await http_client.get_filtered_history_events(
         device_no=device_no,
         event_ids=event_ids if event_ids else None,
         start_time=start_time,
         end_time=end_time,
         limit=limit,
+        remark=str(remark).strip() if remark else None,
     )
 
     return history_events

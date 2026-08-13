@@ -20,9 +20,15 @@ from app.care_alert.services.flywheel_store import (
     snapshot_from_item,
 )
 from app.care_alert.services.model_resolve import resolve_model_config
+from app.shared.history_window import enum_to_unix
 from app.tip.graphs.nodes.derive_baby_age import shanghai_now
 
 logger = logging.getLogger(__name__)
+
+
+def _care_alert_window() -> tuple:
+    """近两日 Unix 窗（昨 00:00 上海 → now）。"""
+    return enum_to_unix("last_2_days")
 
 
 def _resolve_day(day: Optional[str]) -> str:
@@ -80,7 +86,8 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         "data_requirement": {
             "event_ids": [],
             # 近两日（昨 00:00 上海 → now），缩短拉取与提示词
-            "time_range": "last_2_days",
+            "start_time": _care_alert_window()[0],
+            "end_time": _care_alert_window()[1],
             "limit": 60,
         },
         "history_summary": request.history_summary,

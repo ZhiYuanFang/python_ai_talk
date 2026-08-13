@@ -2,16 +2,8 @@
 意图分析路由
 
 业务说明：
-提供 /v1/analyze/intent 与 /v1/analyze/intent/stream。
-非流式 /intent：因前端已绑定该 URL，行为改为直接调用 clinic agent 返回陪伴回答，
-不再做喂养意图分析（语义上属 clinic，路径不挪）。
-流式 /intent/stream：仍走意图图（pending / 父消歧 / 向量 / 分类 / clinic 分流）。
-
-设计思路：
-1. 非流式复用 call_clinic_agent，外壳仍为 IntentResponse
-2. 流式保留全量事件树、叶子视图与 pending 续聊
-3. 精确父名命中强制消歧（仅流式）
-4. 图执行后对 feeding 结果做叶子校验与 pending 改写（仅流式）
+提供 /v1/analyze/intent 与 /v1/analyze/intent/stream，同一套意图图与后处理。
+非流式不再伪装 clinic。陪伴走 /v1/clinic。
 """
 
 import json
@@ -23,12 +15,13 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.feeding.graphs.intent_graph import intent_graph
-from app.feeding.graphs.nodes.call_clinic_agent import call_clinic_agent
 from app.feeding.schemas.intent import IntentRequest, IntentResponse, IntentStreamResponse
+from app.feeding.services.clarification import create_leaf_confirm_pending
 from app.feeding.services.event_cache import event_cache
 from app.feeding.services.intent_pipeline import (
     build_intent_response_from_fields,
     postprocess_feeding_result,
+    response_from_pending,
     try_exact_parent_disambiguation,
     try_handle_pending,
 )
@@ -140,59 +133,61 @@ def _response_from_final_state(
             matched_vector_id=matched_vector_id,
         )
 
+    # 查记录确认（如 AD → 营养品）
+    if need_confirm and target_type == TargetType.HISTORY.value:
+        pending = create_leaf_confirm_pending(
+            leaf={
+                "event_id": intent_result.get("event_id") or "",
+                "event_name": intent_result.get("event_name") or "",
+                "extra_names": [],
+            },
+            original_utterance=user_input,
+            action=IntentAction.SEARCH.value,
+            match_source=str(match_source or ""),
+            device_no=device_no,
+            model_config=model_config,
+            events=intent_result.get("events") or [],
+            op="read",
+            remark_keyword=intent_result.get("remark_keyword") or "",
+            confirm_message=intent_result.get("confirm_message")
+            or final_state.get("confirm_message")
+            or "请确认是否查询该事件的历史？",
+        )
+        return response_from_pending(pending)
+
     response = _build_intent_response(intent_result)
-    if target_type in (
-        TargetType.HISTORY.value,
-        TargetType.SUGGEST.value,
-        TargetType.CONVERSATION.value,
-    ):
-        llm_response = final_state.get("response", "")
-        if llm_response:
-            response.content = llm_response
+    llm_response = final_state.get("response", "")
+    if llm_response and not response.content:
+        response.content = llm_response
     return response
 
 
 @router.post("/intent", response_model=IntentResponse, summary="意图分析")
 async def analyze_intent(request: IntentRequest):
     """
-    非流式「意图」接口（实际为 clinic 陪伴同步入口）。
-
-    前端已绑定本 URL，故不迁路径；不再做喂养分析 / pending / 意图图。
-    直接 call_clinic_agent，以 IntentResponse（conversation/reply）返回。
-    conversation_id 若传入将被忽略。
+    非流式意图分析：与 stream 同一套 pending / 图 / 后处理。
     """
     logger.info(
-        f"非流式 /intent→clinic: device_no={request.device_no}, "
+        f"非流式意图: device_no={request.device_no}, "
         f"text={request.text[:50]}..., conversation_id={request.conversation_id}"
     )
-
+    full_events, leaf_events = await _prepare_dictionaries()
     model_config = _model_config_dict(request)
-    # 预设 conversation，使 call_clinic_agent 走标准陪伴数据准备（非 history 跳过知识）
-    clinic_state: Dict[str, Any] = {
-        "user_input": request.text,
-        "device_no": request.device_no,
-        "model_config": model_config,
-        "intent_result": {
-            "target_type": TargetType.CONVERSATION.value,
-            "action": IntentAction.REPLY.value,
-        },
-    }
-    result = await call_clinic_agent(clinic_state)
-    intent_result = dict(result.get("intent_result") or {})
-    response = build_intent_response_from_fields(intent_result)
-    # 兜底：确保外壳字段符合陪伴契约
-    if not response.target_type:
-        response.target_type = TargetType.CONVERSATION.value
-    if not response.action:
-        response.action = IntentAction.REPLY.value
-    if not response.content and result.get("response"):
-        response.content = str(result.get("response") or "")
 
-    logger.info(
-        f"非流式 /intent→clinic 完成: target_type={response.target_type}, "
-        f"action={response.action}, content_len={len(response.content or '')}"
+    if request.conversation_id:
+        pending_resp, _as_new = await try_handle_pending(
+            request.text, request.conversation_id, full_events
+        )
+        if pending_resp is not None:
+            return pending_resp
+
+    return await _run_cold_intent(
+        text=request.text,
+        device_no=request.device_no,
+        model_config=model_config,
+        full_events=full_events,
+        leaf_events=leaf_events,
     )
-    return response
 
 
 @router.post("/intent/stream", summary="意图分析（流式）")
@@ -200,7 +195,7 @@ async def analyze_intent_stream(request: IntentRequest):
     """
     意图分析流式接口。
 
-    仍走 pending / 父消歧 / intent_graph（与非流式 /intent→clinic 行为不同）。
+    与非流式 /intent 同一套 pending / 父消歧 / intent_graph。
     冷启动时推送节点 thinking。
     """
     logger.info(

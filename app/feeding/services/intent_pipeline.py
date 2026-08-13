@@ -29,7 +29,6 @@ from app.feeding.services.event_hierarchy import (
     get_event_by_id,
     is_parent_event,
 )
-from app.feeding.services.event_vector_store import event_vector_store
 from app.shared.constants import (
     ConfirmType,
     IntentAction,
@@ -65,10 +64,13 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
         quantity=fields.get("quantity"),
         event_type=fields.get("event_type"),
         event_unit=fields.get("event_unit"),
-        is_new_event=fields.get("is_new_event", False),
+        is_new_event=False,
         keywords=fields.get("keywords") or [],
         content=fields.get("content", "") or "",
         events=fields.get("events") or [],
+        op=fields.get("op"),
+        remark_keyword=fields.get("remark_keyword"),
+        missing_events=fields.get("missing_events") or [],
         match_confidence=fields.get("match_confidence"),
         match_source=fields.get("match_source"),
         need_confirm=bool(fields.get("need_confirm", False)),
@@ -79,39 +81,9 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
     )
 
 
-def apply_flywheel_after_leaf_resolution(
-    *,
-    leaf: Dict[str, Any],
-    original_utterance: str,
-    action: str,
-    match_source: str,
-    matched_vector_id: str = "",
-    write_user_expression: bool = False,
-) -> None:
-    """消歧/确认成功落到叶子后写入飞轮；父事件永不写入。"""
-    event_id = str(leaf.get("event_id") or "")
-    event_name = leaf.get("event_name") or ""
-    if not event_id or not event_name:
-        return
-
-    utterance = (original_utterance or "").strip()
-    if write_user_expression and utterance:
-        event_vector_store.add_user_expression(
-            event_id=event_id,
-            event_name=event_name,
-            expression=utterance,
-            action=action or IntentAction.ONE.value,
-        )
-        logger.info(
-            f"数据飞轮：落到叶子后写入用户表达 event_id={event_id}, "
-            f"expression={utterance[:30]}..."
-        )
-
-    if match_source == MatchSource.VECTOR.value and matched_vector_id:
-        event_vector_store.increment_success_count(matched_vector_id)
-        logger.info(f"向量匹配确认，递增成功计数: vector_id={matched_vector_id}")
-
-    event_vector_store.check_and_cleanup()
+def apply_flywheel_after_leaf_resolution(*_args: Any, **_kwargs: Any) -> None:
+    """单事件飞轮已删除；保留空实现避免旧调用点报错。"""
+    return
 
 
 def response_from_pending(pending) -> IntentResponse:
@@ -181,22 +153,6 @@ async def try_handle_pending(
 
         # correct：写原话到正确叶子，且不对旧向量 success++
         # 其余：沿用原飞轮条件
-        write_expr = (
-            result.skip_vector_success
-            or pending.kind == ConfirmType.PARENT_DISAMBIGUATION.value
-            or pending.match_source == MatchSource.LLM.value
-        )
-        matched_vid = (
-            "" if result.skip_vector_success else pending.matched_vector_id
-        )
-        apply_flywheel_after_leaf_resolution(
-            leaf=leaf,
-            original_utterance=pending.original_utterance,
-            action=pending.action,
-            match_source=pending.match_source,
-            matched_vector_id=matched_vid,
-            write_user_expression=write_expr,
-        )
         fields = leaf_intent_result(
             leaf,
             action=pending.action,
@@ -205,7 +161,19 @@ async def try_handle_pending(
             match_confidence=1.0,
             original_utterance=pending.original_utterance,
         )
-        return build_intent_response_from_fields(fields), False
+        # 确认后走批量落库或查记录模板，不再写单事件飞轮
+        extra_events = getattr(pending, "events", None) or []
+        if extra_events:
+            fields["events"] = extra_events
+        fields["op"] = getattr(pending, "op", None) or fields.get("op")
+        fields["remark_keyword"] = getattr(pending, "remark_keyword", None)
+        executed = await _execute_after_confirm(
+            fields,
+            device_no=pending.device_no,
+            user_input=pending.original_utterance,
+            full_events=full_events,
+        )
+        return build_intent_response_from_fields(executed), False
 
     if result.status == ResolveStatus.ASK_AGAIN:
         # 更新 pending 选项（可能缩小）
@@ -324,6 +292,8 @@ def postprocess_feeding_result(
             matched_vector_id=matched_vector_id,
             device_no=device_no,
             model_config=model_config,
+            events=events,
+            op=intent_result.get("op") or "create",
         )
         # 多事件确认话术覆盖
         names = "、".join(
@@ -334,6 +304,8 @@ def postprocess_feeding_result(
             if names
             else pending.clarify_message
         )
+        pending.events = events  # type: ignore[attr-defined]
+        pending.op = intent_result.get("op") or "create"  # type: ignore[attr-defined]
         clarification_store.set(pending)
         return response_from_pending(pending)
 
@@ -381,6 +353,10 @@ def postprocess_feeding_result(
                 matched_vector_id=matched_vector_id,
                 device_no=device_no,
                 model_config=model_config,
+                events=intent_result.get("events") or [],
+                op=intent_result.get("op") or "",
+                remark_keyword=intent_result.get("remark_keyword") or "",
+                confirm_message=intent_result.get("confirm_message"),
             )
             return response_from_pending(pending)
 
@@ -393,3 +369,38 @@ def postprocess_feeding_result(
         "conversation_id": None,
     }
     return build_intent_response_from_fields(fields)
+
+
+async def _execute_after_confirm(
+    fields: Dict[str, Any],
+    *,
+    device_no: str,
+    user_input: str,
+    full_events: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """确认通过后执行 batch 或查记录模板。"""
+    from app.feeding.graphs.nodes.execute_history_crud import execute_history_crud
+    from app.feeding.graphs.nodes.speak_history import speak_history
+    from app.feeding.services.history_crud import infer_op
+    from app.shared.constants import IntentOp
+
+    state = {
+        "intent_result": fields,
+        "device_no": device_no,
+        "user_input": user_input,
+        "event_dictionary_full": full_events,
+        "event_dictionary": full_events,
+        "need_confirm": False,
+    }
+    op = infer_op(fields)
+    if op == IntentOp.READ.value or fields.get("target_type") == TargetType.HISTORY.value:
+        out = await speak_history(state)
+    elif op in (IntentOp.CREATE.value, IntentOp.UPDATE.value, IntentOp.DELETE.value):
+        out = await execute_history_crud(state)
+    else:
+        return fields
+    merged = dict(fields)
+    merged.update(out.get("intent_result") or {})
+    if out.get("response"):
+        merged["content"] = out["response"]
+    return merged

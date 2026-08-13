@@ -127,6 +127,10 @@ class PendingClarification:
     parent_name: str = ""
     device_no: str = ""
     model_config: Dict[str, Any] = field(default_factory=dict)
+    # 多事件确认与查记录备注：确认后整份执行
+    events: List[Dict[str, Any]] = field(default_factory=list)
+    op: str = ""
+    remark_keyword: str = ""
 
 
 @dataclass
@@ -261,6 +265,10 @@ def create_leaf_confirm_pending(
     device_no: str = "",
     model_config: Optional[Dict[str, Any]] = None,
     conversation_id: Optional[str] = None,
+    events: Optional[List[Dict[str, Any]]] = None,
+    op: str = "",
+    remark_keyword: str = "",
+    confirm_message: Optional[str] = None,
 ) -> PendingClarification:
     """创建叶子确认 pending（自由文本是/否）。"""
     cid = conversation_id or str(uuid4())
@@ -272,7 +280,7 @@ def create_leaf_confirm_pending(
             "extra_names": _extra_name_list(leaf),
         }
     ]
-    message = build_leaf_confirm_message(event_name, action)
+    message = confirm_message or build_leaf_confirm_message(event_name, action)
     pending = PendingClarification(
         kind=ConfirmType.LEAF_CONFIRM.value,
         conversation_id=cid,
@@ -285,6 +293,9 @@ def create_leaf_confirm_pending(
         matched_vector_id=matched_vector_id or "",
         device_no=device_no or "",
         model_config=model_config or {},
+        events=events or [],
+        op=op or "",
+        remark_keyword=remark_keyword or "",
     )
     clarification_store.set(pending)
     return pending
@@ -663,7 +674,9 @@ def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
         "quantity": pending.quantity,
         "keywords": [],
         "content": pending.clarify_message,
-        "events": [],
+        "events": pending.events or [],
+        "op": pending.op or None,
+        "remark_keyword": pending.remark_keyword or None,
         "match_confidence": None,
         "match_source": pending.match_source,
         "need_confirm": True,

@@ -22,6 +22,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
+from app.shared.history_window import enum_to_unix, now_unix
 from app.feeding.services.event_cache import event_cache
 from app.shared.baby_age import age_band_from_months
 from app.shared.companion_session import (
@@ -37,6 +38,17 @@ from app.tip.graphs.tip_graph import tip_graph
 from app.tip.schemas.tip import TipRequest, TipStreamResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _tip_now() -> int:
+    """当前 Unix 秒，供 tip 拉近 7 天史。"""
+    return now_unix()
+
+
+def _tip_week_start() -> int:
+    """近 7 天起点 Unix 秒。"""
+    start, _ = enum_to_unix("last_7_days")
+    return start
 
 router = APIRouter(prefix="/tip", tags=["事件开场陪伴"])
 
@@ -73,7 +85,8 @@ async def tip_stream(request: TipRequest):
         "chat_context": chat_context,
         "data_requirement": {
             "event_ids": [request.event_id],
-            "time_range": "last_7_days",
+            "start_time": _tip_week_start(),
+            "end_time": _tip_now(),
             "limit": 20,
         },
     }

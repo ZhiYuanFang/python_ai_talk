@@ -2,23 +2,24 @@
 意图分析图定义
 
 业务说明：
-使用 LangGraph 定义意图分析的状态图，协调向量匹配、意图分类与 clinic agent。
-history / conversation / suggest 均走 call_clinic_agent（查记录由 clinic 拉历史答题）。
-节点经 with_node_thinking 推送 custom thinking，供流式 astream 与非流式 ainvoke 共用。
-
-确认/消歧改为同一 /intent + conversation_id 的 pending 自由文本续聊。
+缓存 → 可选备注探针 → 分类 → 确认 END / 批量落库 / 模板查记录。
+不再调用 clinic agent，feeding 不得导入 clinic。
 """
 
 import logging
 
 from langgraph.graph import StateGraph, START, END
 
-from app.feeding.graphs.nodes.call_clinic_agent import call_clinic_agent
 from app.feeding.graphs.nodes.classify_intent import classify_intent
+from app.feeding.graphs.nodes.execute_history_crud import execute_history_crud
 from app.feeding.graphs.nodes.match_event_by_vector import match_event_by_vector
+from app.feeding.graphs.nodes.match_intent_cache import match_intent_cache
+from app.feeding.graphs.nodes.remark_probe import remark_probe
+from app.feeding.graphs.nodes.speak_history import speak_history
 from app.feeding.graphs.nodes.thinking_messages import get_thinking_message
 from app.feeding.graphs.states.intent_state import IntentState
-from app.shared.constants import MatchSource, TargetType
+from app.feeding.services.history_crud import infer_op
+from app.shared.constants import IntentOp, MatchSource, TargetType
 from app.shared.graphs.node_thinking import with_node_thinking
 
 logger = logging.getLogger(__name__)
@@ -26,52 +27,40 @@ logger = logging.getLogger(__name__)
 State = IntentState
 
 
+def route_after_cache(state: State) -> str:
+    """缓存命中 CRUD 则执行或查记录；否则探针。"""
+    if not state.get("intent_cache_hit"):
+        return "remark_probe"
+    op = infer_op(state.get("intent_result") or {})
+    if op == IntentOp.READ.value:
+        return "speak_history"
+    if op in (IntentOp.CREATE.value, IntentOp.UPDATE.value, IntentOp.DELETE.value):
+        return "execute_history_crud"
+    return "end"
+
+
 def route_after_vector_match(state: State) -> str:
-    """
-    向量匹配后的路由决策（供图条件边使用）。
-
-    - match_source 为 llm：降级至 LLM 分类
-    - 否则 END（含高置信直接结果、中置信 need_confirm，由路由层 pending 处理）
-    """
+    """向量仅作单一 create 快路径；否则分类。"""
     match_source = state.get("match_source", MatchSource.LLM.value)
-    need_confirm = state.get("need_confirm", False)
-
-    logger.info(
-        f"向量匹配后路由决策: match_source={match_source}, "
-        f"need_confirm={need_confirm}"
-    )
-
     if match_source == MatchSource.LLM.value:
         return "classify_intent"
-    return "end"
+    if state.get("need_confirm"):
+        return "end"
+    return "execute_history_crud"
 
 
 def route_after_classify(state: State) -> str:
-    """
-    意图分类后的路由决策（供图条件边使用）。
-
-    - feeding（含 multi）：END，由路由层做叶子校验/消歧/软确认
-    - history / conversation / suggest：clinic agent
-    - exit / 其他：直接结束
-    """
-    intent_result = state.get("intent_result") or {}
-    target_type = intent_result.get("target_type", TargetType.CONVERSATION.value)
-
-    logger.info(f"意图分类后路由决策: target_type={target_type}")
-
-    if target_type == TargetType.FEEDING.value:
+    """分类后：确认则 END；read 模板；CUD 落库；其余 END。"""
+    if state.get("need_confirm"):
         return "end"
-    if target_type in (
-        TargetType.HISTORY.value,
-        TargetType.CONVERSATION.value,
-        TargetType.SUGGEST.value,
-    ):
-        return "call_clinic_agent"
+    intent = state.get("intent_result") or {}
+    op = infer_op(intent)
+    target = intent.get("target_type", TargetType.CONVERSATION.value)
+    if op == IntentOp.READ.value or target == TargetType.HISTORY.value:
+        return "speak_history"
+    if op in (IntentOp.CREATE.value, IntentOp.UPDATE.value, IntentOp.DELETE.value):
+        return "execute_history_crud"
     return "end"
-
-
-_route_after_vector_match = route_after_vector_match
-_route_after_classify = route_after_classify
 
 
 def _wrap(name: str, fn):
@@ -79,40 +68,58 @@ def _wrap(name: str, fn):
 
 
 def build_intent_graph() -> StateGraph:
-    """构建意图分析图（history 并入 clinic agent）。"""
+    """构建意图分析图（无 clinic）。"""
     graph = StateGraph(State)
 
+    graph.add_node("match_intent_cache", _wrap("match_intent_cache", match_intent_cache))
+    graph.add_node("remark_probe", _wrap("remark_probe", remark_probe))
     graph.add_node(
         "match_event_by_vector",
         _wrap("match_event_by_vector", match_event_by_vector),
     )
     graph.add_node("classify_intent", _wrap("classify_intent", classify_intent))
-    graph.add_node("call_clinic_agent", _wrap("call_clinic_agent", call_clinic_agent))
+    graph.add_node(
+        "execute_history_crud",
+        _wrap("execute_history_crud", execute_history_crud),
+    )
+    graph.add_node("speak_history", _wrap("speak_history", speak_history))
 
-    graph.add_edge(START, "match_event_by_vector")
-
+    graph.add_edge(START, "match_intent_cache")
+    graph.add_conditional_edges(
+        "match_intent_cache",
+        route_after_cache,
+        {
+            "remark_probe": "remark_probe",
+            "speak_history": "speak_history",
+            "execute_history_crud": "execute_history_crud",
+            "end": END,
+        },
+    )
+    graph.add_edge("remark_probe", "match_event_by_vector")
     graph.add_conditional_edges(
         "match_event_by_vector",
         route_after_vector_match,
         {
             "classify_intent": "classify_intent",
+            "execute_history_crud": "execute_history_crud",
             "end": END,
         },
     )
-
     graph.add_conditional_edges(
         "classify_intent",
         route_after_classify,
         {
             "end": END,
-            "call_clinic_agent": "call_clinic_agent",
+            "speak_history": "speak_history",
+            "execute_history_crud": "execute_history_crud",
         },
     )
+    graph.add_edge("execute_history_crud", END)
+    graph.add_edge("speak_history", END)
 
-    graph.add_edge("call_clinic_agent", END)
-
-    logger.info("意图分析图构建完成（thinking 包装；history→clinic agent）")
+    logger.info("意图分析图构建完成（缓存/探针/分类/落库/模板查记录）")
     return graph.compile()
 
 
 intent_graph = build_intent_graph()
+

@@ -8,6 +8,7 @@
 包含的子路由：
 - /health：健康检查
 - /analyze/intent：意图分析
+- /clinic：智能陪伴（非流式，返回 answer/answer_id）
 - /clinic/stream：智能陪伴续聊（流式；与 tip 共享 device_no 会话）
 - /tip/stream：事件开场陪伴（流式；写入共享会话，可供 clinic 续聊）
 - /care-alert/analyze：护理留意日分析（Go 内调）

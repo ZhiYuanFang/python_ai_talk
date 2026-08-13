@@ -23,7 +23,7 @@ from app.feeding.graphs.nodes.prompts.intent_classification import (
 )
 from app.feeding.schemas.intent import IntentResponse
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
-from app.shared.constants import EventType, IntentAction, MatchSource, TargetType
+from app.shared.constants import IntentAction, MatchSource, TargetType
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 # 初始化日志记录器
@@ -140,8 +140,11 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     try:
-        # 构建提示词
-        system_prompt = build_intent_classification_system_prompt(event_dictionary)
+        # 构建提示词（可带备注探针一行摘要，让模型把 AD 认成已有事件备注）
+        system_prompt = build_intent_classification_system_prompt(
+            event_dictionary,
+            remark_probe_hint=str(state.get("remark_probe_hint") or ""),
+        )
         user_message = build_intent_classification_user_message(text)
 
         response = await llm_client.invoke(
@@ -163,13 +166,14 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
                 intent_result["event_id"] = matched_event["event_id"]
                 intent_result["is_new_event"] = False
             else:
-                # 未匹配到已有事件，标记为新事件
-                intent_result["is_new_event"] = True
-                # 确保 event_type 和 event_unit 有值
-                if not intent_result.get("event_type"):
-                    intent_result["event_type"] = EventType.ONE.value
-                if not intent_result.get("event_unit"):
-                    intent_result["event_unit"] = "次"
+                # 禁止新建事件：记入 missing，不当新类型
+                intent_result["is_new_event"] = False
+                missing = list(intent_result.get("missing_events") or [])
+                name = intent_result.get("event_name") or ""
+                if name and name not in missing:
+                    missing.append(name)
+                intent_result["missing_events"] = missing
+                intent_result["event_id"] = ""
         elif intent_result.get("event_id"):
             # 匹配到已有事件
             intent_result["is_new_event"] = False
@@ -199,6 +203,10 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         intent_result.setdefault("event_type", None)
         intent_result.setdefault("event_unit", None)
         intent_result.setdefault("is_new_event", False)
+        intent_result.setdefault("op", "")
+        intent_result.setdefault("remark_keyword", state.get("remark_keyword") or "")
+        intent_result.setdefault("event_ids", [])
+        intent_result.setdefault("missing_events", [])
         intent_result.setdefault("match_source", MatchSource.LLM.value)
         intent_result.setdefault("match_confidence", 1.0)
         intent_result.setdefault("keywords", [])
@@ -221,21 +229,43 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
                     if event_quantity is not None:
                         event["quantity"] = event_quantity
 
+        # 分类默认先确认；闲聊/退出不确认
+        op = (intent_result.get("op") or "").strip().lower()
+        if not op:
+            if intent_result.get("target_type") == TargetType.HISTORY.value:
+                op = "read"
+            elif intent_result.get("action") == IntentAction.SEARCH.value:
+                op = "read"
+            elif intent_result.get("target_type") == TargetType.FEEDING.value:
+                op = "create"
+        intent_result["op"] = op
+        if op == "read":
+            intent_result["target_type"] = TargetType.HISTORY.value
+            intent_result["action"] = IntentAction.SEARCH.value
+        need_confirm = bool(intent_result.get("need_confirm", True))
+        if intent_result.get("target_type") in (
+            TargetType.CONVERSATION.value,
+            TargetType.EXIT.value,
+        ):
+            need_confirm = False
+        # 多事件一律软确认
+        if intent_result.get("action") == IntentAction.MULTI.value:
+            need_confirm = True
+
         logger.info(
-            f"意图分类完成: target_type={intent_result['target_type']}, "
+            f"意图分类完成: op={op}, target_type={intent_result['target_type']}, "
             f"action={intent_result['action']}, "
             f"event_name={intent_result['event_name']}, "
             f"event_id={intent_result['event_id']}, "
-            f"quantity={intent_result.get('quantity')}, "
-            f"event_type={intent_result.get('event_type')}, "
-            f"event_unit={intent_result.get('event_unit')}, "
-            f"is_new_event={intent_result.get('is_new_event')}"
+            f"need_confirm={need_confirm}"
         )
 
         return {
             "intent_result": intent_result,
-            "match_confidence": 1.0,  # LLM 分类的置信度默认为 1.0
+            "match_confidence": 1.0,
             "match_source": MatchSource.LLM.value,
+            "need_confirm": need_confirm,
+            "confirm_message": intent_result.get("confirm_message") or "",
         }
 
     except Exception as e:

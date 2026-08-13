@@ -252,6 +252,7 @@ class HttpClient:
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
         limit: Optional[int] = None,
+        remark: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         按条件筛选历史记录
@@ -268,6 +269,7 @@ class HttpClient:
             start_time: 开始时间戳（Unix秒，可选）
             end_time: 结束时间戳（Unix秒，可选）
             limit: 返回数量上限（可选，默认100）
+            remark: 备注模糊关键词（可选；空则不按备注过滤）
 
         Returns:
             筛选后的历史事件列表
@@ -300,6 +302,10 @@ class HttpClient:
         if limit is not None:
             params["limit"] = limit
 
+        # 备注模糊：Go 侧排除空/NULL 行，并与 eventIds AND
+        if remark and str(remark).strip():
+            params["remark"] = str(remark).strip()
+
         try:
             # 发起 GET 请求
             response = await self._client.get(url, params=params)
@@ -316,6 +322,48 @@ class HttpClient:
                 f"筛选历史记录失败: device_no={device_no}, "
                 f"event_ids={event_ids}, error={str(e)}"
             )
+            raise
+
+    async def batch_history_events(
+        self,
+        device_no: str,
+        items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        一次批量增/改/删/结束历史记录。
+
+        业务逻辑：
+        调用 history-service POST /device/history/api/event/batch。
+        部分成功时仍返回 200，results[] 带每条 ok/reason/id。
+        Python 不直连数据库。
+
+        Args:
+            device_no: 设备编号
+            items: 操作列表，每项含 op/action/eventId 等（camel 与 Go 契约对齐）
+
+        Returns:
+            results 列表（index/ok/reason/id）
+
+        Raises:
+            httpx.HTTPError: HTTP 请求失败
+        """
+        self._ensure_initialized()
+        url = f"{settings.history_service_url}/device/history/api/event/batch"
+        try:
+            response = await self._client.post(
+                url,
+                json={"deviceNo": device_no, "items": items},
+            )
+            response.raise_for_status()
+            payload = self._unwrap_go_data(response.json())
+            if isinstance(payload, dict):
+                results = payload.get("results") or []
+                if isinstance(results, list):
+                    return results
+            logger.warning(f"批量写历史 data 格式异常: device_no={device_no}")
+            return []
+        except httpx.HTTPError as e:
+            logger.error(f"批量写历史失败: device_no={device_no}, error={str(e)}")
             raise
 
     async def get_baby_profile(self, device_no: str) -> Optional[Dict[str, Any]]:

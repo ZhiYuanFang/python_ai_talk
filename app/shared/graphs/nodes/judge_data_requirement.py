@@ -108,10 +108,22 @@ async def judge_data_requirement(state: Dict[str, Any]) -> Dict[str, Any]:
             limit = 500
         requirement["limit"] = limit
 
+        # 调用拉史前换成 unix，不再把枚举原样传给 filter
+        from app.shared.history_window import enum_to_unix
+
+        start_u, end_u = enum_to_unix(str(requirement.get("time_range") or "last_7_days"))
+        requirement["start_time"] = start_u
+        requirement["end_time"] = end_u
+
     except Exception as e:
         # LLM 调用失败，使用默认配置
         logger.error(f"数据需求判断 LLM 调用失败: {str(e)}")
         requirement = DEFAULT_DATA_REQUIREMENT.copy()
+        from app.shared.history_window import enum_to_unix
+
+        start_u, end_u = enum_to_unix(str(requirement.get("time_range") or "last_7_days"))
+        requirement["start_time"] = start_u
+        requirement["end_time"] = end_u
 
     return {"data_requirement": requirement}
 

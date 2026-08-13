@@ -24,6 +24,15 @@ class IntentAction(str, Enum):
     MULTI = "multi"
 
 
+class IntentOp(str, Enum):
+    """意图 CRUD 轴（IntentResponse.op）。"""
+
+    CREATE = "create"
+    READ = "read"
+    UPDATE = "update"
+    DELETE = "delete"
+
+
 class TargetType(str, Enum):
     """意图目标类型（IntentResponse.target_type）。"""
 

@@ -81,6 +81,8 @@ class IntentEvent(BaseModel):
     event_name: str = Field("", description="事件名称")
     event_id: str = Field("", description="事件ID")
     quantity: Optional[int] = Field(default=None, description="从用户输入中提取的数量值")
+    history_id: Optional[int] = Field(default=None, description="本轮解析或落库的历史行 id，不进飞轮")
+    remark: Optional[str] = Field(default=None, description="备注")
 
 
 class IntentResponse(BaseModel):
@@ -93,6 +95,18 @@ class IntentResponse(BaseModel):
     """
     target_type: str = Field(..., description="目标类型：feeding, history, suggest, conversation, exit")
     action: str = Field(..., description="动作类型：start, end, one, search, suggestion, reply, exit, multi")
+    op: Optional[str] = Field(
+        default=None,
+        description="CRUD 操作：create|read|update|delete；空表示闲聊/退出",
+    )
+    remark_keyword: Optional[str] = Field(
+        default=None,
+        description="查记录备注关键词，如 AD",
+    )
+    missing_events: List[str] = Field(
+        default_factory=list,
+        description="字典外、未落库的名称",
+    )
     event_name: str = Field("", description="事件名称（喂养场景，单事件时使用）")
     event_id: str = Field("", description="事件ID（喂养场景，单事件时使用）")
     quantity: Optional[int] = Field(default=None, description="从用户输入中提取的数量值（Python 前置提取）")
@@ -176,8 +190,18 @@ class ClinicRequest(BaseModel):
             description="设备编号（内部契约 snake_case，可过渡双收 camel）",
         ),
     ]
-    # 流式必带：Go 一律传入（VIP 付费或非 VIP 自选流式型号）；Python 不保底
-    model: ModelConfig = Field(..., description="流式调用模型（必填，不走保底）")
+    # 流式必带；非流式 /v1/clinic 可省略，走保底序
+    model: Optional[ModelConfig] = Field(
+        default=None,
+        description="调用模型；非流式可省略走保底",
+    )
+
+
+class ClinicSyncResponse(BaseModel):
+    """非流式陪伴响应：answer + 可选 answer_id。"""
+
+    answer: str = Field(..., description="陪伴回答")
+    answer_id: Optional[str] = Field(default=None, description="回答 ID，供反馈")
 
 
 class ClinicStreamResponse(BaseModel):
