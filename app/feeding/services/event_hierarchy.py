@@ -57,6 +57,38 @@ def get_children(
     ]
 
 
+def get_descendant_leaves(
+    parent_id: Any, events: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    递归收集父事件下全部叶子。
+
+    业务逻辑：
+    父下面还有父时，不停留在中间节点，一直收到真正可落库/可拉史的叶子。
+    用 seen 防止字典环导致死循环。
+    """
+    if parent_id is None or parent_id == "":
+        return []
+    parents = parent_id_set(events)
+    leaves: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+
+    def _walk(pid: str) -> None:
+        # 逐层走直接子节点：子仍是父则继续，否则收入叶子
+        for child in get_children(pid, events):
+            cid = str(child.get("event_id") or "")
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            if cid in parents:
+                _walk(cid)
+            else:
+                leaves.append(child)
+
+    _walk(str(parent_id))
+    return leaves
+
+
 def get_event_by_id(
     event_id: Any, events: List[Dict[str, Any]]
 ) -> Optional[Dict[str, Any]]:

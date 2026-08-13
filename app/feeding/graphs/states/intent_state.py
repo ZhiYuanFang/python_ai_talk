@@ -56,6 +56,7 @@ class IntentState(TypedDict, total=False):
     match_confidence: float            # 向量匹配置信度（0-1之间，值越大越相似）
     match_source: str                  # 匹配来源（"vector"表示向量匹配，"llm"表示LLM分类）
     matched_vector_id: str             # 匹配到的向量记录ID（用于删除操作）
+    intent_cache_hit: bool             # 本轮是否意图缓存高置信命中
 
     # 澄清相关字段（同一 /intent 续聊）
     need_confirm: bool                 # 是否需要用户澄清

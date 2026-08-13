@@ -131,6 +131,10 @@ class PendingClarification:
     events: List[Dict[str, Any]] = field(default_factory=list)
     op: str = ""
     remark_keyword: str = ""
+    # 查记录确认后仍要用分类给出的 unix 窗与原始 event_ids（可能是父 id）
+    start_time: Any = None
+    end_time: Any = None
+    event_ids: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -201,13 +205,97 @@ def build_parent_disambiguation_message(
 def build_leaf_confirm_message(
     event_name: str, action: str = IntentAction.ONE.value
 ) -> str:
-    """生成叶子事件确认问句（自由文本回应）。"""
+    """生成叶子事件确认问句（自由文本回应）。单事件用开始/结束/记录，不改查记录点名。"""
     action_desc = {
         IntentAction.START.value: "开始记录",
         IntentAction.END.value: "结束记录",
         IntentAction.ONE.value: "记录",
     }.get(action, "记录")
     return f"您是要{action_desc}「{event_name}」吗？请回复确认或取消，也可直接说明具体事件。"
+
+
+def _action_verb_for_confirm(action: str) -> str:
+    """
+    多事件确认用的短动作词。
+
+    业务说明：end→结束，start→开始，其余→记录。必须点出动作，不能只说「记录以下事件」。
+    """
+    a = (action or "").strip().lower()
+    if a == IntentAction.END.value:
+        return "结束"
+    if a == IntentAction.START.value:
+        return "开始"
+    return "记录"
+
+
+def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
+    """
+    多事件确认问句：逐项点出动作与字典名。
+
+    例：您是要结束「爬练习」并开始「坐练习」吗？请回复确认或取消。
+    禁止「记录以下事件：爬练习、坐练习」。
+    """
+    parts: List[str] = []
+    for ev in events or []:
+        if not isinstance(ev, dict):
+            continue
+        name = str(ev.get("event_name") or "").strip()
+        if not name:
+            continue
+        verb = _action_verb_for_confirm(str(ev.get("action") or ""))
+        parts.append(f"{verb}「{name}」")
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        body = parts[0]
+    elif len(parts) == 2:
+        body = f"{parts[0]}并{parts[1]}"
+    else:
+        body = "、".join(parts[:-1]) + "并" + parts[-1]
+    return f"您是要{body}吗？请回复确认或取消。"
+
+
+def resolve_event_display_name(
+    *,
+    event_id: str = "",
+    event_name: str = "",
+    events: Optional[List[Dict[str, Any]]] = None,
+    event_ids: Optional[List[Any]] = None,
+) -> str:
+    """
+    解析确认/播报用的字典事件名。
+
+    业务逻辑：
+    优先已有名称；空则按 event_id 回查字典；再退到 event_ids[0]。
+    禁止把空名说成「该事件」。
+    """
+    name = (event_name or "").strip()
+    if name:
+        return name
+    eid = str(event_id or "").strip()
+    if not eid and event_ids:
+        for item in event_ids:
+            if item not in (None, ""):
+                eid = str(item)
+                break
+    if eid and events:
+        found = get_event_by_id(eid, events)
+        if found:
+            return str(found.get("event_name") or "").strip()
+    return ""
+
+
+def build_history_confirm_message(event_name: str) -> str:
+    """
+    生成查记录确认问句，必须点出事件名。
+
+    有名称：请确认是否查询「尿尿」的历史？
+    无名（无 id 可查时）：不使用「该事件」兜底。
+    """
+    name = (event_name or "").strip()
+    if not name:
+        return "请确认是否查询这条历史记录？请回复确认或取消。"
+    return f"请确认是否查询「{name}」的历史？请回复确认或取消。"
 
 
 def create_parent_disambiguation_pending(
@@ -269,8 +357,11 @@ def create_leaf_confirm_pending(
     op: str = "",
     remark_keyword: str = "",
     confirm_message: Optional[str] = None,
+    start_time: Any = None,
+    end_time: Any = None,
+    event_ids: Optional[List[str]] = None,
 ) -> PendingClarification:
-    """创建叶子确认 pending（自由文本是/否）。"""
+    """创建叶子确认 pending（自由文本是/否）。查记录时话术必带事件名。"""
     cid = conversation_id or str(uuid4())
     event_name = leaf.get("event_name") or ""
     options = [
@@ -280,7 +371,12 @@ def create_leaf_confirm_pending(
             "extra_names": _extra_name_list(leaf),
         }
     ]
-    message = confirm_message or build_leaf_confirm_message(event_name, action)
+    resolved_op = (op or "").strip().lower()
+    # 查记录确认一律 Python 点名，不信 LLM 的「该事件」
+    if resolved_op == "read" or action == IntentAction.SEARCH.value:
+        message = build_history_confirm_message(event_name)
+    else:
+        message = confirm_message or build_leaf_confirm_message(event_name, action)
     pending = PendingClarification(
         kind=ConfirmType.LEAF_CONFIRM.value,
         conversation_id=cid,
@@ -296,6 +392,9 @@ def create_leaf_confirm_pending(
         events=events or [],
         op=op or "",
         remark_keyword=remark_keyword or "",
+        start_time=start_time,
+        end_time=end_time,
+        event_ids=[str(x) for x in (event_ids or []) if x not in (None, "")],
     )
     clarification_store.set(pending)
     return pending
@@ -663,8 +762,12 @@ def try_parent_hit_from_event_id(
 
 def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
     """将 pending 转为 IntentResponse 可用字段。"""
+    # 查记录确认对外仍是 history，避免客户端当成记事件
+    is_read = (pending.op or "").strip().lower() == "read" or (
+        pending.action == IntentAction.SEARCH.value
+    )
     return {
-        "target_type": TargetType.FEEDING.value,
+        "target_type": TargetType.HISTORY.value if is_read else TargetType.FEEDING.value,
         # 澄清态由 need_confirm / confirm_type 表达；action 保留喂养 IntentAction
         "action": pending.action or IntentAction.ONE.value,
         "event_name": pending.parent_name or (

@@ -41,12 +41,12 @@ _warmup_task = None
 
 async def _periodic_cleanup():
     """
-    定期清理低质量知识的后台任务（知识飞轮）
+    定期清理低质量知识与低分意图缓存
 
     业务逻辑：
-    1. 每隔 24 小时执行一次清理任务
-    2. 调用 vector_store.cleanup_low_quality_knowledge() 清理质量分低于阈值的知识
-    3. 记录清理日志
+    1. 每隔 24 小时执行一次
+    2. 清理通识知识 quality_score 低于 0.3 的条目
+    3. 清理 feeding_intents 质量分低于 0.3 的条目，不得动知识库
     """
     while True:
         try:
@@ -55,6 +55,15 @@ async def _periodic_cleanup():
             logger.info("定期清理任务执行完成")
         except Exception as e:
             logger.error(f"定期清理任务执行失败: {str(e)}", exc_info=True)
+
+        try:
+            from app.feeding.services.intent_cache_store import intent_cache_store
+
+            logger.info("开始清理低分意图缓存...")
+            removed = intent_cache_store.cleanup_low_quality(threshold=0.3)
+            logger.info("意图缓存低分清理完成: removed=%s", removed)
+        except Exception as e:
+            logger.error(f"意图缓存清理失败: {str(e)}", exc_info=True)
 
         # 等待 24 小时后再次执行
         await asyncio.sleep(24 * 60 * 60)
@@ -96,6 +105,15 @@ async def _warmup_vector_stores():
 
         # 意图路径只使用 feeding_intents；不再创建或填充 feeding_events
         logger.info("跳过喂养事件名向量预热（feeding_events 已拆除）")
+        # 运维开关：一次性丢掉测脏的意图缓存，不得动知识库
+        if settings.clear_feeding_intents_on_startup:
+            from app.feeding.services.intent_cache_store import intent_cache_store
+
+            intent_cache_store.reset_collection()
+            logger.warning(
+                "CLEAR_FEEDING_INTENTS_ON_STARTUP=true，已清空 feeding_intents；"
+                "完成后请改回 false，避免每次重启丢掉飞轮"
+            )
 
         logger.info("向量存储后台预热完成")
 

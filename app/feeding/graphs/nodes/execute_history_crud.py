@@ -4,6 +4,7 @@
 业务说明：
 已确认（或高置信免确认）的 create/update/delete 走一条 batch，
 用模板填写 content，成功后写意图缓存。
+提交前将 end 项排到 create 前面。
 """
 
 from __future__ import annotations
@@ -17,8 +18,12 @@ from app.feeding.services.history_crud import (
     infer_op,
     render_persist_content,
     rewrite_standalone_document,
+    sort_end_items_first,
 )
-from app.feeding.services.intent_cache_store import intent_cache_store
+from app.feeding.services.intent_cache_store import (
+    intent_cache_store,
+    last_cache_turn_store,
+)
 from app.shared.constants import IntentOp
 
 logger = logging.getLogger(__name__)
@@ -43,6 +48,8 @@ async def execute_history_crud(state: Dict[str, Any]) -> Dict[str, Any]:
     device_no = state.get("device_no") or ""
     full_events = state.get("event_dictionary_full") or state.get("event_dictionary") or []
     items, missing = collect_event_items(intent, full_events)
+    # 提交前再排一次：end 必须在 create 前面，不依赖模型顺序
+    items = sort_end_items_first(items)
     intent["missing_events"] = missing
     intent["op"] = op
     # 改/删缓存不带 history_id：按事件现查最近一条再写
@@ -106,6 +113,13 @@ async def execute_history_crud(state: Dict[str, Any]) -> Dict[str, Any]:
                 "remark_keyword": intent.get("remark_keyword"),
             },
         )
+        # 缓存免确认执行成功后记下短窗
+        if state.get("intent_cache_hit"):
+            last_cache_turn_store.remember(
+                device_no,
+                state.get("user_input") or "",
+                str(state.get("matched_vector_id") or ""),
+            )
     logger.info(f"落库回执: {content}")
     return {"intent_result": intent, "response": content}
 

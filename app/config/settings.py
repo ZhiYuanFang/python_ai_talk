@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     qa_quality_min: float = 0.7
     rewrite_timeout_s: float = 5.0
 
+    # 启动一次性清空意图缓存 feeding_intents（默认关；清完务必改回 false）
+    clear_feeding_intents_on_startup: bool = False
+
 
 # 创建全局配置实例
 settings = Settings()

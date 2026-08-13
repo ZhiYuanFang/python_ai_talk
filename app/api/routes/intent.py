@@ -8,7 +8,7 @@
 
 import json
 import logging
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
 from fastapi import APIRouter
@@ -16,16 +16,16 @@ from fastapi.responses import StreamingResponse
 
 from app.feeding.graphs.intent_graph import intent_graph
 from app.feeding.schemas.intent import IntentRequest, IntentResponse, IntentStreamResponse
-from app.feeding.services.clarification import create_leaf_confirm_pending
 from app.feeding.services.event_cache import event_cache
 from app.feeding.services.intent_pipeline import (
     build_intent_response_from_fields,
+    create_history_confirm_response,
     postprocess_feeding_result,
     response_from_pending,
     try_exact_parent_disambiguation,
     try_handle_pending,
 )
-from app.shared.constants import IntentAction, TargetType
+from app.shared.constants import TargetType
 from app.shared.graphs.stream_graph import iter_graph_custom_thinking
 
 logger = logging.getLogger(__name__)
@@ -133,27 +133,16 @@ def _response_from_final_state(
             matched_vector_id=matched_vector_id,
         )
 
-    # 查记录确认（如 AD → 营养品）
+    # 查记录确认：话术由 Python 点出事件名（叶子或父），父仍是是/否不是选叶子
     if need_confirm and target_type == TargetType.HISTORY.value:
-        pending = create_leaf_confirm_pending(
-            leaf={
-                "event_id": intent_result.get("event_id") or "",
-                "event_name": intent_result.get("event_name") or "",
-                "extra_names": [],
-            },
-            original_utterance=user_input,
-            action=IntentAction.SEARCH.value,
-            match_source=str(match_source or ""),
+        return create_history_confirm_response(
+            intent_result,
+            full_events=full_events,
+            user_input=user_input,
             device_no=device_no,
             model_config=model_config,
-            events=intent_result.get("events") or [],
-            op="read",
-            remark_keyword=intent_result.get("remark_keyword") or "",
-            confirm_message=intent_result.get("confirm_message")
-            or final_state.get("confirm_message")
-            or "请确认是否查询该事件的历史？",
+            match_source=str(match_source or ""),
         )
-        return response_from_pending(pending)
 
     response = _build_intent_response(intent_result)
     llm_response = final_state.get("response", "")

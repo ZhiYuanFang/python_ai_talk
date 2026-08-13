@@ -2,7 +2,8 @@
 意图分类节点
 
 业务说明：
-使用 LLM 对用户输入进行意图分类，识别增删改查与事件叶子。
+使用 LLM 对用户输入进行意图分类，识别增删改查。
+提示词注入全量树（父+叶子）；记事件仍落到叶子，查记录可输出父 id。
 意图缓存未命中后的唯一语义入口（不再经事件名向量）。
 
 设计思路：
@@ -21,7 +22,6 @@ from app.feeding.graphs.nodes.prompts.intent_classification import (
     build_intent_classification_system_prompt,
     build_intent_classification_user_message,
 )
-from app.feeding.schemas.intent import IntentResponse
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
 from app.shared.constants import IntentAction, MatchSource, TargetType
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
@@ -34,28 +34,29 @@ def _match_feeding_event(
     event_name: str, event_dictionary: list[dict[str, Any]]
 ) -> Optional[dict[str, Any]]:
     """
-    在事件字典中匹配事件
+    在事件字典（全量树，含父）中匹配事件。
 
     业务逻辑：
-    1. 遍历事件字典，查找名称完全匹配的事件
-    2. 如果没有完全匹配，尝试查找名称包含关系
+    1. 先精确匹配名称（父名如「换尿布」优先于包含匹配）
+    2. 没有完全匹配再做包含关系
     3. 返回匹配到的事件信息
 
     Args:
         event_name: LLM 识别出的事件名称
-        event_dictionary: 事件字典列表
+        event_dictionary: 全量事件字典列表
 
     Returns:
         匹配到的事件字典，未匹配到时返回 None
     """
     # 首先尝试精确匹配
     for event in event_dictionary:
-        if event["event_name"] == event_name:
+        if event.get("event_name") == event_name:
             return event
 
     # 尝试包含匹配
     for event in event_dictionary:
-        if event_name in event["event_name"] or event["event_name"] in event_name:
+        en = event.get("event_name") or ""
+        if event_name and en and (event_name in en or en in event_name):
             return event
 
     return None
@@ -112,7 +113,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     2. 构建系统提示词和用户消息
     3. 调用 LLM 进行意图分类
     4. 解析 LLM 返回的结构化 JSON 结果
-    5. 处理新事件场景：当事件不在可用列表中时，使用 LLM 返回的 event_type 和 event_unit
+    5. 忽略 LLM 返回的 event_type，计时与否以事件字典为准
     6. 优先使用向量匹配已提取的数量，未提取到时尝试本地提取作为 fallback
     7. 根据匹配情况设置 need_confirm 标志
 
@@ -124,7 +125,10 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     # 业务说明：路由注入 user_input / model_config，与 IntentState 对齐；兼容旧字段 text / model
     text = state.get("user_input") or state.get("text", "")
-    event_dictionary = state.get("event_dictionary", [])
+    # 分类必须看见父名；叶子视图不够匹配「换尿布」
+    event_dictionary = (
+        state.get("event_dictionary_full") or state.get("event_dictionary") or []
+    )
     device_no = state.get("device_no", "")
 
     # 优先 model_config，兼容旧字段 model；空则纯保底序
@@ -200,7 +204,8 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         intent_result.setdefault("event_name", "")
         intent_result.setdefault("event_id", "")
         intent_result.setdefault("quantity", None)
-        intent_result.setdefault("event_type", None)
+        # 类型以字典为准，不采信模型返回的 event_type
+        intent_result["event_type"] = None
         intent_result.setdefault("event_unit", None)
         intent_result.setdefault("is_new_event", False)
         intent_result.setdefault("op", "")
@@ -214,9 +219,13 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         intent_result.setdefault("events", [])
 
         # 多事件场景处理
-        if intent_result.get("action") == IntentAction.MULTI.value and intent_result.get("events"):
-            # 为多事件中的每个事件匹配 event_id
+        if intent_result.get("events"):
+            # 为多事件中的每个事件匹配 event_id；去掉模型误填的类型
             for event in intent_result["events"]:
+                if not isinstance(event, dict):
+                    continue
+                # 去掉模型误填的类型，落库只认字典
+                event.pop("event_type", None)
                 if event.get("event_name") and not event.get("event_id"):
                     matched = _match_feeding_event(event["event_name"], event_dictionary)
                     if matched:
@@ -228,6 +237,12 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
                     event_quantity = extract_quantity_from_text(text)
                     if event_quantity is not None:
                         event["quantity"] = event_quantity
+            # 复合切换漏标 multi 时，按子项数量补上，确认话术才能带动作
+            if (
+                len(intent_result["events"]) > 1
+                and intent_result.get("action") != IntentAction.MULTI.value
+            ):
+                intent_result["action"] = IntentAction.MULTI.value
 
         # 分类默认先确认；闲聊/退出不确认
         op = (intent_result.get("op") or "").strip().lower()
@@ -242,6 +257,12 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         if op == "read":
             intent_result["target_type"] = TargetType.HISTORY.value
             intent_result["action"] = IntentAction.SEARCH.value
+            # 点查至少要有 event_ids，便于确认后拉史与父展开
+            eid = str(intent_result.get("event_id") or "")
+            ids = [str(x) for x in (intent_result.get("event_ids") or []) if x not in (None, "")]
+            if eid and eid not in ids:
+                ids = [eid] + ids
+            intent_result["event_ids"] = ids
         # 分类一律先确认；闲聊/退出除外。免确认只留给意图缓存命中。
         target = intent_result.get("target_type")
         is_crud = op in ("create", "read", "update", "delete") or target in (

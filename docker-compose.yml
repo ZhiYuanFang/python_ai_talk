@@ -38,6 +38,8 @@ services:
       # --- 向量数据库 ---
       CHROMA_PERSIST_DIR: "${CHROMA_PERSIST_DIR:-/app/data/chroma_db}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}"
+      # --- 意图缓存一次性清空（默认关）---
+      CLEAR_FEEDING_INTENTS_ON_STARTUP: "${CLEAR_FEEDING_INTENTS_ON_STARTUP:-false}"
       # --- 护理留意全局 prompt / 反馈账本（挂载卷，重启不丢）---
       CARE_ALERT_PROMPT_DIR: "${CARE_ALERT_PROMPT_DIR:-/app/data/care_alert}"
       CARE_ALERT_EXAMPLES_MAX_CHARS: "${CARE_ALERT_EXAMPLES_MAX_CHARS:-1200}"

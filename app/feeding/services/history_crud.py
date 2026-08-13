@@ -4,6 +4,9 @@
 业务说明：
 确认后一次调用 Go batch；按结果拼用户可感知的 content。
 禁止新建事件类型；字典外名称进 missing_events。
+结束计时只交 eventId + action=end，不查进行中、不填 history_id。
+落库前按字典 event_type 盖时间：非计时 endTime=startTime。
+同一 batch 先 end 后 create。
 """
 
 from __future__ import annotations
@@ -42,12 +45,39 @@ def infer_op(intent: Dict[str, Any]) -> str:
     return ""
 
 
+def _is_timer_leaf(leaf: Dict[str, Any]) -> bool:
+    """
+    是否为计时事件：只认字典 event_type=time。
+
+    业务说明：缺省或 one/number 一律当非计时，避免被记成进行中。
+    不采信 LLM 返回的 event_type。
+    """
+    return str(leaf.get("event_type") or "").strip().lower() == "time"
+
+
+def sort_end_items_first(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    同一 batch 先提交 end，再提交其余项。
+
+    业务说明：停爬再开坐时必须先结束，不依赖模型 events[] 顺序。
+    """
+    ends = [it for it in items if (it.get("op") or "") == "end"]
+    rest = [it for it in items if (it.get("op") or "") != "end"]
+    return ends + rest
+
+
 def collect_event_items(
     intent: Dict[str, Any],
     full_events: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
     从意图结果收集可落库子项；字典外名称进 missing。
+
+    业务逻辑：
+    - action=end 且字典为计时：op=end，history id 固定 0，不查 latest。
+    - 非计时 create：endTime=startTime，即使模型写了 start/end。
+    - 计时且非 end：create 且 endTime=0（进行中）。
+    - 返回前把 end 项排到 create 前面。
 
     Returns:
         (items, missing_names)
@@ -81,10 +111,19 @@ def collect_event_items(
             if name:
                 missing.append(name)
             continue
-        action = (ev.get("action") or intent.get("action") or IntentAction.ONE.value)
+        action = str(
+            ev.get("action") or intent.get("action") or IntentAction.ONE.value
+        ).strip().lower()
+        # 计时与否只认字典，忽略意图里 LLM 填的 event_type
+        is_timer = _is_timer_leaf(leaf)
         item_op = op
         if action == IntentAction.END.value:
-            item_op = "end"
+            if is_timer:
+                # Go 按 eventId 结束最近一条，Python 不填 history_id
+                item_op = "end"
+            elif op in (IntentOp.CREATE.value, ""):
+                # 非计时不能当计时结束，当成瞬时记录
+                item_op = "create"
         qty = ev.get("quantity")
         if qty is None:
             qty = intent.get("quantity")
@@ -92,27 +131,39 @@ def collect_event_items(
             number = int(qty) if qty is not None else 0
         except (TypeError, ValueError):
             number = 0
-        hid = ev.get("history_id")
-        try:
-            hid_int = int(hid) if hid not in (None, "") else 0
-        except (TypeError, ValueError):
+        normalized_op = item_op if item_op != IntentOp.CREATE.value else "create"
+        start_time = int(ev.get("start_time") or now)
+        if normalized_op == "end":
+            # 结束时间由 Go 补最近一条，Python 不填
             hid_int = 0
+            end_time = 0
+        elif normalized_op == "create":
+            hid_int = 0
+            # 非计时（one/number/缺省）结束时间必须等于开始时间
+            end_time = 0 if is_timer else start_time
+        else:
+            hid = ev.get("history_id")
+            try:
+                hid_int = int(hid) if hid not in (None, "") else 0
+            except (TypeError, ValueError):
+                hid_int = 0
+            end_time = int(ev.get("end_time") or 0)
         items.append(
             {
-                "op": item_op if item_op != IntentOp.CREATE.value else "create",
+                "op": normalized_op,
                 "action": action,
                 "id": hid_int,
                 "eventId": int(str(leaf.get("event_id") or eid) or 0),
                 "eventName": leaf.get("event_name") or name,
                 "eventUnit": leaf.get("event_unit") or ev.get("event_unit") or "",
                 "eventNumber": number,
-                "startTime": int(ev.get("start_time") or now),
-                "endTime": int(ev.get("end_time") or 0),
+                "startTime": start_time,
+                "endTime": end_time,
                 "remark": str(ev.get("remark") or intent.get("remark") or ""),
                 "_display_name": leaf.get("event_name") or name,
             }
         )
-    return items, missing
+    return sort_end_items_first(items), missing
 
 
 async def execute_batch(
