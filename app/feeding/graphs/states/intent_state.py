@@ -63,6 +63,9 @@ class IntentState(TypedDict, total=False):
     confirm_type: str                  # parent_disambiguation | leaf_confirm
     confirm_message: str               # 澄清话术
     conversation_id: str               # 会话 ID（续聊）
+    remark_probe_hint: str             # 备注探针一行摘要
+    in_progress_hint: str              # 进行中计时摘要（无 history id）
+    remark_keyword: str                # 字典外备注专名
 
     # 数据飞轮相关字段
     should_update_vector: bool         # 是否需要更新向量库

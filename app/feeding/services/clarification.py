@@ -205,13 +205,19 @@ def build_parent_disambiguation_message(
 def build_leaf_confirm_message(
     event_name: str, action: str = IntentAction.ONE.value
 ) -> str:
-    """生成叶子事件确认问句（自由文本回应）。单事件用开始/结束/记录，不改查记录点名。"""
+    """生成叶子事件确认问句（自由文本回应）。单事件用开始/结束/记录。"""
     action_desc = {
         IntentAction.START.value: "开始记录",
         IntentAction.END.value: "结束记录",
         IntentAction.ONE.value: "记录",
     }.get(action, "记录")
     return f"您是要{action_desc}「{event_name}」吗？请回复确认或取消，也可直接说明具体事件。"
+
+
+def build_delete_confirm_message(event_name: str) -> str:
+    """删除确认：点出事件名与删除，不说成查询历史。"""
+    name = (event_name or "").strip() or "该记录"
+    return f"您是要删除「{name}」的记录吗？请回复确认或取消。"
 
 
 def _action_verb_for_confirm(action: str) -> str:
@@ -372,9 +378,11 @@ def create_leaf_confirm_pending(
         }
     ]
     resolved_op = (op or "").strip().lower()
-    # 查记录确认一律 Python 点名，不信 LLM 的「该事件」
-    if resolved_op == "read" or action == IntentAction.SEARCH.value:
+    # 查记录确认只认 op=read，不因 action=search 把删除说成查询
+    if resolved_op == "read":
         message = build_history_confirm_message(event_name)
+    elif resolved_op == "delete":
+        message = build_delete_confirm_message(event_name)
     else:
         message = confirm_message or build_leaf_confirm_message(event_name, action)
     pending = PendingClarification(
@@ -762,10 +770,8 @@ def try_parent_hit_from_event_id(
 
 def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
     """将 pending 转为 IntentResponse 可用字段。"""
-    # 查记录确认对外仍是 history，避免客户端当成记事件
-    is_read = (pending.op or "").strip().lower() == "read" or (
-        pending.action == IntentAction.SEARCH.value
-    )
+    # 查记录确认对外仍是 history；只认 op=read，不因 action=search 误标
+    is_read = (pending.op or "").strip().lower() == "read"
     return {
         "target_type": TargetType.HISTORY.value if is_read else TargetType.FEEDING.value,
         # 澄清态由 need_confirm / confirm_type 表达；action 保留喂养 IntentAction

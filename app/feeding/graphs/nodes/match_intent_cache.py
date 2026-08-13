@@ -18,8 +18,7 @@ from app.feeding.services.intent_cache_store import (
     intent_cache_store,
     last_cache_turn_store,
 )
-from app.feeding.utils.query_utterance import looks_like_history_query
-from app.shared.constants import IntentOp, MatchSource
+from app.shared.constants import MatchSource
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +55,6 @@ def match_intent_cache(state: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("短窗重复同一问，意图缓存扣分并当未命中")
         intent_cache_store.penalize(vector_id)
         return {"intent_cache_hit": False, "match_confidence": score}
-    # 查询句若缓存成了 create，仍交给分类，避免误记
-    if looks_like_history_query(text) and payload.get("op") == IntentOp.CREATE.value:
-        logger.info("查询句命中 create 缓存，忽略")
-        return {"intent_cache_hit": False}
     intent_result = dict(payload)
     intent_result["match_source"] = "cache"
     intent_result["match_confidence"] = score

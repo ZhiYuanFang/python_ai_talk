@@ -144,10 +144,11 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     try:
-        # 构建提示词（可带备注探针一行摘要，让模型把 AD 认成已有事件备注）
+        # 构建提示词：字段含义 + 表 + 备注/进行中数据，不靠话术关键字
         system_prompt = build_intent_classification_system_prompt(
             event_dictionary,
             remark_probe_hint=str(state.get("remark_probe_hint") or ""),
+            in_progress_hint=str(state.get("in_progress_hint") or ""),
         )
         user_message = build_intent_classification_user_message(text)
 
