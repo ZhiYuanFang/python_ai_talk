@@ -46,8 +46,6 @@ services:
       CARE_ALERT_FLYWHEEL_MIN_EVIDENCE: "${CARE_ALERT_FLYWHEEL_MIN_EVIDENCE:-2}"
       CARE_ALERT_LEDGER_MAX_LINES: "${CARE_ALERT_LEDGER_MAX_LINES:-500}"
       CARE_ALERT_FLYWHEEL_TTL_DAYS: "${CARE_ALERT_FLYWHEEL_TTL_DAYS:-7}"
-      # 一次性重建 feeding_events 的 source=standard（默认 false；用完改回）
-      REBUILD_FEEDING_STANDARD_EVENTS: "${REBUILD_FEEDING_STANDARD_EVENTS:-false}"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/v1/health || exit 1"]
       interval: 10s

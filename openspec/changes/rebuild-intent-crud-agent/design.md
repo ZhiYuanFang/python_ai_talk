@@ -15,7 +15,7 @@
 
 **Goals:**
 
-- 删除单事件飞轮代码；意图缓存加速重复 CRUD（含 multi 与备注关键词）。
+- 删除单事件飞轮代码与整份 `feeding_events` 事件名向量（匹配节点 + 存储 + 字典同步）；意图缓存加速重复 CRUD（含 multi 与备注关键词）。
 - Python 确认后 **一次** 批量 HTTP 落库；回执说明成功/失败原因。
 - 查记录先定事件（或日汇总压缩）；点查带备注；字典外词（如 AD）经备注探针定为已知事件后确认再查。
 - Go 语音只透传；filter 支持备注模糊；提供可复制 DDL。
@@ -24,19 +24,22 @@
 **Non-Goals:**
 
 - 不在意图路径创建新事件类型（不做 `is_new_event` 建档）。
-- 不把标准事件字典向量整库删掉（冷启动身份辅助）。
 - 不把 clinic `companion_session` 当意图对话账本。
+- 不删知识库向量（`mother_baby_knowledge` / Q&A `source=user`）。
+- 不删意图缓存 Collection `feeding_intents`。
 - 不在本变更做 Flutter 实现。
 - 不生成测试文件。
 - 不为 `LIKE '%x%'` 假装单列 B-Tree 能加速；索引策略见决策 10。
 
 ## Decisions
 
-### 1. 删除单事件飞轮代码（不是停用开关）
+### 1. 拆除事件名向量（方案 B，不是只摘节点）
 
-- **选择**：删除 `add_user_expression`、用户表达的 `increment_match_count` / `increment_success_count`、针对用户表达的 `check_and_cleanup`，以及 `apply_flywheel_after_leaf_resolution` 中的飞轮写入。检索排除或清理 `feeding_events` 中 `source=user`。
-- **保留**：标准事件向量（字典名 + start/end/one 变体）作冷启动身份。
-- **不删**：知识库 `source=user`（Q&A / care-alert 飞轮）。
+- **选择**：意图匹配单位只剩意图缓存。删除 `match_event_by_vector`、`EventVectorStore`、Chroma `feeding_events`，以及启动 / `event_cache` / `scripts/build_vector_db.py` 对标准事件向量的初始化与同步。
+- **同时删除**：`add_user_expression`、用户表达的 `increment_*` / `check_and_cleanup`、`apply_flywheel_after_leaf_resolution` 飞轮写入（该 Collection 已不存在，写入无意义）。
+- **不删**：知识库 `source=user`（Q&A / care-alert 飞轮）；`feeding_intents`。
+- **备选否决**：只从图拿掉匹配、保留 `feeding_events` 空转同步 — 仍占磁盘与启动时间，且容易被重新接回快路径。
+- **备选否决**：保留标准事件名向量作冷启动身份 — 单位仍是单个 `event_id`，复合句/查改删仍会被 Top-1 吞掉；分类提示已含完整事件字典，不需要第二套向量身份。
 
 ### 2. 意图缓存飞轮
 
@@ -69,21 +72,17 @@ START → match_intent_cache
                             ├─ create/update/delete 已确认或免确认 → batch → 模板 → 写缓存 → END
                             ├─ read 已定事件 → fetch_history（eventIds+unix+可选 remark）→ 模板 content → END
                             ├─ conversation / exit → END
-                            └─ 不再出现 suggest / call_clinic_agent / 历史答题 LLM
+                            └─ 不再出现 suggest / call_clinic_agent / 历史答题 LLM / match_event_by_vector
 ```
 
-标准事件向量仅作身份提示或 **单一 create** 快路径：
-
-- 查询句式禁止直接 feeding（`looks_like_history_query`）。
-- 疑似多事件或缓存未命中的复合句 **MUST NOT** 因单事件高置信 END。
-- 快路径只允许明确的单次 `start|end|one`。
+图上 **MUST NOT** 注册 `match_event_by_vector`。缓存 miss 后唯一语义入口是分类（探针只注入一行备注摘要，不调 LLM）。
 
 ### 5. 何时调 LLM（意图路径）
 
 | 调用 | 何时 |
 |------|------|
 | A 改写独立句 | 仅确认且至少一条落库成功后写缓存时（一次，非每轮） |
-| B 分类 | 意图缓存未命中 |
+| B 分类 | 意图缓存未命中（含首次「喝了奶粉」；不再有事件名向量快路径） |
 | C 澄清 | 有 pending 且用户自由文本，硬匹配未命中 |
 | 备注探针 | **不调 LLM**（Go filter） |
 | 查记录播报 | **不调 LLM**（模板） |
@@ -100,7 +99,7 @@ START → match_intent_cache
 - 多事件一律软确认。
 - 父节点只消歧，永不落库。
 - 字典外名称记事件：`missing_events` + 文案，不建类型、不写 history。
-- **免确认**：高置信 **单次** create（意图缓存命中或标准事件向量高置信，且非查询、非复合）。
+- **免确认**：仅 **意图缓存高置信命中**（该独立句曾确认并至少一条落库成功）。分类 LLM 结果默认 `need_confirm`。
 - 确认后走 batch；未确认不写缓存。
 
 ### 7. Go 批量 CRUD（一条 HTTP）
@@ -218,7 +217,8 @@ Go `applyUnifiedIntentResult` 收成：
 
 ## Risks / Trade-offs
 
-- **[存量用户表达污染]** → 检索排除 `source=user` 或一次性清理；标准条目保留。
+- **[存量 feeding_events]** → 代码不再创建/查询该 Collection；磁盘残留可运维手动删 Chroma 目录中对应集合，不影响知识库。
+- **[首次 CRUD 必走 LLM]** → 可接受；第二次同类独立句走意图缓存。
 - **[改/删改错行]** → 不缓存 id；模糊时确认；无 latest 则文案说明，不写库。
 - **[TTS 与前端]** → `/intent` 恢复喂养后，仍打该 URL 的陪伴客户端会得到短闲聊。必须迁 `/v1/clinic`。
 - **[双写窗口]** → Go 先下线 voice `AddHistory`，再开 Python batch，或同版本发。
@@ -231,7 +231,7 @@ Go `applyUnifiedIntentResult` 收成：
 
 1. 运维在 history 库执行 `docs/migrations/history_remark_filter_index.sql`（可先只跑复合索引）。
 2. Go：filter `remark`、batch 接口、语音透传、成长建议改 clinic。
-3. Python：删单事件飞轮、意图缓存、同图 `/intent`、`/v1/clinic`、模板回执、探针 + 分类规则、unix 拉史对齐。
+3. Python：删单事件飞轮与 `feeding_events`、意图缓存、同图 `/intent`、`/v1/clinic`、模板回执、探针 + 分类规则、unix 拉史对齐。
 4. 前端：陪伴改 `/v1/clinic`。
 5. 回滚：恢复 Go 写库与旧 `/intent`→clinic 会重新引入双语义，只作紧急开关。
 

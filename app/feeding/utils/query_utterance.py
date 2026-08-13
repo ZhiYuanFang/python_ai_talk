@@ -2,8 +2,8 @@
 历史查询句式检测
 
 业务说明：
-含事件名的「上次/什么时候/总结最近N天」类问句易被向量高置信打成 feeding。
-在 match_event_by_vector 前提示：命中则强制降级 LLM 分类。
+含事件名的「上次/什么时候/总结最近N天」类问句应走查记录，不得记成 create。
+供备注探针与分类提示判断点查句式。
 """
 
 from __future__ import annotations

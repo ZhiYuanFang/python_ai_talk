@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: 已确认原话缓存为整份 CRUD 意图
-系统 SHALL 在用户确认（或高置信单一 create 免确认）且批量落库至少一条成功后，将 **改写后的独立问答句**（不得是「嗯/是的」等续聊词）写入独立意图缓存（不得作为 `feeding_events` 的 `source=user` 单事件表达）。缓存载荷 MUST 包含操作 `op`（`create|read|update|delete`）及 `events` 列表（可多件）；查记录可含 `remark_keyword`。系统 MUST NOT 将具体历史记录主键 `history_id` 作为改/删缓存的可复用字段写入。未确认或零条成功 MUST NOT 写缓存。
+系统 SHALL 在用户确认（或意图缓存高置信命中后直接执行）且批量落库至少一条成功后，将 **改写后的独立问答句**（不得是「嗯/是的」等续聊词）写入独立意图缓存（不得作为已拆除的 `feeding_events` 单事件表达）。缓存载荷 MUST 包含操作 `op`（`create|read|update|delete`）及 `events` 列表（可多件）；查记录可含 `remark_keyword`。系统 MUST NOT 将具体历史记录主键 `history_id` 作为改/删缓存的可复用字段写入。未确认或零条成功 MUST NOT 写缓存。
 
 #### Scenario: 多事件确认后整句可再次命中
 - **WHEN** 用户输入「吃完奶，换了尿布」并确认 `create` 且 `events` 含喝奶与换尿布两件叶子
@@ -15,13 +15,13 @@
 - **THEN** 写入缓存的载荷 MUST NOT 依赖本轮解析出的 `history_id` 作为下次直接执行目标
 - **AND** 下次命中后系统 MUST 重新查询最近记录再执行
 
-### Requirement: 意图缓存命中优先于单事件名匹配
-当意图缓存相似度达到实现所定高置信阈值时，系统 SHALL 采用缓存中的 `op` 与 `events` 作为意图结果，SHALL NOT 再用单事件向量 Top-1 覆盖为另一事件。
+### Requirement: 意图缓存是意图路径唯一向量匹配
+当意图缓存相似度达到实现所定高置信阈值时，系统 SHALL 采用缓存中的 `op` 与 `events` 作为意图结果。系统 MUST NOT 再查询 `feeding_events` 或任何事件名向量以覆盖该结果。缓存未命中时 SHALL 进入分类（可先备注探针），SHALL NOT 降级到事件名 Top-1。
 
-#### Scenario: 缓存命中跳过单事件短路
+#### Scenario: 缓存命中跳过分类
 - **WHEN** 用户再次输入与已缓存多事件原话高度相似的句子
 - **THEN** 系统 SHALL 复述缓存的多事件 `create` 结果进入执行层
-- **AND** SHALL NOT 因 `feeding_events` 中「记录喝奶」分数更高而只记喝奶
+- **AND** SHALL NOT 再检索事件名向量
 
 ### Requirement: 改删命中后必须现查再执行
 意图缓存命中 `op` 为 `update` 或 `delete` 时，系统 MUST 先按事件向兄弟仓查询当前应操作的历史行，再调用更新或删除接口。查询失败或找不到行时 MUST NOT 写库，MUST 在 `content` 中说明。

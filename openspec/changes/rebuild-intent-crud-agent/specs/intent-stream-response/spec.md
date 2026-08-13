@@ -18,9 +18,10 @@
 ### Requirement: 流式响应暴露节点思考进度
 系统 SHALL 在流式响应中通过 thinking 事件暴露意图图节点的执行进度。
 
-#### Scenario: 意图缓存或向量匹配节点进度
-- **WHEN** 执行意图缓存匹配或事件向量匹配节点
+#### Scenario: 意图缓存节点进度
+- **WHEN** 执行意图缓存匹配节点
 - **THEN** 发送 thinking 事件，`node` 为实际节点名，`status` 为 running
+- **AND** SHALL NOT 再发送 `match_event_by_vector` 节点进度
 
 #### Scenario: LLM 分类节点进度
 - **WHEN** 执行 classify_intent 节点

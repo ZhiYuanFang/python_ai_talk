@@ -3,7 +3,7 @@
 
 业务说明：
 缓存 → 可选备注探针 → 分类 → 确认 END / 批量落库 / 模板查记录。
-不再调用 clinic agent，feeding 不得导入 clinic。
+不再做事件名向量匹配，不再调用 clinic agent，feeding 不得导入 clinic。
 """
 
 import logging
@@ -12,14 +12,13 @@ from langgraph.graph import StateGraph, START, END
 
 from app.feeding.graphs.nodes.classify_intent import classify_intent
 from app.feeding.graphs.nodes.execute_history_crud import execute_history_crud
-from app.feeding.graphs.nodes.match_event_by_vector import match_event_by_vector
 from app.feeding.graphs.nodes.match_intent_cache import match_intent_cache
 from app.feeding.graphs.nodes.remark_probe import remark_probe
 from app.feeding.graphs.nodes.speak_history import speak_history
 from app.feeding.graphs.nodes.thinking_messages import get_thinking_message
 from app.feeding.graphs.states.intent_state import IntentState
 from app.feeding.services.history_crud import infer_op
-from app.shared.constants import IntentOp, MatchSource, TargetType
+from app.shared.constants import IntentOp, TargetType
 from app.shared.graphs.node_thinking import with_node_thinking
 
 logger = logging.getLogger(__name__)
@@ -37,16 +36,6 @@ def route_after_cache(state: State) -> str:
     if op in (IntentOp.CREATE.value, IntentOp.UPDATE.value, IntentOp.DELETE.value):
         return "execute_history_crud"
     return "end"
-
-
-def route_after_vector_match(state: State) -> str:
-    """向量仅作单一 create 快路径；否则分类。"""
-    match_source = state.get("match_source", MatchSource.LLM.value)
-    if match_source == MatchSource.LLM.value:
-        return "classify_intent"
-    if state.get("need_confirm"):
-        return "end"
-    return "execute_history_crud"
 
 
 def route_after_classify(state: State) -> str:
@@ -68,15 +57,11 @@ def _wrap(name: str, fn):
 
 
 def build_intent_graph() -> StateGraph:
-    """构建意图分析图（无 clinic）。"""
+    """构建意图分析图（无事件名向量、无 clinic）。"""
     graph = StateGraph(State)
 
     graph.add_node("match_intent_cache", _wrap("match_intent_cache", match_intent_cache))
     graph.add_node("remark_probe", _wrap("remark_probe", remark_probe))
-    graph.add_node(
-        "match_event_by_vector",
-        _wrap("match_event_by_vector", match_event_by_vector),
-    )
     graph.add_node("classify_intent", _wrap("classify_intent", classify_intent))
     graph.add_node(
         "execute_history_crud",
@@ -95,16 +80,8 @@ def build_intent_graph() -> StateGraph:
             "end": END,
         },
     )
-    graph.add_edge("remark_probe", "match_event_by_vector")
-    graph.add_conditional_edges(
-        "match_event_by_vector",
-        route_after_vector_match,
-        {
-            "classify_intent": "classify_intent",
-            "execute_history_crud": "execute_history_crud",
-            "end": END,
-        },
-    )
+    # 缓存未命中：探针只注入摘要，再交给分类；不再经过事件名向量
+    graph.add_edge("remark_probe", "classify_intent")
     graph.add_conditional_edges(
         "classify_intent",
         route_after_classify,
@@ -122,4 +99,3 @@ def build_intent_graph() -> StateGraph:
 
 
 intent_graph = build_intent_graph()
-

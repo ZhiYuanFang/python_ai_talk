@@ -2,15 +2,15 @@
 意图分类节点
 
 业务说明：
-使用 LLM 对用户输入进行意图分类，识别事件类型、动作和关键词。
-作为向量匹配失败后的降级方案，使用 LLM 的语义理解能力进行意图识别。
+使用 LLM 对用户输入进行意图分类，识别增删改查与事件叶子。
+意图缓存未命中后的唯一语义入口（不再经事件名向量）。
 
 设计思路：
 1. 构建包含事件字典的系统提示词
 2. 调用 LLM 进行意图分类
 3. 解析 LLM 返回的结构化 JSON 结果
-4. 处理新事件场景：当事件不在可用列表中时，推断 event_type 和 event_unit
-5. 优先使用向量匹配已提取的数量，LLM 提取作为 fallback
+4. 字典外名称不当新事件类型；查记录可当备注
+5. 分类路径默认先确认，免确认只留给意图缓存命中
 """
 
 import json
@@ -242,14 +242,17 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         if op == "read":
             intent_result["target_type"] = TargetType.HISTORY.value
             intent_result["action"] = IntentAction.SEARCH.value
-        need_confirm = bool(intent_result.get("need_confirm", True))
-        if intent_result.get("target_type") in (
-            TargetType.CONVERSATION.value,
-            TargetType.EXIT.value,
-        ):
+        # 分类一律先确认；闲聊/退出除外。免确认只留给意图缓存命中。
+        target = intent_result.get("target_type")
+        is_crud = op in ("create", "read", "update", "delete") or target in (
+            TargetType.FEEDING.value,
+            TargetType.HISTORY.value,
+        )
+        if is_crud or intent_result.get("action") == IntentAction.MULTI.value:
+            need_confirm = True
+        elif target in (TargetType.CONVERSATION.value, TargetType.EXIT.value):
             need_confirm = False
-        # 多事件一律软确认
-        if intent_result.get("action") == IntentAction.MULTI.value:
+        else:
             need_confirm = True
 
         logger.info(

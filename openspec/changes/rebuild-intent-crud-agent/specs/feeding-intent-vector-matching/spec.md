@@ -1,37 +1,33 @@
-## ADDED Requirements
-
-### Requirement: 单事件向量不得吞掉多事件或非 create
-事件名向量匹配若作为冷启动辅助，仅当用户句为单一 create（`start|end|one` 之一）且非查询句式、非复合多事件时，才允许以高置信直接作为执行意图。系统 MUST NOT 因 Top-1 事件名相似而将明显多事件句或查/改/删句直接定为单条 feeding create。意图缓存命中时 MUST 优先于本条事件名匹配。
-
-#### Scenario: 复合句不因高分只记一件
-- **WHEN** 用户输入「吃完奶，换了尿布」
-- **AND** 向量 Top-1 为喝奶且分数高于高置信阈值
-- **THEN** 系统 SHALL NOT 以该单事件直接 END 并跳过 LLM/多事件分类
-- **AND** SHALL 进入分类或意图缓存路径以保留多事件可能
-
-#### Scenario: 查询句仍不得向量落 feeding
-- **WHEN** 用户输入「上一次拉屎是什么时候」
-- **THEN** 事件名向量阶段 SHALL NOT 以 feeding create 高置信直接结束
-
-## MODIFIED Requirements
+## REMOVED Requirements
 
 ### Requirement: 系统使用向量相似度进行喂养事件匹配
-系统 MAY 使用向量数据库对用户输入与标准事件名（及动作变体）做语义匹配，作为单次 create 的冷启动辅助。系统 MUST NOT 依赖 `source=user` 历史用户表达作为主匹配源。高置信直接执行仅适用于单一 create 且未命中意图缓存、非复合句、非查询句。
+**Reason**: 事件名 Top-1 把整句压成单个 `event_id`，与多事件 CRUD 意图缓存冲突；分类提示已含事件字典，不再需要第二套向量身份。
+**Migration**: 缓存 miss 走 `classify_intent`；重复句走 `feeding_intents`。删除 `match_event_by_vector`。
 
-#### Scenario: 向量匹配成功（单一 create）
-- **WHEN** 用户输入「开始睡眠」
-- **AND** 标准事件向量中存在对应开始变体
-- **AND** 句式非查询、非多事件
-- **AND** 意图缓存未命中
-- **THEN** 系统可直接判定为 create/start 并进入执行或确认
-- **AND** SHALL NOT 再写入单事件用户表达飞轮
+### Requirement: 向量匹配结果包含置信度信息
+**Reason**: 事件名向量匹配已删除。
+**Migration**: 意图缓存可自带相似度；分类结果不依赖事件名向量分数。
 
-#### Scenario: 向量匹配中等置信度（单一 create）
-- **WHEN** 用户输入「母乳」且为单一 create、非查询、非多事件
-- **AND** 标准事件名中等置信
-- **THEN** 系统需要用户确认后才执行 create
-- **AND** 本轮 MUST NOT 写库
+### Requirement: 向量匹配支持多个结果返回
+**Reason**: 事件名向量匹配已删除。
+**Migration**: 无。
 
-#### Scenario: 向量匹配低置信度降级 LLM
-- **WHEN** 用户输入未达高/中置信
-- **THEN** 系统走 LLM 分类流程进行意图识别（含 CRUD 与 multi）
+## ADDED Requirements
+
+### Requirement: 意图路径不得做事件名向量匹配
+意图分析图 MUST NOT 注册或调用 `match_event_by_vector`。系统 MUST NOT 再用 `feeding_events`（或等价事件名向量库）对用户输入做 Top-1 事件名相似度匹配，并据此直接定为 feeding create、跳过分类或免确认。冷启动未见过的句子 SHALL 进入分类 LLM（可先做备注探针）。知识库向量检索 MUST NOT 随本条删除。
+
+#### Scenario: 首次记事件走分类
+- **WHEN** 用户输入「开始睡眠」且意图缓存未命中
+- **THEN** 系统 SHALL 进入 `classify_intent`（或确认 pending）
+- **AND** SHALL NOT 因标准事件名向量高分直接 END 并落库
+
+#### Scenario: 复合句不会被事件名短路
+- **WHEN** 用户输入「吃完奶，换了尿布」且意图缓存未命中
+- **THEN** 系统 SHALL 进入分类以保留多事件可能
+- **AND** SHALL NOT 存在事件名向量节点将其压成单事件 create
+
+#### Scenario: 查询句不会被事件名落 feeding
+- **WHEN** 用户输入「上一次拉屎是什么时候」
+- **THEN** 系统 SHALL 经分类或缓存得到 `op=read`（或等价查记录）
+- **AND** SHALL NOT 经事件名向量定为 feeding create

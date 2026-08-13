@@ -1,14 +1,14 @@
 ## MODIFIED Requirements
 
 ### Requirement: intent_graph 状态图结构
-系统 SHALL 使用 LangGraph StateGraph 构建意图分析流程图（intent_graph），包含意图缓存匹配、可选备注探针、意图分类、条件路由、批量历史 CRUD 与查记录模板播报。图 MUST NOT 包含 `call_clinic_agent` 节点，MUST NOT 包含 `judge_data_requirement` 或历史答题 LLM 节点，MUST NOT 从 `feeding` 导入 `clinic` 图。
+系统 SHALL 使用 LangGraph StateGraph 构建意图分析流程图（intent_graph），包含意图缓存匹配、可选备注探针、意图分类、条件路由、批量历史 CRUD 与查记录模板播报。图 MUST NOT 包含 `match_event_by_vector` 节点，MUST NOT 包含 `call_clinic_agent` 节点，MUST NOT 包含 `judge_data_requirement` 或历史答题 LLM 节点，MUST NOT 从 `feeding` 导入 `clinic` 图。
 
 #### Scenario: intent_graph 节点组成
 - **WHEN** 构建 intent_graph
 - **THEN** 图 SHALL 包含意图缓存匹配、classify_intent，以及批量执行 CRUD / 拉史模板播报（名称以实现为准）
 - **AND** 图 MAY 在分类前对点查字典外词做备注探针
 - **AND** 图 SHALL 包含条件边，根据缓存命中、确认需求与 `op`/`target_type` 路由
-- **AND** 图 SHALL NOT 注册 `call_clinic_agent` 或历史答题 LLM
+- **AND** 图 SHALL NOT 注册 `match_event_by_vector`、`call_clinic_agent` 或历史答题 LLM
 
 #### Scenario: feeding 意图执行落库
 - **WHEN** 分类或缓存结果为 create/update/delete 且无需确认

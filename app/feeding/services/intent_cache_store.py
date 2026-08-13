@@ -56,7 +56,7 @@ class IntentCacheStore:
     意图缓存向量库。
 
     业务说明：
-    与 feeding_events 物理隔离，避免复合句撞上单事件名。
+    与知识库 Collection 物理隔离；事件名向量 feeding_events 已拆除。
     """
 
     def __init__(self) -> None:

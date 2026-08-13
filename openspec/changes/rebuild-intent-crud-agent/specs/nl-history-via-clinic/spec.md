@@ -1,16 +1,17 @@
 ## MODIFIED Requirements
 
 ### Requirement: Query utterances must not vector-commit as feeding
-当用户文本呈现历史查询意图（如询问上次/什么时候/分别/多少等）时，系统 SHALL NOT 因事件名向量高置信直接将意图定为 feeding 落库；SHALL 将 `op` 定为 `read`（或 `target_type=history`）并在意图图内答题。
+当用户文本呈现历史查询意图（如询问上次/什么时候/分别/多少等）时，系统 SHALL NOT 将意图定为 feeding 落库；SHALL 将 `op` 定为 `read`（或 `target_type=history`）并在意图图内答题。
 
 #### Scenario: Last poop time is not feeding
 - **WHEN** 用户输入类似「上一次拉屎是什么时候」
-- **THEN** 事件名向量匹配阶段 SHALL NOT 以 feeding create 高置信直接结束
-- **AND** 后续 SHALL 走查记录路径而非 clinic agent
+- **THEN** 系统 SHALL 走查记录路径（分类或意图缓存）
+- **AND** SHALL NOT 定为 feeding create
+- **AND** SHALL NOT 进入 clinic agent
 
 #### Scenario: Record utterance can still be feeding
 - **WHEN** 用户输入类似「拉屎了」或「记录拉屎」且无查询句式
-- **THEN** 系统仍 MAY 经缓存、向量或分类得到 create
+- **THEN** 系统仍 MAY 经意图缓存或分类得到 create
 
 ### Requirement: History intent routes to clinic agent
 当意图分类结果为查记录（`history` / `op=read`）时，意图图 SHALL 在本图内按已定事件拉取历史并用模板填写 `content`，SHALL NOT 进入 `call_clinic_agent`，SHALL NOT 调用历史答题 LLM。

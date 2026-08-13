@@ -16,7 +16,6 @@
 NODE_THINKING_MESSAGES = {
     "match_intent_cache": "正在回忆你常说的话...",
     "remark_probe": "正在按备注查找相关记录...",
-    "match_event_by_vector": "正在匹配事件...",
     "classify_intent": "正在判断是否要操作事件...",
     "execute_history_crud": "正在写入喂养记录...",
     "speak_history": "正在整理历史记录...",

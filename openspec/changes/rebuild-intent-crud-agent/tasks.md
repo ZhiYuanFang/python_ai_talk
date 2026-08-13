@@ -51,3 +51,12 @@
 
 - [x] 7.1 运行 `openspec validate rebuild-intent-crud-agent --strict` 并修复规格问题
 - [x] 7.2 对照规格手工核对：非流式 /intent 记事件、复合句不丢件、部分入库回执、AD 备注确认、/v1/clinic 陪伴、Go 不再二次匹配
+
+## 8. Python：拆除 feeding_events 与事件名匹配（方案 B）
+
+- [x] 8.1 重写 `intent_graph`：`remark_probe` 直连 `classify_intent`；删除 `match_event_by_vector` 节点与路由
+- [x] 8.2 删除 `app/feeding/graphs/nodes/match_event_by_vector.py`；`thinking_messages` / `stream_intent_response` 去掉该节点文案
+- [x] 8.3 删除 `app/feeding/services/event_vector_store.py`；清除 `event_cache` / `main.py` / `scripts/build_vector_db.py` 对 `feeding_events` 的初始化与同步
+- [x] 8.4 分类默认 `need_confirm`；免确认仅意图缓存高置信命中；去掉事件名向量高分免确认
+- [x] 8.5 知识库 `mother_baby_knowledge` 与 `feeding_intents` 不得误删；启动不得再创建 `feeding_events`
+- [x] 8.6 运行 `openspec validate rebuild-intent-crud-agent --strict`；手工确认首次记事件走分类、复合句不短路、查询句不落 create

@@ -22,15 +22,11 @@
 - **WHEN** 分类结果 `target_type` 为 `exit`
 - **THEN** 图 SHALL 结束且不进入确认或 clinic
 
-### Requirement: 向量中置信仍走确认
-单一 create 的事件名向量匹配在需要确认的置信度区间时 SHALL 设置 `need_confirm` 并结束本轮等待续聊，SHALL NOT 写库。复合多事件句 MUST NOT 走该单事件确认快路径。
-
-#### Scenario: 中置信单事件 create 触发确认
-- **WHEN** 单一 create 向量匹配设置 `need_confirm=True`
-- **THEN** 响应 SHALL 带确认话术与 `conversation_id`
-- **AND** 本轮 MUST NOT 调用 history add
-
 ## REMOVED Requirements
+
+### Requirement: 向量中置信仍走确认
+**Reason**: 事件名向量匹配已删除，不再有中置信单事件快路径。
+**Migration**: 缓存 miss 的 create 由分类默认 `need_confirm`。
 
 ### Requirement: 保留 clinic 调用后的 target_type
 **Reason**: 意图图不再调用 `call_clinic_agent`，无需保留 clinic 合并后的 suggest 类型。

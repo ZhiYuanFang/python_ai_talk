@@ -59,11 +59,10 @@
 - **AND** SHALL 确认或说明 AD 不是单独事件（例如是否记录营养品并写备注 AD）
 
 ### Requirement: 分类默认先确认再落库
-当意图来自分类 LLM（缓存未命中）时，除高置信单一 create（标准事件向量或意图缓存命中）外，系统 SHALL 设置 `need_confirm` 且本轮不写库。多事件 MUST 软确认。父节点 MUST 只消歧、不落库。
+当意图来自分类 LLM（缓存未命中）时，系统 SHALL 设置 `need_confirm` 且本轮不写库。免确认仅适用于意图缓存高置信命中。多事件 MUST 软确认。父节点 MUST 只消歧、不落库。
 
 #### Scenario: LLM 分类后不直接写库
 - **WHEN** 缓存未命中且分类 LLM 返回单次 create 喝奶
-- **AND** 该次并非标准事件向量高置信快路径
 - **THEN** 响应 SHALL `need_confirm=true`
 - **AND** 本轮 MUST NOT 调用 batch
 

@@ -67,7 +67,7 @@ async def _warmup_vector_stores():
     业务逻辑：
     1. 在后台线程中初始化知识向量存储（加载 Embedding 模型和 ChromaDB）
     2. 检查并构建向量库（如果为空）
-    3. 初始化喂养事件向量库
+    3. 不初始化 feeding_events（事件名向量已拆除）
     4. 不阻塞服务启动，健康检查可正常响应
     """
     try:
@@ -94,62 +94,8 @@ async def _warmup_vector_stores():
             logger.info("向量库已有数据，检查并补全扩展元数据...")
             vector_store.ensure_metadata_completeness()
 
-        # 初始化喂养事件向量库
-        # 延迟导入，避免循环依赖
-        from app.feeding.services.event_vector_store import event_vector_store
-        from app.feeding.services.event_cache import event_cache
-
-        # 触发事件向量存储的初始化（加载 Embedding 模型和 ChromaDB Collection）
-        logger.info("初始化喂养事件向量存储...")
-        event_count = event_vector_store.get_event_count()
-
-        # ENV 一次性重建 standard：须先拿到字典，失败则不删库
-        if settings.rebuild_feeding_standard_events:
-            logger.warning(
-                "REBUILD_FEEDING_STANDARD_EVENTS=true，"
-                "将在获取事件字典成功后重建 source=standard 条目"
-            )
-            try:
-                event_dictionary = await event_cache.get_event_dictionary()
-                if event_dictionary:
-                    from app.feeding.services.event_hierarchy import get_leaf_events
-
-                    leaves = get_leaf_events(event_dictionary)
-                    logger.info(
-                        f"开始重建喂养标准向量，叶子事件数={len(leaves)}"
-                    )
-                    event_vector_store.initialize_events(leaves)
-                    logger.info("喂养事件标准向量重建完成")
-                else:
-                    logger.error(
-                        "重建开关已开启但事件字典为空，跳过删除/重建以保护现有数据"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"喂养事件标准向量重建失败（未删除现有数据）: {e}",
-                    exc_info=True,
-                )
-        elif event_count == 0:
-            # 检查喂养事件向量库是否为空
-            # 如果为空，则需要从兄弟仓获取事件字典并初始化
-            logger.warning("喂养事件向量库为空，尝试从兄弟仓获取事件字典并初始化...")
-            try:
-                # 通过事件缓存获取事件字典（自动处理缓存和 API 调用）
-                event_dictionary = await event_cache.get_event_dictionary()
-                # 检查获取的事件字典是否有效
-                if event_dictionary:
-                    logger.info(f"成功获取事件字典，包含 {len(event_dictionary)} 个事件，开始初始化向量库...")
-                    # 调用 initialize_events 方法初始化喂养事件向量库
-                    # 该方法会为每个事件生成标准条目和动作变体
-                    event_vector_store.initialize_events(event_dictionary)
-                    logger.info("喂养事件向量库初始化完成")
-                else:
-                    logger.warning("获取到的事件字典为空，跳过喂养事件向量库初始化")
-            except Exception as e:
-                logger.error(f"喂养事件向量库自动初始化失败: {str(e)}", exc_info=True)
-        else:
-            # 喂养事件向量库已有数据，记录当前记录数
-            logger.info(f"喂养事件向量库已有 {event_count} 条记录，跳过初始化")
+        # 意图路径只使用 feeding_intents；不再创建或填充 feeding_events
+        logger.info("跳过喂养事件名向量预热（feeding_events 已拆除）")
 
         logger.info("向量存储后台预热完成")
 

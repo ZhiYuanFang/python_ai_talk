@@ -19,7 +19,7 @@
 ## ADDED Requirements
 
 ### Requirement: 停止单事件用户表达飞轮
-系统 MUST 删除单事件用户表达飞轮相关代码（含 `add_user_expression`、用户表达的匹配/成功计数递增、针对用户表达的清理，以及确认路径上的飞轮写入）。系统 MUST NOT 再将用户原话作为 `feeding_events` 中 `source=user` 的单事件表达写入。存量用户表达 MUST NOT 再用于意图快路径检索（排除或删除）。知识库 `source=user` MUST NOT 随本条删除。
+系统 MUST 删除单事件用户表达飞轮相关代码（含 `add_user_expression`、用户表达的匹配/成功计数递增、针对用户表达的清理，以及确认路径上的飞轮写入）。系统 MUST NOT 再将用户原话作为 `feeding_events` 中 `source=user` 的单事件表达写入。`feeding_events` 整库随 `feeding-events-vector-store` 拆除，存量用户表达不再参与任何意图检索。知识库 `source=user` MUST NOT 随本条删除。
 
 #### Scenario: 确认后不写 user 表达
 - **WHEN** 用户确认喂养意图正确并落库成功
