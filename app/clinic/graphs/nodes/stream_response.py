@@ -7,7 +7,7 @@ LangGraph 节点：用于诊疗场景的流式回答生成。
 返回异步生成器，用于 SSE 流式输出。
 
 设计思路：
-1. 从 State 中读取 question、history_events、knowledge、baby_profile、model_config
+1. 从 State 中读取 question、history_events、knowledge、baby_profile、llm_model
 2. 使用诊疗提示词构建系统提示词和用户消息
 3. 调用 llm_client.stream 进行流式调用
 4. 支持 thinking 模式
@@ -27,6 +27,7 @@ from app.clinic.graphs.nodes.prompts.clinic_answer import (
     build_clinic_answer_user_message,
     resolve_clinic_needs_history,
 )
+from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import LLMResponse, llm_client, llm_model_config_from_mapping
 
 # 初始化日志记录器
@@ -44,23 +45,25 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
     此函数提供核心的流式调用逻辑。
 
     Args:
-        state: 当前图状态（含 question, history_events, knowledge, baby_profile, model_config）
+        state: 当前图状态（含 question, history_events, knowledge, baby_profile, llm_model）
 
     Yields:
         LLMResponse 对象（流式逐块返回）
     """
     # 读取输入参数（chat_context 为 tip/clinic 共享会话，与喂养史分离）
-    question = state.get("question", "")
-    history_events = state.get("history_events", [])
-    knowledge = state.get("knowledge", [])
-    baby_profile = state.get("baby_profile", {})
-    chat_context = state.get("chat_context") or ""
-    baby_age_months = state.get("baby_age_months")
+    question = state_get(state, "question", "")
+    history_events = state_get(state, "history_events", [])
+    knowledge = state_get(state, "knowledge", [])
+    baby_profile = state_get(state, "baby_profile", {})
+    chat_context = state_get(state, "chat_context") or ""
+    baby_age_months = state_get(state, "baby_age_months")
     # 门禁结果决定提示词分叉与是否注入史/对话块
     needs_history = resolve_clinic_needs_history(state)
 
     # 流式必带 model；缺省由 llm_client.stream 抛错（不走保底）
-    model_config = llm_model_config_from_mapping(state.get("model_config"))
+    model_config = llm_model_config_from_mapping(
+        state_get(state, "llm_model") or state_get(state, "model_config")
+    )
 
     # 构建提示词
     system_prompt = build_clinic_answer_system_prompt(needs_history=needs_history)

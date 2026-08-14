@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from app.shared.graphs.state_patch import state_get
 from app.shared.qa_fast_path import is_block_fast_path, rewrite_standalone_question
 
 logger = logging.getLogger(__name__)
@@ -23,9 +24,11 @@ async def rewrite_standalone_question_node(state: Dict[str, Any]) -> Dict[str, A
         }
 
     text = await rewrite_standalone_question(
-        question=str(state.get("question") or ""),
-        chat_context=str(state.get("chat_context") or ""),
-        model_config=dict(state.get("model_config") or {}),
+        question=str(state_get(state, "question") or ""),
+        chat_context=str(state_get(state, "chat_context") or ""),
+        model_config=dict(
+            state_get(state, "llm_model") or state_get(state, "model_config") or {}
+        ),
     )
     if not text:
         return {

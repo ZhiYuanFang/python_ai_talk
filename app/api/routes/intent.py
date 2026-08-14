@@ -15,7 +15,9 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.feeding.graphs.intent_graph import intent_graph
+from app.feeding.graphs.states.intent_state import IntentState
 from app.feeding.schemas.intent import IntentRequest, IntentResponse, IntentStreamResponse
+from app.feeding.schemas.intent_result import coerce_intent_result
 from app.feeding.services.event_cache import event_cache
 from app.feeding.services.intent_pipeline import (
     build_intent_response_from_fields,
@@ -26,6 +28,7 @@ from app.feeding.services.intent_pipeline import (
     try_handle_pending,
 )
 from app.shared.constants import TargetType
+from app.shared.graphs.state_patch import ensure_model
 from app.shared.graphs.stream_graph import iter_graph_custom_thinking
 
 logger = logging.getLogger(__name__)
@@ -81,17 +84,18 @@ async def _run_cold_intent(
         return parent_resp
 
     thread_id = str(uuid4())
-    initial_state: Dict[str, Any] = {
-        "user_input": text,
-        "device_no": device_no,
-        "model_config": model_config,
-        "event_dictionary": leaf_events,
-        "event_dictionary_full": full_events,
-        "conversation_id": thread_id,
-    }
+    initial_state = IntentState(
+        user_input=text,
+        device_no=device_no,
+        llm_model=model_config,
+        event_dictionary=leaf_events,
+        event_dictionary_full=full_events,
+        conversation_id=thread_id,
+    )
 
+    # 仅序列化边界：LangGraph ainvoke 入口需 dict
     final_state = await intent_graph.ainvoke(
-        initial_state, config=_run_config(thread_id)
+        initial_state.model_dump(), config=_run_config(thread_id)
     )
     return _response_from_final_state(
         final_state,
@@ -103,7 +107,7 @@ async def _run_cold_intent(
 
 
 def _response_from_final_state(
-    final_state: Dict[str, Any],
+    final_state: Any,
     *,
     full_events: list,
     user_input: str,
@@ -111,20 +115,37 @@ def _response_from_final_state(
     model_config: Dict[str, Any],
 ) -> IntentResponse:
     """从图最终状态构建响应，feeding 走叶子校验/消歧。"""
-    intent_result = dict(final_state.get("intent_result") or {})
-    match_source = final_state.get("match_source") or intent_result.get("match_source")
+    st = ensure_model(final_state, IntentState)
+    ir = coerce_intent_result(st.intent_result)
+    intent_result = ir.to_plain_dict()
+    match_source = st.match_source or intent_result.get("match_source")
     if match_source:
         intent_result["match_source"] = match_source
-    if final_state.get("match_confidence") is not None:
-        intent_result["match_confidence"] = final_state.get("match_confidence")
+    if st.match_confidence is not None:
+        intent_result["match_confidence"] = st.match_confidence
+
+    # 备注反查多命中已建 pending：直接返回，勿再走叶子软确认覆盖
+    confirm_type = st.confirm_type or intent_result.get("confirm_type") or ""
+    if confirm_type == "parent_disambiguation" and intent_result.get("options"):
+        if st.conversation_id:
+            intent_result["conversation_id"] = st.conversation_id
+        intent_result["need_confirm"] = True
+        return _build_intent_response(intent_result)
+
+    # 零命中无法识别：conversation 短回复，不进确认
+    if (
+        intent_result.get("target_type") == TargetType.CONVERSATION.value
+        and (intent_result.get("content") or "").startswith("无法识别对应的事件")
+    ):
+        return _build_intent_response(intent_result)
 
     target_type = intent_result.get("target_type", TargetType.CONVERSATION.value)
-    need_confirm = bool(final_state.get("need_confirm", False))
-    matched_vector_id = final_state.get("matched_vector_id", "") or ""
+    need_confirm = bool(st.need_confirm)
+    matched_vector_id = st.matched_vector_id or ""
 
     if target_type == TargetType.FEEDING.value:
         return postprocess_feeding_result(
-            intent_result,
+            ir,
             full_events=full_events,
             user_input=user_input,
             device_no=device_no,
@@ -136,7 +157,7 @@ def _response_from_final_state(
     # 查记录确认：话术由 Python 点出事件名（叶子或父），父仍是是/否不是选叶子
     if need_confirm and target_type == TargetType.HISTORY.value:
         return create_history_confirm_response(
-            intent_result,
+            ir,
             full_events=full_events,
             user_input=user_input,
             device_no=device_no,
@@ -145,7 +166,7 @@ def _response_from_final_state(
         )
 
     response = _build_intent_response(intent_result)
-    llm_response = final_state.get("response", "")
+    llm_response = st.response or ""
     if llm_response and not response.content:
         response.content = llm_response
     return response
@@ -248,14 +269,14 @@ async def analyze_intent_stream(request: IntentRequest):
         )
 
     thread_id = str(uuid4())
-    initial_state: Dict[str, Any] = {
-        "user_input": request.text,
-        "device_no": request.device_no,
-        "model_config": model_config,
-        "event_dictionary": leaf_events,
-        "event_dictionary_full": full_events,
-        "conversation_id": thread_id,
-    }
+    initial_state = IntentState(
+        user_input=request.text,
+        device_no=request.device_no,
+        llm_model=model_config,
+        event_dictionary=leaf_events,
+        event_dictionary_full=full_events,
+        conversation_id=thread_id,
+    )
 
     return StreamingResponse(
         _stream_intent_response(initial_state, thread_id, full_events, model_config),
@@ -269,7 +290,7 @@ async def analyze_intent_stream(request: IntentRequest):
 
 
 async def _stream_intent_response(
-    initial_state: Dict[str, Any],
+    initial_state: IntentState,
     thread_id: str,
     full_events: list,
     model_config: Dict[str, Any],
@@ -279,7 +300,7 @@ async def _stream_intent_response(
 
     非流式仍走 intent_graph.ainvoke（同一张图）。
     """
-    final_state: Dict[str, Any] = dict(initial_state)
+    final_state: Any = initial_state
     # thread_id 仍写入 conversation_id（initial_state）；无 checkpointer 时 config 可省略
     _ = thread_id
 
@@ -292,13 +313,13 @@ async def _stream_intent_response(
             )
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
         elif kind == "final":
-            final_state = dict(payload)
+            final_state = payload
 
     response = _response_from_final_state(
         final_state,
         full_events=full_events,
-        user_input=initial_state.get("user_input", ""),
-        device_no=initial_state.get("device_no", ""),
+        user_input=initial_state.user_input,
+        device_no=initial_state.device_no,
         model_config=model_config,
     )
 

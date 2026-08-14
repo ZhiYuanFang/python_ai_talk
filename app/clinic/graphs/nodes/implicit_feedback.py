@@ -10,6 +10,7 @@ rejected 时写出 block_fast_path，禁止本轮走 Q&A 捷径以便纠正幻�
 import logging
 from typing import Any, Dict
 
+from app.shared.graphs.state_patch import state_get
 from app.shared.suggestion_acceptance import (
     AcceptanceStatus,
     maybe_apply_implicit_feedback,
@@ -25,9 +26,11 @@ async def implicit_feedback(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         rejected 时 {"block_fast_path": True}；否则空 patch（副作用写会话/向量分）
     """
-    device_no = str(state.get("device_no") or "")
-    question = str(state.get("question") or state.get("user_input") or "")
-    model_config = dict(state.get("model_config") or {})
+    device_no = str(state_get(state, "device_no") or "")
+    question = str(state_get(state, "question") or state_get(state, "user_input") or "")
+    model_config = dict(
+        state_get(state, "llm_model") or state_get(state, "model_config") or {}
+    )
     try:
         status = await maybe_apply_implicit_feedback(
             device_no, question, model_config

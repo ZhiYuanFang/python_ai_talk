@@ -15,33 +15,20 @@ LangGraph 节点：调用设备服务获取宝宝画像信息。
 import logging
 from typing import Any, Dict
 
+from app.shared.graphs.state_patch import state_get
+
+from app.shared.graphs.state_patch import state_get
 from app.shared.http_client import http_client
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
 
 
-async def fetch_baby_profile(state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    宝宝画像获取节点函数
-
-    业务逻辑：
-    1. 从 State 中读取设备编号
-    2. 调用设备服务获取宝宝画像
-    3. 宝宝画像不存在或API失败时返回空字典
-    4. 返回 baby_profile 更新 State
-
-    Args:
-        state: 当前图状态
-
-    Returns:
-        需要更新的 State 字段字典
-    """
-    # 读取设备编号
-    device_no = state.get("device_no", "")
+async def fetch_baby_profile(state: Any) -> Dict[str, Any]:
+    """宝宝画像获取节点。"""
+    device_no = state_get(state, "device_no", "") or ""
 
     if not device_no:
-        # 没有设备编号，返回空字典
         return {"baby_profile": {}}
 
     try:

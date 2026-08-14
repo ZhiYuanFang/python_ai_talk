@@ -26,6 +26,9 @@ import json
 # 类型提示导入
 from typing import Any, AsyncGenerator, Dict
 
+from app.feeding.schemas.intent_result import coerce_intent_result
+from app.shared.graphs.state_patch import apply_state_patch, state_get
+
 # 意图流式响应 Schema 导入（后续创建，当前仅占位导入）
 from app.feeding.schemas.intent import IntentStreamResponse
 
@@ -36,10 +39,12 @@ logger = logging.getLogger(__name__)
 NODE_THINKING_MESSAGES: Dict[str, str] = {
     # 意图缓存：重复独立句直接采用整份 CRUD
     "match_intent_cache": "正在回忆你常说的话...",
-    # 备注探针：字典外词按历史备注聚合
-    "remark_probe": "正在按备注查找相关记录...",
+    # 进行中探针：分类前注入进行中计时
+    "in_progress_probe": "正在查看当前记录...",
     # 意图分类节点：缓存未命中后的 LLM 分类
     "classify_intent": "正在分析用户意图...",
+    # 分类后备注反查：字典外专名按历史备注定事件
+    "resolve_remark_event": "正在按备注对照事件...",
     # 数据需求判断节点：判断回答所需的数据范围
     "judge_data_requirement": "正在判断数据需求...",
     # 历史拉取节点：拉取历史喂养记录数据
@@ -53,7 +58,7 @@ NODE_THINKING_MESSAGES: Dict[str, str] = {
 }
 
 
-async def stream_intent_response(state: Dict[str, Any], graph_stream: AsyncGenerator) -> AsyncGenerator[str, None]:
+async def stream_intent_response(state: Any, graph_stream: AsyncGenerator) -> AsyncGenerator[str, None]:
     """
     意图分析流式响应生成器
 
@@ -73,7 +78,7 @@ async def stream_intent_response(state: Dict[str, Any], graph_stream: AsyncGener
         SSE 格式的字符串，包括 thinking 事件、answer 事件和 [DONE] 标记
     """
     # 初始化最终状态，复制传入的 state 作为基础
-    final_state: Dict[str, Any] = dict(state)
+    final_state: Any = dict(state) if isinstance(state, dict) else state
 
     # 遍历图流式输出（每个 chunk 是一个字典，键为节点名，值为该节点的状态更新）
     async for chunk in graph_stream:
@@ -83,8 +88,8 @@ async def stream_intent_response(state: Dict[str, Any], graph_stream: AsyncGener
             if not isinstance(node_update, dict):
                 # 继续处理下一个更新
                 continue
-            # 累积状态更新到最终状态
-            final_state.update(node_update)
+            # 累积状态更新到最终状态（补丁合并，保留通道字段）
+            final_state = apply_state_patch(final_state, node_update)
 
             # 获取节点对应的思考提示语，默认使用通用提示
             thinking_message = NODE_THINKING_MESSAGES.get(node_name, f"正在处理 {node_name}...")
@@ -102,7 +107,10 @@ async def stream_intent_response(state: Dict[str, Any], graph_stream: AsyncGener
             yield f"data: {json.dumps(thinking_event, ensure_ascii=False)}\n\n"
 
     # 节点全部完成，从最终状态提取意图结果
-    intent_result = final_state.get("intent_result", {})
+    raw_ir = state_get(final_state, "intent_result")
+    intent_result = (
+        coerce_intent_result(raw_ir).to_plain_dict() if raw_ir is not None else {}
+    )
 
     # 构造 answer 类型 SSE 事件字典
     answer_event = {

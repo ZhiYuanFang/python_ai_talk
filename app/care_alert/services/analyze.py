@@ -14,13 +14,16 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from app.care_alert.graphs.care_alert_graph import care_alert_graph
+from app.care_alert.graphs.states.care_alert_state import CareAlertState
 from app.care_alert.schemas.care_alert import CareAlertAnalyzeRequest
 from app.care_alert.services.flywheel_store import (
     care_alert_flywheel_store,
     snapshot_from_item,
 )
 from app.care_alert.services.model_resolve import resolve_model_config
+from app.shared.graphs.state_patch import state_get
 from app.shared.history_window import enum_to_unix
+from app.shared.schemas.data_requirement import DataRequirement
 from app.tip.graphs.nodes.derive_baby_age import shanghai_now
 
 logger = logging.getLogger(__name__)
@@ -75,46 +78,45 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         Exception: 图/LLM 底层异常向上抛，由路由转 500
     """
     # None → 空 dict，节点侧解析为无首选
-    model_config = resolve_model_config(request.model) or {}
+    llm_model = resolve_model_config(request.model) or {}
     day = _resolve_day(request.day)
+    window = _care_alert_window()
 
-    initial_state: Dict[str, Any] = {
-        "device_no": request.device_no,
-        "day": day,
-        "model_config": model_config,
-        # 近两日、不限 event_ids，拉多条供间隔/缺记判断
-        "data_requirement": {
-            "event_ids": [],
-            # 近两日（昨 00:00 上海 → now），缩短拉取与提示词
-            "start_time": _care_alert_window()[0],
-            "end_time": _care_alert_window()[1],
-            "limit": 60,
-        },
-        "history_summary": request.history_summary,
-        # kg_context 仅保留观测；不进 prompt / 飞轮
-        "kg_context": request.kg_context,
-    }
-
-    # 请求透传月龄：resolve_baby_age 在画像无生日时回退
-    if request.age_months is not None:
-        initial_state["baby_age_months"] = int(request.age_months)
+    care_alert_state = CareAlertState(
+        device_no=request.device_no,
+        day=day,
+        llm_model=llm_model,
+        data_requirement=DataRequirement(
+            event_ids=[],
+            start_time=window[0],
+            end_time=window[1],
+            limit=60,
+        ),
+        history_summary=request.history_summary,
+        kg_context=request.kg_context,
+        baby_age_months=(
+            int(request.age_months) if request.age_months is not None else None
+        ),
+    )
 
     logger.info(
         "护理留意分析开始: device_no=%s day=%s provider=%s name=%s age=%s",
         request.device_no,
         day,
-        model_config.get("provider") or "(fallback-only)",
-        model_config.get("name") or "-",
+        llm_model.get("provider") or "(fallback-only)",
+        llm_model.get("name") or "-",
         request.age_months,
     )
 
-    final_state: Dict[str, Any] = dict(initial_state)
-    async for event in care_alert_graph.astream(initial_state, stream_mode="values"):
+    # LangGraph 边界：Pydantic State 序列化为 dict 传入 astream
+    graph_input = care_alert_state.model_dump()
+    final_state: Any = graph_input
+    async for event in care_alert_graph.astream(graph_input, stream_mode="values"):
         if isinstance(event, dict):
             final_state = event
 
     # 本仓历史为空时可用编排侧历史列表补齐后重跑生成
-    history_events = final_state.get("history_events") or []
+    history_events = state_get(final_state, "history_events") or []
     history_seeded = False
     if not history_events:
         seeded = _history_from_summary(request.history_summary)
@@ -129,7 +131,7 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
             request.device_no,
         )
 
-    items = final_state.get("items")
+    items = state_get(final_state, "items")
     if not isinstance(items, list):
         items = []
 

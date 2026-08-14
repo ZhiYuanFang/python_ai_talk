@@ -291,17 +291,40 @@ def resolve_event_display_name(
     return ""
 
 
-def build_history_confirm_message(event_name: str) -> str:
+def build_history_confirm_message(
+    event_name: str, remark_keyword: str = ""
+) -> str:
     """
-    生成查记录确认问句，必须点出事件名。
+    生成查记录确认问句，必须点出事件名；有备注专名时一并点出。
 
     有名称：请确认是否查询「尿尿」的历史？
+    有备注：请确认是否查询「营养品」（按备注 AD）的历史？
     无名（无 id 可查时）：不使用「该事件」兜底。
     """
     name = (event_name or "").strip()
+    remark = (remark_keyword or "").strip()
     if not name:
         return "请确认是否查询这条历史记录？请回复确认或取消。"
+    if remark:
+        return (
+            f"请确认是否查询「{name}」（按备注 {remark}）的历史？"
+            "请回复确认或取消。"
+        )
     return f"请确认是否查询「{name}」的历史？请回复确认或取消。"
+
+
+def build_remark_disambiguation_message(
+    keyword: str, leaves: List[Dict[str, Any]]
+) -> str:
+    """备注反查多命中：请用户选字典叶子。"""
+    kw = (keyword or "").strip() or "该专名"
+    lines = [
+        f"备注「{kw}」出现在多个事件中，请选择（回复序号或名称）：",
+    ]
+    for i, leaf in enumerate(leaves, start=1):
+        name = leaf.get("event_name") or ""
+        lines.append(f"{i}. {name}")
+    return "\n".join(lines)
 
 
 def create_parent_disambiguation_pending(
@@ -316,8 +339,15 @@ def create_parent_disambiguation_pending(
     device_no: str = "",
     model_config: Optional[Dict[str, Any]] = None,
     conversation_id: Optional[str] = None,
+    op: str = "",
+    remark_keyword: str = "",
+    events: Optional[List[Dict[str, Any]]] = None,
+    start_time: Any = None,
+    end_time: Any = None,
+    event_ids: Optional[List[str]] = None,
+    clarify_message: Optional[str] = None,
 ) -> PendingClarification:
-    """创建父事件消歧 pending。"""
+    """创建父事件（或备注多命中）消歧 pending。"""
     cid = conversation_id or str(uuid4())
     parent_name = parent.get("event_name") or ""
     options = [
@@ -328,7 +358,9 @@ def create_parent_disambiguation_pending(
         }
         for c in children
     ]
-    message = build_parent_disambiguation_message(parent_name, children)
+    message = clarify_message or build_parent_disambiguation_message(
+        parent_name, children
+    )
     pending = PendingClarification(
         kind=ConfirmType.PARENT_DISAMBIGUATION.value,
         conversation_id=cid,
@@ -343,10 +375,56 @@ def create_parent_disambiguation_pending(
         parent_name=parent_name,
         device_no=device_no or "",
         model_config=model_config or {},
+        events=events or [],
+        op=op or "",
+        remark_keyword=remark_keyword or "",
+        start_time=start_time,
+        end_time=end_time,
+        event_ids=[str(x) for x in (event_ids or []) if x not in (None, "")],
     )
     clarification_store.set(pending)
     return pending
 
+
+def create_remark_disambiguation_pending(
+    *,
+    keyword: str,
+    leaves: List[Dict[str, Any]],
+    original_utterance: str,
+    action: str = IntentAction.ONE.value,
+    quantity: Optional[int] = None,
+    match_source: str = MatchSource.LLM.value,
+    device_no: str = "",
+    model_config: Optional[Dict[str, Any]] = None,
+    conversation_id: Optional[str] = None,
+    events: Optional[List[Dict[str, Any]]] = None,
+    op: str = "",
+    start_time: Any = None,
+    end_time: Any = None,
+) -> PendingClarification:
+    """
+    备注反查命中多个叶子时的消歧。
+
+    复用 parent_disambiguation 续聊解析；选中后带上 remark_keyword。
+    """
+    kw = (keyword or "").strip()
+    return create_parent_disambiguation_pending(
+        parent={"event_id": "", "event_name": kw},
+        children=leaves,
+        original_utterance=original_utterance,
+        action=action,
+        quantity=quantity,
+        match_source=match_source,
+        device_no=device_no,
+        model_config=model_config,
+        conversation_id=conversation_id,
+        op=op,
+        remark_keyword=kw,
+        events=events,
+        start_time=start_time,
+        end_time=end_time,
+        clarify_message=build_remark_disambiguation_message(kw, leaves),
+    )
 
 def create_leaf_confirm_pending(
     *,
@@ -380,7 +458,9 @@ def create_leaf_confirm_pending(
     resolved_op = (op or "").strip().lower()
     # 查记录确认只认 op=read，不因 action=search 把删除说成查询
     if resolved_op == "read":
-        message = build_history_confirm_message(event_name)
+        message = build_history_confirm_message(
+            event_name, remark_keyword=remark_keyword or ""
+        )
     elif resolved_op == "delete":
         message = build_delete_confirm_message(event_name)
     else:

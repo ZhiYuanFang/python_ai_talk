@@ -23,7 +23,9 @@ from app.shared.graphs.nodes.prompts.data_requirement import (
     build_data_requirement_system_prompt,
     build_data_requirement_user_message,
 )
+from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.schemas.data_requirement import DataRequirement
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -40,67 +42,47 @@ VALID_TIME_RANGES = {
 
 # 默认数据需求配置（fallback 使用）
 DEFAULT_DATA_REQUIREMENT = {
-    "event_ids": [],        # 空列表表示所有事件类型
+    "event_ids": [],
     "time_range": "last_7_days",
     "limit": 20,
 }
 
 
-async def judge_data_requirement(state: Dict[str, Any]) -> Dict[str, Any]:
+async def judge_data_requirement(state: Any) -> Dict[str, Any]:
     """
-    数据需求判断节点函数
-
-    业务逻辑：
-    1. 从 State 中读取用户问题和事件字典
-    2. 调用 LLM 判断需要哪些事件类型的历史记录和时间范围
-    3. 解析结果，验证 event_ids 合法性（事件ID必须在事件字典中存在）
-    4. 验证 time_range 合法性
-    5. LLM 失败或结果异常时使用默认配置
-    6. 返回 data_requirement 更新 State
-
-    Args:
-        state: 当前图状态
-
-    Returns:
-        需要更新的 State 字段字典
+    数据需求判断节点：产出 DataRequirement 写入 State。
     """
-    # 读取输入参数：优先用 user_input（intent_graph），其次用 question（clinic_graph）
-    user_text = state.get("user_input") or state.get("question", "")
-    event_dictionary = state.get("event_dictionary", [])
-    # 如果没有事件字典，使用默认配置（全部事件）
+    user_text = state_get(state, "user_input") or state_get(state, "question", "") or ""
+    event_dictionary = state_get(state, "event_dictionary", []) or []
     if not event_dictionary:
         logger.warning("事件字典为空，使用默认数据需求")
-        return {"data_requirement": DEFAULT_DATA_REQUIREMENT.copy()}
+        return {"data_requirement": DataRequirement.model_validate(DEFAULT_DATA_REQUIREMENT)}
 
-    model_config = llm_model_config_from_mapping(state.get("model_config"))
+    model_config = llm_model_config_from_mapping(
+        state_get(state, "llm_model") or state_get(state, "model_config")
+    )
 
-    # 构建提示词
     system_prompt = build_data_requirement_system_prompt()
     user_message = build_data_requirement_user_message(user_text, event_dictionary)
 
     try:
-        # 调用 LLM
         response = await llm_client.invoke(
             messages=[{"role": "user", "content": user_message}],
             model_config=model_config,
             system_prompt=system_prompt,
         )
 
-        # 解析 LLM 返回的 JSON 结果
         requirement = _parse_data_requirement(response.content)
 
-        # 验证 event_ids：只保留在事件字典中存在的 ID
         valid_event_ids = _extract_valid_event_ids(event_dictionary)
         requirement["event_ids"] = [
             eid for eid in requirement.get("event_ids", [])
             if eid in valid_event_ids
         ]
 
-        # 验证 time_range
         if requirement.get("time_range") not in VALID_TIME_RANGES:
             requirement["time_range"] = DEFAULT_DATA_REQUIREMENT["time_range"]
 
-        # 验证 limit
         limit = requirement.get("limit", DEFAULT_DATA_REQUIREMENT["limit"])
         if not isinstance(limit, int) or limit <= 0:
             limit = DEFAULT_DATA_REQUIREMENT["limit"]
@@ -108,7 +90,6 @@ async def judge_data_requirement(state: Dict[str, Any]) -> Dict[str, Any]:
             limit = 500
         requirement["limit"] = limit
 
-        # 调用拉史前换成 unix，不再把枚举原样传给 filter
         from app.shared.history_window import enum_to_unix
 
         start_u, end_u = enum_to_unix(str(requirement.get("time_range") or "last_7_days"))
@@ -116,7 +97,6 @@ async def judge_data_requirement(state: Dict[str, Any]) -> Dict[str, Any]:
         requirement["end_time"] = end_u
 
     except Exception as e:
-        # LLM 调用失败，使用默认配置
         logger.error(f"数据需求判断 LLM 调用失败: {str(e)}")
         requirement = DEFAULT_DATA_REQUIREMENT.copy()
         from app.shared.history_window import enum_to_unix
@@ -125,7 +105,7 @@ async def judge_data_requirement(state: Dict[str, Any]) -> Dict[str, Any]:
         requirement["start_time"] = start_u
         requirement["end_time"] = end_u
 
-    return {"data_requirement": requirement}
+    return {"data_requirement": DataRequirement.model_validate(requirement)}
 
 
 def _parse_data_requirement(content: str) -> Dict[str, Any]:

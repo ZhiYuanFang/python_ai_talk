@@ -16,50 +16,21 @@
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from app.feeding.graphs.nodes.prompts.intent_classification import (
     build_intent_classification_system_prompt,
     build_intent_classification_user_message,
 )
+from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
+from app.feeding.services.event_name_match import match_feeding_event
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
 from app.shared.constants import IntentAction, MatchSource, TargetType
+from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
-
-
-def _match_feeding_event(
-    event_name: str, event_dictionary: list[dict[str, Any]]
-) -> Optional[dict[str, Any]]:
-    """
-    在事件字典（全量树，含父）中匹配事件。
-
-    业务逻辑：
-    1. 先精确匹配名称（父名如「换尿布」优先于包含匹配）
-    2. 没有完全匹配再做包含关系
-    3. 返回匹配到的事件信息
-
-    Args:
-        event_name: LLM 识别出的事件名称
-        event_dictionary: 全量事件字典列表
-
-    Returns:
-        匹配到的事件字典，未匹配到时返回 None
-    """
-    # 首先尝试精确匹配
-    for event in event_dictionary:
-        if event.get("event_name") == event_name:
-            return event
-
-    # 尝试包含匹配
-    for event in event_dictionary:
-        en = event.get("event_name") or ""
-        if event_name and en and (event_name in en or en in event_name):
-            return event
-
-    return None
 
 
 def _parse_intent_result(content: str) -> Dict[str, Any]:
@@ -104,7 +75,7 @@ def _parse_intent_result(content: str) -> Dict[str, Any]:
         }
 
 
-async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
+async def classify_intent(state: Any) -> Dict[str, Any]:
     """
     意图分类节点
 
@@ -123,17 +94,24 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         更新后的状态字典，包含意图分类结果
     """
-    # 业务说明：路由注入 user_input / model_config，与 IntentState 对齐；兼容旧字段 text / model
-    text = state.get("user_input") or state.get("text", "")
+    # 业务说明：路由注入 user_input / llm_model，与 IntentState 对齐；兼容旧字段 text / model
+    text = state_get(state, "user_input") or state_get(state, "text", "")
     # 分类必须看见父名；叶子视图不够匹配「换尿布」
     event_dictionary = (
-        state.get("event_dictionary_full") or state.get("event_dictionary") or []
+        state_get(state, "event_dictionary_full")
+        or state_get(state, "event_dictionary")
+        or []
     )
-    device_no = state.get("device_no", "")
+    device_no = state_get(state, "device_no", "")
 
-    # 优先 model_config，兼容旧字段 model；空则纯保底序
-    model_config = state.get("model_config") or state.get("model") or {}
-    llm_model_config = llm_model_config_from_mapping(model_config)
+    # llm_model 为图 State 字段；兼容过渡 dict 键 model_config / model；空则纯保底序
+    llm_model = (
+        state_get(state, "llm_model")
+        or state_get(state, "model_config")
+        or state_get(state, "model")
+        or {}
+    )
+    llm_model_config = llm_model_config_from_mapping(llm_model)
 
     logger.info(
         "开始意图分类: device_no=%s, text=%s..., model=%s/%s",
@@ -144,11 +122,10 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     try:
-        # 构建提示词：字段含义 + 表 + 备注/进行中数据，不靠话术关键字
+        # 构建提示词：字段含义 + 表 + 进行中数据；备注反查在分类后做
         system_prompt = build_intent_classification_system_prompt(
             event_dictionary,
-            remark_probe_hint=str(state.get("remark_probe_hint") or ""),
-            in_progress_hint=str(state.get("in_progress_hint") or ""),
+            in_progress_hint=str(state_get(state, "in_progress_hint") or ""),
         )
         user_message = build_intent_classification_user_message(text)
 
@@ -158,35 +135,33 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
             system_prompt=system_prompt,
         )
 
+
         # 解析意图结果
         intent_result = _parse_intent_result(response.content)
 
-        # 处理新事件场景
+        # 字典匹配（含简称/进行态）；对不上留给分类后备注反查，不当新类型
         if intent_result.get("event_name") and not intent_result.get("event_id"):
-            matched_event = _match_feeding_event(
+            matched_event = match_feeding_event(
                 intent_result["event_name"], event_dictionary
             )
             if matched_event:
-                # 匹配到已有事件，使用已有事件的 ID
                 intent_result["event_id"] = matched_event["event_id"]
+                intent_result["event_name"] = matched_event.get("event_name") or intent_result[
+                    "event_name"
+                ]
                 intent_result["is_new_event"] = False
             else:
-                # 禁止新建事件：记入 missing，不当新类型
+                # 禁止新建：清空 id，名称留给备注反查；暂不写入 missing
                 intent_result["is_new_event"] = False
-                missing = list(intent_result.get("missing_events") or [])
-                name = intent_result.get("event_name") or ""
-                if name and name not in missing:
-                    missing.append(name)
-                intent_result["missing_events"] = missing
                 intent_result["event_id"] = ""
         elif intent_result.get("event_id"):
-            # 匹配到已有事件
             intent_result["is_new_event"] = False
 
         # 数量提取：优先使用向量匹配已提取的数量，未提取到时尝试本地提取
         vector_quantity = None
-        if state.get("intent_result") and state["intent_result"].get("quantity") is not None:
-            vector_quantity = state["intent_result"]["quantity"]
+        prior_ir = coerce_intent_result(state_get(state, "intent_result"))
+        if prior_ir.quantity is not None:
+            vector_quantity = prior_ir.quantity
 
         if vector_quantity is not None:
             intent_result["quantity"] = vector_quantity
@@ -210,7 +185,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         intent_result.setdefault("event_unit", None)
         intent_result.setdefault("is_new_event", False)
         intent_result.setdefault("op", "")
-        intent_result.setdefault("remark_keyword", state.get("remark_keyword") or "")
+        intent_result.setdefault("remark_keyword", state_get(state, "remark_keyword") or "")
         intent_result.setdefault("event_ids", [])
         intent_result.setdefault("missing_events", [])
         intent_result.setdefault("match_source", MatchSource.LLM.value)
@@ -228,9 +203,12 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
                 # 去掉模型误填的类型，落库只认字典
                 event.pop("event_type", None)
                 if event.get("event_name") and not event.get("event_id"):
-                    matched = _match_feeding_event(event["event_name"], event_dictionary)
+                    matched = match_feeding_event(event["event_name"], event_dictionary)
                     if matched:
                         event["event_id"] = matched["event_id"]
+                        event["event_name"] = matched.get("event_name") or event[
+                            "event_name"
+                        ]
                     else:
                         event["event_id"] = ""
                 # 多事件中每个事件也尝试提取数量
@@ -286,7 +264,7 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         return {
-            "intent_result": intent_result,
+            "intent_result": IntentResult.model_validate(intent_result),
             "match_confidence": 1.0,
             "match_source": MatchSource.LLM.value,
             "need_confirm": need_confirm,
@@ -297,20 +275,20 @@ async def classify_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         logger.error(f"意图分类失败: {e}", exc_info=True)
         # 分类失败时返回默认的 conversation 类型
         return {
-            "intent_result": {
-                "target_type": TargetType.CONVERSATION.value,
-                "action": IntentAction.REPLY.value,
-                "event_name": "",
-                "event_id": "",
-                "quantity": None,
-                "event_type": None,
-                "event_unit": None,
-                "is_new_event": False,
-                "match_source": MatchSource.LLM.value,
-                "match_confidence": 0.0,
-                "keywords": [],
-                "content": "AI 服务暂时不可用，请稍后再试",
-            },
+            "intent_result": IntentResult(
+                target_type=TargetType.CONVERSATION.value,
+                action=IntentAction.REPLY.value,
+                event_name="",
+                event_id="",
+                quantity=None,
+                event_type=None,
+                event_unit=None,
+                is_new_event=False,
+                match_source=MatchSource.LLM.value,
+                match_confidence=0.0,
+                keywords=[],
+                content="AI 服务暂时不可用，请稍后再试",
+            ),
             "match_confidence": 0.0,
             "match_source": MatchSource.LLM.value,
         }

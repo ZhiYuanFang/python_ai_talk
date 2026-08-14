@@ -16,6 +16,7 @@ import logging
 from typing import Any, Dict, List
 
 from app.config.settings import settings
+from app.shared.graphs.state_patch import state_get
 from app.shared.vector_store import vector_store
 
 logger = logging.getLogger(__name__)
@@ -119,24 +120,11 @@ def filter_knowledge_for_prompt(
     return kept
 
 
-async def search_vectors(state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    向量检索节点函数
-
-    业务逻辑：
-    1. 读取查询词并检索候选
-    2. 过滤为高匹配子集写入 knowledge（供 prompt 与飞轮）
-    3. 异常时返回空列表，不中断流程
-
-    Args:
-        state: 当前图状态
-
-    Returns:
-        需要更新的 State 字段字典
-    """
-    query = state.get("user_input") or state.get("question", "")
+async def search_vectors(state: Any) -> Dict[str, Any]:
+    """向量检索节点。"""
+    query = state_get(state, "user_input") or state_get(state, "question", "") or ""
     if not query:
-        event_info = state.get("event_info") or {}
+        event_info = state_get(state, "event_info") or {}
         if isinstance(event_info, dict):
             query = event_info.get("event_name") or ""
 

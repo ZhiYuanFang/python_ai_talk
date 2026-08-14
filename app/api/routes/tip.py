@@ -16,7 +16,7 @@
 import json
 import logging
 import uuid
-from typing import Any, AsyncGenerator, Dict
+from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -32,8 +32,11 @@ from app.shared.companion_session import (
     format_chat_turns_for_prompt,
 )
 from app.shared.graphs.node_thinking import ensure_orchestration_thinking_content
+from app.shared.graphs.state_patch import state_get
 from app.shared.graphs.stream_graph import iter_graph_custom_thinking
+from app.shared.schemas.data_requirement import DataRequirement
 from app.tip.graphs.nodes.stream_tip_response import stream_tip_response
+from app.tip.graphs.states.tip_state import TipState
 from app.tip.graphs.tip_graph import tip_graph
 from app.tip.schemas.tip import TipRequest, TipStreamResponse
 
@@ -69,30 +72,30 @@ async def tip_stream(request: TipRequest):
     session = await companion_session_store.get(request.device_no)
     chat_context = format_chat_turns_for_prompt(session.turns)
 
-    initial_state: Dict[str, Any] = {
-        "event_info": {
+    tip_state = TipState(
+        event_info={
             "event_id": request.event_id,
             "event_name": request.event_name,
         },
-        "question": request.event_name,
-        "device_no": request.device_no,
-        "model_config": {
+        question=request.event_name,
+        device_no=request.device_no,
+        llm_model={
             "provider": request.model.provider,
             "name": request.model.name,
             "max_in_flight": request.model.max_in_flight,
         },
-        "event_dictionary": event_dictionary,
-        "chat_context": chat_context,
-        "data_requirement": {
-            "event_ids": [request.event_id],
-            "start_time": _tip_week_start(),
-            "end_time": _tip_now(),
-            "limit": 20,
-        },
-    }
+        event_dictionary=event_dictionary,
+        chat_context=chat_context,
+        data_requirement=DataRequirement(
+            event_ids=[request.event_id],
+            start_time=_tip_week_start(),
+            end_time=_tip_now(),
+            limit=20,
+        ),
+    )
 
     return StreamingResponse(
-        _stream_tip_response(initial_state, request=request),
+        _stream_tip_response(tip_state, request=request),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -103,13 +106,13 @@ async def tip_stream(request: TipRequest):
 
 
 async def _stream_tip_response(
-    initial_state: Dict[str, Any],
+    initial_state: TipState,
     *,
     request: TipRequest,
 ) -> AsyncGenerator[str, None]:
     """生成 tip SSE：tip_graph custom thinking → 流式回答 → 写共享会话。"""
     answer_id = f"tip_{uuid.uuid4().hex[:12]}"
-    final_state: Dict[str, Any] = dict(initial_state)
+    final_state: Any = initial_state
 
     async for kind, payload in iter_graph_custom_thinking(tip_graph, initial_state):
         if kind == "thinking":
@@ -119,7 +122,7 @@ async def _stream_tip_response(
             )
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
         elif kind == "final":
-            final_state = dict(payload)
+            final_state = payload
 
     llm_start_event = TipStreamResponse(
         type="thinking",
@@ -147,8 +150,8 @@ async def _stream_tip_response(
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
     full_answer = "".join(answer_parts)
-    knowledge_ids = extract_knowledge_ids(final_state.get("knowledge"))
-    age_band = age_band_from_months(final_state.get("baby_age_months"))
+    knowledge_ids = extract_knowledge_ids(state_get(final_state, "knowledge"))
+    age_band = age_band_from_months(state_get(final_state, "baby_age_months"))
 
     try:
         await companion_session_store.append_turn(

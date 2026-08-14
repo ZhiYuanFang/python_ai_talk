@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from app.feeding.schemas.intent_result import IntentResult
 from app.feeding.services.intent_cache_store import (
     INTENT_CACHE_HIGH_THRESHOLD,
     INTENT_CACHE_QUALITY_MIN,
@@ -19,19 +20,20 @@ from app.feeding.services.intent_cache_store import (
     last_cache_turn_store,
 )
 from app.shared.constants import MatchSource
+from app.shared.graphs.state_patch import state_get
 
 logger = logging.getLogger(__name__)
 
 
-def match_intent_cache(state: Dict[str, Any]) -> Dict[str, Any]:
+def match_intent_cache(state: Any) -> Dict[str, Any]:
     """
     检索意图缓存。
 
     命中高置信且质量分达标：写入 intent_result，match_source=cache。
     未命中：保持空，交给后续探针/分类。
     """
-    text = state.get("user_input") or state.get("text", "")
-    device_no = state.get("device_no") or ""
+    text = state_get(state, "user_input") or state_get(state, "text", "")
+    device_no = state_get(state, "device_no") or ""
     hits = intent_cache_store.search(text, n_results=1)
     if not hits:
         logger.info("意图缓存未命中")
@@ -63,7 +65,7 @@ def match_intent_cache(state: Dict[str, Any]) -> Dict[str, Any]:
         f"quality={quality}, events={len(intent_result.get('events') or [])}"
     )
     return {
-        "intent_result": intent_result,
+        "intent_result": IntentResult.model_validate(intent_result),
         "intent_cache_hit": True,
         "match_confidence": score,
         "match_source": MatchSource.VECTOR.value,

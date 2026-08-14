@@ -24,7 +24,7 @@ from langgraph.config import get_stream_writer
 logger = logging.getLogger(__name__)
 
 NodeFn = Callable[
-    [Dict[str, Any]],
+    [Any],
     Union[Dict[str, Any], Awaitable[Dict[str, Any]]],
 ]
 
@@ -89,7 +89,7 @@ def with_node_thinking(
         get_message: 节点名 → 中文 thinking
     """
 
-    async def _async_wrapped(state: Dict[str, Any]) -> Dict[str, Any]:
+    async def _async_wrapped(state: Any) -> Dict[str, Any]:
         # 推送 thinking 文案，供 astream(custom) 消费
         emit_thinking(node_name, get_message(node_name))
         # 让出事件循环，使 astream(custom) 消费者先收到 thinking 再进慢逻辑

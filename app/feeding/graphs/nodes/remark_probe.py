@@ -1,65 +1,23 @@
 """
-分类前探针：备注模糊 + 进行中计时摘要
+分类前探针：仅进行中计时摘要
 
 业务说明：
 缓存未命中时拉近窗历史，筛进行中计时注入分类（不含 history_id）。
-用户词不在字典时再打备注模糊，一行摘要供分类把专名对到已有事件。
-不把原始行列表注入 prompt。是否查询由 LLM 按字段含义判断，不用本地句式正则。
+备注反查已移到分类后（resolve_remark_event），本节点不再做 OOV 备注 filter。
 """
 
 from __future__ import annotations
 
 import logging
-import re
-from collections import Counter
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from app.feeding.services.event_hierarchy import get_event_by_id
+from app.shared.graphs.state_patch import state_get
 from app.shared.history_window import enum_to_unix, shanghai_tz
 from app.shared.http_client import http_client
 
 logger = logging.getLogger(__name__)
-
-# 剥掉常见虚词，剩下的当备注专名候选（不是判断查/删）
-_STRIP_RE = re.compile(
-    r"上一次|上次|最近一次|什么时候|啥时候|何时|吃的|喝的|吃了|喝了|"
-    r"查一下|查查|分别|是|的|了|呢|吗|呀|啊|\s+",
-)
-
-
-def extract_oov_token(text: str, event_names: List[str]) -> Optional[str]:
-    """抽出不在字典里的专名候选。"""
-    t = (text or "").strip()
-    leftover = _STRIP_RE.sub("", t)
-    leftover = leftover.strip("？?。．.!！，,、")
-    if not leftover or len(leftover) > 20:
-        return None
-    names = {n.strip() for n in event_names if n and n.strip()}
-    if leftover in names:
-        return None
-    for n in names:
-        if leftover in n or n in leftover:
-            return None
-    return leftover
-
-
-def _summarize_hits(rows: List[Dict[str, Any]], keyword: str) -> str:
-    """聚合成一行：事件名 × 次数，最近时间。"""
-    names: List[str] = []
-    latest = ""
-    for row in rows:
-        name = str(row.get("eventName") or row.get("event_name") or "")
-        if name:
-            names.append(name)
-        if not latest:
-            latest = str(row.get("startTime") or row.get("start_time") or "")
-    if not names:
-        return f"备注含 {keyword}：近窗无命中"
-    counts = Counter(names)
-    parts = [f"{n} ×{c}" for n, c in counts.most_common()]
-    extra = f"，最近 {latest}" if latest else ""
-    return f"备注含 {keyword}：{'、'.join(parts)}{extra}"
 
 
 def _is_open_end(row: Dict[str, Any]) -> bool:
@@ -144,18 +102,19 @@ async def _fetch_recent_rows(device_no: str) -> List[Dict[str, Any]]:
     )
 
 
-async def remark_probe(state: Dict[str, Any]) -> Dict[str, Any]:
+async def in_progress_probe(state: Any) -> Dict[str, Any]:
     """
-    分类前探针：进行中摘要必做；备注仅在抽出字典外词时请求。
+    分类前进行中探针：只注入计时摘要。
 
     缓存已命中则跳过。
     """
-    if state.get("intent_cache_hit"):
+    if state_get(state, "intent_cache_hit"):
         return {}
-    text = state.get("user_input") or ""
-    device_no = state.get("device_no") or ""
+    device_no = state_get(state, "device_no") or ""
     full_events = (
-        state.get("event_dictionary_full") or state.get("event_dictionary") or []
+        state_get(state, "event_dictionary_full")
+        or state_get(state, "event_dictionary")
+        or []
     )
     in_progress_hint = "当前无进行中计时。"
     try:
@@ -164,39 +123,9 @@ async def remark_probe(state: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:
         logger.warning(f"进行中探针失败: {exc}")
         in_progress_hint = "当前无进行中计时。"
+    logger.info(f"进行中探针: {in_progress_hint[:80]}")
+    return {"in_progress_hint": in_progress_hint}
 
-    dictionary = state.get("event_dictionary") or []
-    names = [str(e.get("event_name") or "") for e in dictionary]
-    # 全量树名字也参与 OOV 判断，避免父名被当成备注
-    names.extend(str(e.get("event_name") or "") for e in full_events)
-    token = extract_oov_token(text, names)
-    if not token:
-        logger.info(f"进行中探针: {in_progress_hint[:80]}")
-        return {
-            "remark_probe_hint": "",
-            "in_progress_hint": in_progress_hint,
-        }
-    start_time, end_time = enum_to_unix("last_30_days")
-    try:
-        rows = await http_client.get_filtered_history_events(
-            device_no=device_no,
-            event_ids=None,
-            start_time=start_time,
-            end_time=end_time,
-            limit=10,
-            remark=token,
-        )
-    except Exception as exc:
-        logger.warning(f"备注探针失败: {exc}")
-        return {
-            "remark_probe_hint": "",
-            "remark_keyword": token,
-            "in_progress_hint": in_progress_hint,
-        }
-    hint = _summarize_hits(rows or [], token)
-    logger.info(f"备注探针: token={token}, hint={hint}; 进行中={in_progress_hint[:80]}")
-    return {
-        "remark_probe_hint": hint,
-        "remark_keyword": token,
-        "in_progress_hint": in_progress_hint,
-    }
+
+# 兼容旧节点名导入（图已改用 in_progress_probe）
+remark_probe = in_progress_probe

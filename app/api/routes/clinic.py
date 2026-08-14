@@ -19,6 +19,8 @@ from app.clinic.graphs.clinic_graph import clinic_graph
 from app.clinic.graphs.nodes.generate_clinic_answer import generate_clinic_answer
 from app.clinic.graphs.nodes.stream_response import stream_response
 from app.clinic.graphs.nodes.thinking_messages import get_thinking_message
+from app.clinic.graphs.states.clinic_state import ClinicState
+from app.shared.graphs.state_patch import state_get
 from app.feeding.schemas.intent import ClinicRequest, ClinicStreamResponse, ClinicSyncResponse
 from app.feeding.services.event_cache import event_cache
 from app.shared.baby_age import age_band_from_months
@@ -59,16 +61,17 @@ async def clinic_sync(request: ClinicRequest):
     event_dictionary = await event_cache.get_event_dictionary()
     session = await companion_session_store.get(request.device_no)
     chat_context = format_chat_turns_for_prompt(session.turns)
-    initial_state: Dict[str, Any] = {
-        "question": request.question,
-        "device_no": request.device_no,
-        "model_config": _clinic_model_dict(request),
-        "event_dictionary": event_dictionary,
-        "chat_context": chat_context,
-    }
-    final_state = await clinic_graph.ainvoke(initial_state)
+    clinic_state = ClinicState(
+        question=request.question,
+        device_no=request.device_no,
+        llm_model=_clinic_model_dict(request),
+        event_dictionary=event_dictionary,
+        chat_context=chat_context,
+    )
+    # LangGraph 边界：Pydantic State 序列化为 dict 传入 ainvoke
+    final_state = await clinic_graph.ainvoke(clinic_state.model_dump())
     # 捷径命中用库内答案；否则同步生成（与 stream 同提示词）
-    answer = str(final_state.get("qa_answer") or "").strip()
+    answer = str(state_get(final_state, "qa_answer") or "").strip()
     if not answer:
         try:
             gen = await generate_clinic_answer(final_state)
@@ -87,16 +90,16 @@ async def clinic_sync(request: ClinicRequest):
             assistant=answer,
             source="clinic",
             answer_id=answer_id,
-            knowledge_ids=extract_knowledge_ids(final_state.get("knowledge")),
+            knowledge_ids=extract_knowledge_ids(state_get(final_state, "knowledge")),
             suggestion_text=answer,
-            standalone_question=final_state.get("standalone_question") or "",
-            age_band=final_state.get("age_band")
-            or age_band_from_months(final_state.get("baby_age_months"))
+            standalone_question=state_get(final_state, "standalone_question") or "",
+            age_band=state_get(final_state, "age_band")
+            or age_band_from_months(state_get(final_state, "baby_age_months"))
             or "",
             history_grounded=derive_history_grounded(final_state),
             qa_match_id=(
-                str(final_state.get("qa_match_id") or "")
-                if final_state.get("qa_hit")
+                str(state_get(final_state, "qa_match_id") or "")
+                if state_get(final_state, "qa_hit")
                 else ""
             ),
         )
@@ -122,16 +125,16 @@ async def clinic_stream(request: ClinicRequest):
     session = await companion_session_store.get(request.device_no)
     chat_context = format_chat_turns_for_prompt(session.turns)
 
-    initial_state: Dict[str, Any] = {
-        "question": request.question,
-        "device_no": request.device_no,
-        "model_config": _clinic_model_dict(request),
-        "event_dictionary": event_dictionary,
-        "chat_context": chat_context,
-    }
+    clinic_state = ClinicState(
+        question=request.question,
+        device_no=request.device_no,
+        llm_model=_clinic_model_dict(request),
+        event_dictionary=event_dictionary,
+        chat_context=chat_context,
+    )
 
     return StreamingResponse(
-        _stream_clinic_response(initial_state, session_device_no=request.device_no),
+        _stream_clinic_response(clinic_state, session_device_no=request.device_no),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -142,14 +145,14 @@ async def clinic_stream(request: ClinicRequest):
 
 
 async def _stream_clinic_response(
-    initial_state: Dict[str, Any],
+    initial_state: ClinicState,
     *,
     session_device_no: str,
 ) -> AsyncGenerator[str, None]:
     """生成 clinic SSE：clinic_graph custom thinking → 流式/捷径回答 → 写会话。"""
     answer_id = f"clinic_{uuid.uuid4().hex[:12]}"
-    final_state: Dict[str, Any] = dict(initial_state)
-    question = str(initial_state.get("question") or "")
+    final_state: Any = initial_state
+    question = str(state_get(initial_state, "question") or "")
 
     async for kind, payload in iter_graph_custom_thinking(clinic_graph, initial_state):
         if kind == "thinking":
@@ -159,16 +162,18 @@ async def _stream_clinic_response(
             )
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
         elif kind == "final":
-            final_state = dict(payload)
+            final_state = payload
 
     answer_parts: list[str] = []
-    if final_state.get("qa_hit") and str(final_state.get("qa_answer") or "").strip():
+    if state_get(final_state, "qa_hit") and str(
+        state_get(final_state, "qa_answer") or ""
+    ).strip():
         logger.info(
             "clinic 流式走 Q&A 捷径: id=%s, sim=%s",
-            final_state.get("qa_match_id"),
-            final_state.get("qa_match_score"),
+            state_get(final_state, "qa_match_id"),
+            state_get(final_state, "qa_match_score"),
         )
-        full_answer = str(final_state.get("qa_answer") or "").strip()
+        full_answer = str(state_get(final_state, "qa_answer") or "").strip()
         answer_parts.append(full_answer)
         event = ClinicStreamResponse(type="answer", content=full_answer)
         yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
@@ -198,9 +203,9 @@ async def _stream_clinic_response(
                 yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
     full_answer = "".join(answer_parts)
-    knowledge_ids = extract_knowledge_ids(final_state.get("knowledge"))
-    age_band = final_state.get("age_band") or age_band_from_months(
-        final_state.get("baby_age_months")
+    knowledge_ids = extract_knowledge_ids(state_get(final_state, "knowledge"))
+    age_band = state_get(final_state, "age_band") or age_band_from_months(
+        state_get(final_state, "baby_age_months")
     )
 
     try:
@@ -212,12 +217,12 @@ async def _stream_clinic_response(
             answer_id=answer_id,
             knowledge_ids=knowledge_ids,
             suggestion_text=full_answer,
-            standalone_question=final_state.get("standalone_question") or "",
+            standalone_question=state_get(final_state, "standalone_question") or "",
             age_band=age_band or "",
             history_grounded=derive_history_grounded(final_state),
             qa_match_id=(
-                str(final_state.get("qa_match_id") or "")
-                if final_state.get("qa_hit")
+                str(state_get(final_state, "qa_match_id") or "")
+                if state_get(final_state, "qa_hit")
                 else ""
             ),
         )

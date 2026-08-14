@@ -22,6 +22,7 @@ from app.care_alert.graphs.nodes.prompts.history_compact import (
     build_care_alert_history_prompt_blocks,
 )
 from app.care_alert.schemas.care_alert import CareAlertItemDto, CareAlertReasonDto
+from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
@@ -375,29 +376,27 @@ async def generate_care_alerts(state: Dict[str, Any]) -> Dict[str, Any]:
     调用 LLM 生成护理留意 items。
 
     Args:
-        state: 含 day、月龄、历史、画像、model_config
+        state: 含 day、月龄、历史、画像、llm_model
 
     Returns:
         {"items": [...]}；有史+legend 时保证至少 1 条（含软兜底）
     """
-    model_config = llm_model_config_from_mapping(state.get("model_config"))
+    model_config = llm_model_config_from_mapping(
+        state_get(state, "llm_model") or state_get(state, "model_config")
+    )
 
-    # 月龄：请求透传优先已在 state；未知为 None
-    if "baby_age_months" not in state:
-        baby_age_months = None
-    else:
-        baby_age_months = state.get("baby_age_months")
+    baby_age_months: Optional[int] = state_get(state, "baby_age_months")
     age_for_norm = baby_age_months if isinstance(baby_age_months, int) else None
-    history_events = state.get("history_events") or []
+    history_events = state_get(state, "history_events") or []
 
     # system：本地 prompt 静态块；user：运行时月龄/历史
     system_prompt = build_care_alert_system_prompt()
     user_message = build_care_alert_user_message(
-        day=str(state.get("day") or ""),
+        day=str(state_get(state, "day") or ""),
         baby_age_months=baby_age_months,
         history_events=history_events,
-        baby_profile=state.get("baby_profile") or {},
-        history_summary=state.get("history_summary"),
+        baby_profile=state_get(state, "baby_profile") or {},
+        history_summary=state_get(state, "history_summary"),
     )
 
     # 无首选时 model_config 为 None，走 invoke 纯保底；日志勿解引用

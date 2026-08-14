@@ -2,71 +2,50 @@
 意图分析图的状态定义
 
 业务说明：
-定义 intent_graph 的 State 结构，包含意图分析流程中所有节点需要的输入和输出字段。
-State 在图中传递，每个节点读取需要的字段并返回需要更新的字段。
-
-设计思路：
-1. 使用 TypedDict 定义状态，符合 LangGraph 的标准做法
-2. 所有字段均为可选（TypedDict 默认 total=True，但所有字段初始可能为空）
-3. 字段命名使用蛇形命名，与 Python 代码风格一致
+Pydantic State，路由构造赋值；节点返回字段补丁合并。
+原 TypedDict 字段 model_config 与 Pydantic 保留名冲突，改名为 llm_model。
 """
 
-from typing import Any, Dict, List, Optional, TypedDict
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.feeding.schemas.intent_result import IntentResult
+from app.shared.schemas.data_requirement import DataRequirement
 
 
-class IntentState(TypedDict, total=False):
-    """
-    意图分析图的状态类
+class IntentState(BaseModel):
+    """意图分析图状态。"""
 
-    业务说明：
-    存储 intent_graph 执行过程中的所有状态数据。
-    每个节点读取需要的字段，返回需要更新的字段（字典格式）。
+    model_config = ConfigDict(extra="ignore")
 
-    字段说明：
-    - user_input: 用户输入的自然语言文本
-    - device_no: 设备编号
-    - model_config: 模型配置（provider, name, max_in_flight）
-    - event_dictionary: 事件字典列表
-    - intent_result: 意图分类结果（target_type, action, event_name, keywords, content）
-    - data_requirement: 数据需求判断结果（event_ids, time_range, limit）
-    - history_events: 历史记录列表
-    - knowledge: 向量检索结果列表
-    - baby_profile: 宝宝画像信息
-    - response: LLM 生成的最终回答
-    """
+    user_input: str = ""
+    device_no: str = ""
+    # 原 state["model_config"]；避免与 BaseModel.model_config 撞名
+    llm_model: Dict[str, Any] = Field(default_factory=dict)
 
-    # 输入字段（路由传入）
-    user_input: str                    # 用户输入的自然语言文本
-    device_no: str                     # 设备编号
-    model_config: Dict[str, Any]       # 模型配置
+    event_dictionary: List[Dict[str, Any]] = Field(default_factory=list)
+    event_dictionary_full: List[Dict[str, Any]] = Field(default_factory=list)
+    intent_result: Optional[IntentResult] = None
+    data_requirement: Optional[DataRequirement] = None
+    history_events: List[Dict[str, Any]] = Field(default_factory=list)
+    knowledge: List[Dict[str, Any]] = Field(default_factory=list)
+    baby_profile: Dict[str, Any] = Field(default_factory=dict)
+    response: str = ""
 
-    # 中间字段（各节点填充）
-    event_dictionary: List[Dict[str, Any]]  # 叶子事件字典（匹配/落库）
-    event_dictionary_full: List[Dict[str, Any]]  # 全量事件树（父名检测/消歧）
-    intent_result: Dict[str, Any]           # 意图分类结果
-    data_requirement: Dict[str, Any]        # 数据需求判断结果
-    history_events: List[Dict[str, Any]]    # 历史记录列表
-    knowledge: List[Dict[str, Any]]         # 向量检索结果
-    baby_profile: Dict[str, Any]            # 宝宝画像
+    match_confidence: Optional[float] = None
+    match_source: Optional[str] = None
+    matched_vector_id: str = ""
+    intent_cache_hit: bool = False
 
-    # 输出字段（最终结果）
-    response: str                      # LLM 生成的回答
+    need_confirm: bool = False
+    confirm_type: str = ""
+    confirm_message: str = ""
+    conversation_id: str = ""
+    in_progress_hint: str = ""
+    remark_keyword: str = ""
 
-    # 向量匹配相关字段
-    match_confidence: float            # 向量匹配置信度（0-1之间，值越大越相似）
-    match_source: str                  # 匹配来源（"vector"表示向量匹配，"llm"表示LLM分类）
-    matched_vector_id: str             # 匹配到的向量记录ID（用于删除操作）
-    intent_cache_hit: bool             # 本轮是否意图缓存高置信命中
-
-    # 澄清相关字段（同一 /intent 续聊）
-    need_confirm: bool                 # 是否需要用户澄清
-    confirm_type: str                  # parent_disambiguation | leaf_confirm
-    confirm_message: str               # 澄清话术
-    conversation_id: str               # 会话 ID（续聊）
-    remark_probe_hint: str             # 备注探针一行摘要
-    in_progress_hint: str              # 进行中计时摘要（无 history id）
-    remark_keyword: str                # 字典外备注专名
-
-    # 数据飞轮相关字段
-    should_update_vector: bool         # 是否需要更新向量库
-    feedback_recorded: bool            # 反馈是否已记录
+    should_update_vector: bool = False
+    feedback_recorded: bool = False

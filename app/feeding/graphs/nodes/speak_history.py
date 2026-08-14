@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
 from app.feeding.services.event_hierarchy import (
     get_descendant_leaves,
     get_event_by_id,
@@ -23,6 +24,7 @@ from app.feeding.services.intent_cache_store import (
     last_cache_turn_store,
 )
 from app.shared.constants import IntentOp, TargetType
+from app.shared.graphs.state_patch import state_get
 from app.shared.history_prompt_fields import (
     _parse_epoch,
     build_daily_history_summary,
@@ -221,18 +223,18 @@ def _template_parent_latest(
     )
 
 
-async def speak_history(state: Dict[str, Any]) -> Dict[str, Any]:
+async def speak_history(state: Any) -> Dict[str, Any]:
     """拉史并模板播报。"""
-    intent = dict(state.get("intent_result") or {})
+    intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
     op = infer_op(intent)
     if op != IntentOp.READ.value and intent.get("target_type") != TargetType.HISTORY.value:
         return {}
-    device_no = state.get("device_no") or ""
+    device_no = state_get(state, "device_no") or ""
     event_ids = intent.get("event_ids") or []
     if not event_ids and intent.get("event_id"):
         event_ids = [intent.get("event_id")]
     original_ids = [str(x) for x in event_ids if x not in (None, "")]
-    remark = (intent.get("remark_keyword") or state.get("remark_keyword") or "").strip()
+    remark = (intent.get("remark_keyword") or state_get(state, "remark_keyword") or "").strip()
     req = {
         "start_time": intent.get("start_time") or intent.get("startTime"),
         "end_time": intent.get("end_time") or intent.get("endTime"),
@@ -243,9 +245,14 @@ async def speak_history(state: Dict[str, Any]) -> Dict[str, Any]:
     if not original_ids:
         content = "请先说明要查哪个事件，我不会一次拉取全部记录。"
         intent["content"] = content
-        return {"intent_result": intent, "response": content}
+        return {
+            "intent_result": IntentResult.model_validate(intent),
+            "response": content,
+        }
     full_events = (
-        state.get("event_dictionary_full") or state.get("event_dictionary") or []
+        state_get(state, "event_dictionary_full")
+        or state_get(state, "event_dictionary")
+        or []
     )
     query_ids, parent_ids = _expand_query_ids(original_ids, full_events)
     # 父下面没有叶子时仍按原 id 拉，避免空 filter 变成全类型
@@ -262,7 +269,10 @@ async def speak_history(state: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:
         logger.error(f"查记录拉史失败: {exc}", exc_info=True)
         intent["content"] = "暂时没查到历史记录，请稍后再试。"
-        return {"intent_result": intent, "response": intent["content"]}
+        return {
+            "intent_result": IntentResult.model_validate(intent),
+            "response": intent["content"],
+        }
     mode = (intent.get("history_mode") or "point").strip()
     id_to_name = {
         str(e.get("event_id")): e.get("event_name") or "" for e in full_events
@@ -296,7 +306,7 @@ async def speak_history(state: Dict[str, Any]) -> Dict[str, Any]:
         str(cache_event_id), ""
     )
     intent_cache_store.add(
-        rewrite_standalone_document(intent, state.get("user_input") or ""),
+        rewrite_standalone_document(intent, state_get(state, "user_input") or ""),
         {
             "op": IntentOp.READ.value,
             "target_type": TargetType.HISTORY.value,
@@ -311,11 +321,15 @@ async def speak_history(state: Dict[str, Any]) -> Dict[str, Any]:
         },
     )
     # 缓存免确认执行成功后记下短窗，便于下一句同一问扣分
-    if state.get("intent_cache_hit"):
+    if state_get(state, "intent_cache_hit"):
         last_cache_turn_store.remember(
             device_no,
-            state.get("user_input") or "",
-            str(state.get("matched_vector_id") or ""),
+            state_get(state, "user_input") or "",
+            str(state_get(state, "matched_vector_id") or ""),
         )
     logger.info(f"查记录模板: {content[:80]}")
-    return {"intent_result": intent, "response": content, "history_events": rows or []}
+    return {
+        "intent_result": IntentResult.model_validate(intent),
+        "response": content,
+        "history_events": rows or [],
+    }

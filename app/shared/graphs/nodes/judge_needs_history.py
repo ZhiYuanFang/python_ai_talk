@@ -21,31 +21,24 @@ from app.shared.graphs.nodes.prompts.needs_history import (
     build_needs_history_system_prompt,
     build_needs_history_user_message,
 )
+from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
 
-async def judge_needs_history(state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    门禁节点：写出 needs_history；false 时置空 history_events。
-
-    Args:
-        state: 当前图状态
-
-    Returns:
-        需要更新的 State 字段
-    """
-    # 上游（intent history）已认定查记录：省 LLM，钉死 true
-    if state.get("force_needs_history"):
+async def judge_needs_history(state: Any) -> Dict[str, Any]:
+    """门禁节点：写出 needs_history；false 时置空 history_events。"""
+    if state_get(state, "force_needs_history"):
         return {"needs_history": True}
 
-    user_text = state.get("user_input") or state.get("question", "")
+    user_text = state_get(state, "user_input") or state_get(state, "question", "") or ""
     if not str(user_text).strip():
-        # 无问题文本：保守拉取
         return {"needs_history": False}
 
-    model_config = llm_model_config_from_mapping(state.get("model_config"))
+    model_config = llm_model_config_from_mapping(
+        state_get(state, "llm_model") or state_get(state, "model_config")
+    )
     system_prompt = build_needs_history_system_prompt()
     user_message = build_needs_history_user_message(str(user_text))
 

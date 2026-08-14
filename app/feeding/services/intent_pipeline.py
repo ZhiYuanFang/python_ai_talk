@@ -9,9 +9,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 from app.feeding.schemas.intent import IntentEvent, IntentResponse
+from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
 from app.feeding.services.clarification import (
     ResolveStatus,
     build_multi_event_confirm_message,
@@ -38,6 +39,13 @@ from app.shared.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+IntentFields = Union[IntentResult, Mapping[str, Any], Dict[str, Any]]
+
+
+def _intent_fields(intent: IntentFields) -> Dict[str, Any]:
+    """管线入口：IntentResult 或 dict → 字段字典，保持 API 组装不变。"""
+    return coerce_intent_result(intent).to_plain_dict()
 
 
 def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
@@ -93,7 +101,7 @@ def response_from_pending(pending) -> IntentResponse:
 
 
 def create_history_confirm_response(
-    intent_result: Dict[str, Any],
+    intent_result: IntentFields,
     *,
     full_events: List[Dict[str, Any]],
     user_input: str,
@@ -106,17 +114,18 @@ def create_history_confirm_response(
 
     父事件此处仍是是/否，不进入选叶子消歧。
     """
+    fields = _intent_fields(intent_result)
     event_ids = [
         str(x)
-        for x in (intent_result.get("event_ids") or [])
+        for x in (fields.get("event_ids") or [])
         if x not in (None, "")
     ]
-    event_id = str(intent_result.get("event_id") or "")
+    event_id = str(fields.get("event_id") or "")
     if event_id and event_id not in event_ids:
         event_ids = [event_id] + event_ids
     event_name = resolve_event_display_name(
         event_id=event_id,
-        event_name=str(intent_result.get("event_name") or ""),
+        event_name=str(fields.get("event_name") or ""),
         events=full_events,
         event_ids=event_ids,
     )
@@ -128,14 +137,14 @@ def create_history_confirm_response(
         },
         original_utterance=user_input,
         action=IntentAction.SEARCH.value,
-        match_source=str(match_source or intent_result.get("match_source") or ""),
+        match_source=str(match_source or fields.get("match_source") or ""),
         device_no=device_no,
         model_config=model_config,
-        events=intent_result.get("events") or [],
+        events=fields.get("events") or [],
         op="read",
-        remark_keyword=intent_result.get("remark_keyword") or "",
-        start_time=intent_result.get("start_time") or intent_result.get("startTime"),
-        end_time=intent_result.get("end_time") or intent_result.get("endTime"),
+        remark_keyword=fields.get("remark_keyword") or "",
+        start_time=fields.get("start_time") or fields.get("startTime"),
+        end_time=fields.get("end_time") or fields.get("endTime"),
         event_ids=event_ids,
     )
     return response_from_pending(pending)
@@ -246,10 +255,17 @@ async def try_handle_pending(
         if extra_events:
             fields["events"] = extra_events
         fields["op"] = getattr(pending, "op", None) or fields.get("op")
-        fields["remark_keyword"] = getattr(pending, "remark_keyword", None)
+        fields["remark_keyword"] = getattr(pending, "remark_keyword", None) or ""
         # 查记录确认后带上 unix 窗与原始 event_ids（父 id 不在此展开）
         if getattr(pending, "event_ids", None):
             fields["event_ids"] = pending.event_ids
+        elif pending_op == IntentOp.READ.value:
+            # 备注消歧选中叶子：用该叶子 id 拉史
+            leaf_id = str(leaf.get("event_id") or "")
+            fields["event_ids"] = [leaf_id] if leaf_id else []
+            fields["target_type"] = TargetType.HISTORY.value
+            fields["action"] = IntentAction.SEARCH.value
+            fields["op"] = IntentOp.READ.value
         if getattr(pending, "start_time", None) is not None:
             fields["start_time"] = pending.start_time
         if getattr(pending, "end_time", None) is not None:
@@ -324,7 +340,7 @@ def try_exact_parent_disambiguation(
 
 
 def postprocess_feeding_result(
-    intent_result: Dict[str, Any],
+    intent_result: IntentFields,
     *,
     full_events: List[Dict[str, Any]],
     user_input: str,
@@ -340,15 +356,16 @@ def postprocess_feeding_result(
     - 叶子且 need_confirm → leaf_confirm pending（自由文本）
     - 叶子且无需确认 → 直接返回最终结果
     """
-    event_id = intent_result.get("event_id") or ""
-    action = intent_result.get("action") or IntentAction.ONE.value
-    quantity = intent_result.get("quantity")
-    match_source = intent_result.get("match_source") or MatchSource.LLM.value
-    match_confidence = intent_result.get("match_confidence")
+    fields = _intent_fields(intent_result)
+    event_id = fields.get("event_id") or ""
+    action = fields.get("action") or IntentAction.ONE.value
+    quantity = fields.get("quantity")
+    match_source = fields.get("match_source") or MatchSource.LLM.value
+    match_confidence = fields.get("match_confidence")
 
     # 多事件：逐个校验，若含父则整体改消歧（取第一个父）
     # 复合切换可能漏标 action=multi，events 长度>1 同样走多事件确认
-    events = intent_result.get("events") or []
+    events = fields.get("events") or []
     if action == IntentAction.MULTI.value or len(events) > 1:
         for ev in events:
             eid = ev.get("event_id") or ""
@@ -381,14 +398,14 @@ def postprocess_feeding_result(
             device_no=device_no,
             model_config=model_config,
             events=events,
-            op=intent_result.get("op") or "create",
+            op=fields.get("op") or "create",
         )
         # 多事件确认必须点出每件动作（结束/开始/记录），禁止只说「记录以下事件」
         multi_msg = build_multi_event_confirm_message(events)
         if multi_msg:
             pending.clarify_message = multi_msg
         pending.events = events  # type: ignore[attr-defined]
-        pending.op = intent_result.get("op") or "create"  # type: ignore[attr-defined]
+        pending.op = fields.get("op") or "create"  # type: ignore[attr-defined]
         clarification_store.set(pending)
         return response_from_pending(pending)
 
@@ -421,7 +438,7 @@ def postprocess_feeding_result(
     # 叶子：需要确认则 pending；否则直接返回
     leaf = get_event_by_id(event_id, full_events) or {
         "event_id": event_id,
-        "event_name": intent_result.get("event_name") or "",
+        "event_name": fields.get("event_name") or "",
     }
 
     if need_confirm or match_source == MatchSource.LLM.value:
@@ -436,22 +453,22 @@ def postprocess_feeding_result(
                 matched_vector_id=matched_vector_id,
                 device_no=device_no,
                 model_config=model_config,
-                events=intent_result.get("events") or [],
-                op=intent_result.get("op") or "",
-                remark_keyword=intent_result.get("remark_keyword") or "",
-                confirm_message=intent_result.get("confirm_message"),
+                events=fields.get("events") or [],
+                op=fields.get("op") or "",
+                remark_keyword=fields.get("remark_keyword") or "",
+                confirm_message=fields.get("confirm_message"),
             )
             return response_from_pending(pending)
 
-    fields = {
-        **intent_result,
+    out_fields = {
+        **fields,
         "need_confirm": False,
         "confirm_type": None,
         "confirm_message": None,
         "options": [],
         "conversation_id": None,
     }
-    return build_intent_response_from_fields(fields)
+    return build_intent_response_from_fields(out_fields)
 
 
 async def _execute_after_confirm(
@@ -483,7 +500,9 @@ async def _execute_after_confirm(
     else:
         return fields
     merged = dict(fields)
-    merged.update(out.get("intent_result") or {})
+    out_ir = out.get("intent_result")
+    if out_ir is not None:
+        merged.update(coerce_intent_result(out_ir).to_plain_dict())
     if out.get("response"):
         merged["content"] = out["response"]
     return merged

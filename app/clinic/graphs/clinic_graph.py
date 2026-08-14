@@ -22,6 +22,7 @@ from app.clinic.graphs.states.clinic_state import ClinicState
 from app.config.settings import settings
 from app.shared.graphs.history_gate import should_fetch_history
 from app.shared.graphs.node_thinking import with_node_thinking
+from app.shared.graphs.state_patch import state_get
 from app.shared.graphs.nodes.derive_baby_age import derive_baby_age
 from app.shared.graphs.nodes.fetch_baby_profile import fetch_baby_profile
 from app.shared.graphs.nodes.fetch_history import fetch_history
@@ -46,11 +47,11 @@ def _route_after_derive_age(state: ClinicState) -> str:
 
 def _route_after_qa_search(state: ClinicState) -> str:
     """Q&A 检索后：命中格式化，未命中进 prepare。"""
-    if state.get("qa_hit"):
+    if state_get(state, "qa_hit"):
         return "format_qa_answer"
     logger.info(
         "Q&A miss 进入 prepare: reason=%s",
-        state.get("qa_miss_reason") or state.get("qa_rewrite_miss_reason"),
+        state_get(state, "qa_miss_reason") or state_get(state, "qa_rewrite_miss_reason"),
     )
     return "judge_needs_history"
 
@@ -59,14 +60,14 @@ def _route_after_needs_history(state: ClinicState) -> str:
     """门禁之后：需要历史则进范围判断，否则向量或结束。"""
     if should_fetch_history(state):
         return "judge_data_requirement"
-    if state.get("skip_knowledge"):
+    if state_get(state, "skip_knowledge"):
         return "end"
     return "search_vectors"
 
 
 def _route_after_fetch_history(state: ClinicState) -> str:
     """fetch_history 之后。"""
-    if state.get("skip_knowledge"):
+    if state_get(state, "skip_knowledge"):
         return "end"
     return "search_vectors"
 

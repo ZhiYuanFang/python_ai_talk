@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
 from app.feeding.services.history_crud import (
     collect_event_items,
     execute_batch,
@@ -25,18 +26,19 @@ from app.feeding.services.intent_cache_store import (
     last_cache_turn_store,
 )
 from app.shared.constants import IntentOp
+from app.shared.graphs.state_patch import state_get
 
 logger = logging.getLogger(__name__)
 
 
-async def execute_history_crud(state: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_history_crud(state: Any) -> Dict[str, Any]:
     """
     执行批量 CRUD 并回执。
 
     未确认不进本节点（由图路由保证）。
     """
-    intent = dict(state.get("intent_result") or {})
-    if state.get("need_confirm"):
+    intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
+    if state_get(state, "need_confirm"):
         return {}
     op = infer_op(intent)
     if op not in {
@@ -45,8 +47,12 @@ async def execute_history_crud(state: Dict[str, Any]) -> Dict[str, Any]:
         IntentOp.DELETE.value,
     }:
         return {}
-    device_no = state.get("device_no") or ""
-    full_events = state.get("event_dictionary_full") or state.get("event_dictionary") or []
+    device_no = state_get(state, "device_no") or ""
+    full_events = (
+        state_get(state, "event_dictionary_full")
+        or state_get(state, "event_dictionary")
+        or []
+    )
     items, missing = collect_event_items(intent, full_events)
     # 提交前再排一次：end 必须在 create 前面，不依赖模型顺序
     items = sort_end_items_first(items)
@@ -80,7 +86,7 @@ async def execute_history_crud(state: Dict[str, Any]) -> Dict[str, Any]:
         ]
         content = render_persist_content(merged_items, skip_fails, missing)
         intent["content"] = content
-        return {"intent_result": intent, "response": content}
+        return {"intent_result": IntentResult.model_validate(intent), "response": content}
     try:
         results = await execute_batch(device_no, items) if items else []
     except Exception as exc:
@@ -99,7 +105,7 @@ async def execute_history_crud(state: Dict[str, Any]) -> Dict[str, Any]:
     any_ok = any(bool(r.get("ok")) for r in results)
     if any_ok:
         doc = rewrite_standalone_document(
-            intent, state.get("user_input") or ""
+            intent, state_get(state, "user_input") or ""
         )
         intent_cache_store.add(
             doc,
@@ -114,14 +120,14 @@ async def execute_history_crud(state: Dict[str, Any]) -> Dict[str, Any]:
             },
         )
         # 缓存免确认执行成功后记下短窗
-        if state.get("intent_cache_hit"):
+        if state_get(state, "intent_cache_hit"):
             last_cache_turn_store.remember(
                 device_no,
-                state.get("user_input") or "",
-                str(state.get("matched_vector_id") or ""),
+                state_get(state, "user_input") or "",
+                str(state_get(state, "matched_vector_id") or ""),
             )
     logger.info(f"落库回执: {content}")
-    return {"intent_result": intent, "response": content}
+    return {"intent_result": IntentResult.model_validate(intent), "response": content}
 
 
 async def _fill_latest_ids(

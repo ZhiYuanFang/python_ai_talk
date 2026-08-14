@@ -8,13 +8,16 @@ import logging
 from typing import Any, Dict
 
 from app.shared.baby_age import calc_age_months, parse_birthday_to_date, shanghai_now
+from app.shared.graphs.state_patch import state_get
 
 logger = logging.getLogger(__name__)
 
 
-async def derive_baby_age(state: Dict[str, Any]) -> Dict[str, Any]:
+async def derive_baby_age(state: Any) -> Dict[str, Any]:
     """根据 baby_profile.birthday 自算月龄；未知则为 None。"""
-    profile = state.get("baby_profile") or {}
+    profile = state_get(state, "baby_profile") or {}
+    if not isinstance(profile, dict):
+        profile = {}
     birth = parse_birthday_to_date(profile.get("birthday"))
     if birth is None:
         logger.info("宝宝月龄未知：无有效 birthday")
