@@ -29,6 +29,7 @@ from app.feeding.services.event_hierarchy import (
 from app.shared.constants import (
     ConfirmType,
     IntentAction,
+    IntentOp,
     MatchSource,
     ResolveOp,
     ResolveStatus,
@@ -221,13 +222,22 @@ def build_delete_confirm_message(event_name: str) -> str:
     return f"您是要删除「{name}」的记录吗？请回复确认或取消。"
 
 
-def _action_verb_for_confirm(action: str) -> str:
+def _confirm_verb_for_event(ev: Dict[str, Any]) -> str:
     """
-    多事件确认用的短动作词。
+    多事件确认用的短动作词（优先子项 op）。
 
-    业务说明：end→结束，start→开始，其余→记录。必须点出动作，不能只说「记录以下事件」。
+    end→结束；create+start→开始；update→修改；delete→删除；read→查询；其余→记录。
     """
-    a = (action or "").strip().lower()
+    op = str(ev.get("op") or "").strip().lower()
+    if op == "end":
+        return "结束"
+    if op == IntentOp.UPDATE.value:
+        return "修改"
+    if op == IntentOp.DELETE.value:
+        return "删除"
+    if op == IntentOp.READ.value:
+        return "查询"
+    a = str(ev.get("action") or "").strip().lower()
     if a == IntentAction.END.value:
         return "结束"
     if a == IntentAction.START.value:
@@ -240,7 +250,6 @@ def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
     多事件确认问句：逐项点出动作与字典名。
 
     例：您是要结束「爬练习」并开始「坐练习」吗？请回复确认或取消。
-    禁止「记录以下事件：爬练习、坐练习」。
     """
     parts: List[str] = []
     for ev in events or []:
@@ -249,7 +258,7 @@ def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
         name = str(ev.get("event_name") or "").strip()
         if not name:
             continue
-        verb = _action_verb_for_confirm(str(ev.get("action") or ""))
+        verb = _confirm_verb_for_event(ev)
         parts.append(f"{verb}「{name}」")
     if not parts:
         return ""
@@ -260,6 +269,7 @@ def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
     else:
         body = "、".join(parts[:-1]) + "并" + parts[-1]
     return f"您是要{body}吗？请回复确认或取消。"
+
 
 
 def resolve_event_display_name(
@@ -842,13 +852,18 @@ def try_parent_hit_from_event_id(
 
 
 def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
-    """将 pending 转为 IntentResponse 可用字段。"""
-    # 查记录确认对外仍是 history；只认 op=read，不因 action=search 误标
-    is_read = (pending.op or "").strip().lower() == "read"
+    """将 pending 转为 IntentResponse 可用字段（无顶层 op/action）。"""
+    # 查记录确认：pending.op=read 或 events 含 read
+    events = list(pending.events or [])
+    is_read = (pending.op or "").strip().lower() == IntentOp.READ.value
+    if not is_read:
+        is_read = any(
+            str(e.get("op") or "").strip().lower() == IntentOp.READ.value
+            for e in events
+            if isinstance(e, dict)
+        )
     return {
         "target_type": TargetType.HISTORY.value if is_read else TargetType.FEEDING.value,
-        # 澄清态由 need_confirm / confirm_type 表达；action 保留喂养 IntentAction
-        "action": pending.action or IntentAction.ONE.value,
         "event_name": pending.parent_name or (
             pending.options[0]["event_name"] if pending.options else ""
         ),
@@ -856,8 +871,7 @@ def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
         "quantity": pending.quantity,
         "keywords": [],
         "content": pending.clarify_message,
-        "events": pending.events or [],
-        "op": pending.op or None,
+        "events": events,
         "remark_keyword": pending.remark_keyword or None,
         "match_confidence": None,
         "match_source": pending.match_source,
@@ -869,7 +883,8 @@ def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
             {
                 "event_id": o.get("event_id", ""),
                 "event_name": o.get("event_name", ""),
-                "action": pending.action,
+                "op": o.get("op") or pending.op or "",
+                "action": o.get("action") or pending.action or "",
                 "quantity": pending.quantity,
             }
             for o in pending.options
@@ -885,24 +900,53 @@ def leaf_intent_result(
     match_source: str = MatchSource.LLM.value,
     match_confidence: float = 1.0,
     original_utterance: str = "",
+    op: str = "",
+    events: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """构造已落到唯一叶子的 feeding 意图结果。"""
+    """构造已落到叶子的 feeding 意图结果（权威在 events[].op）。"""
     resolved_action = action or IntentAction.ONE.value
+    item_op = (op or "").strip().lower()
+    if not item_op:
+        if resolved_action == IntentAction.END.value:
+            item_op = "end"
+        elif resolved_action == IntentAction.SEARCH.value:
+            item_op = IntentOp.READ.value
+        else:
+            item_op = IntentOp.CREATE.value
+    if events:
+        out_events = list(events)
+    else:
+        out_events = [
+            {
+                "op": item_op,
+                "action": resolved_action
+                if resolved_action
+                in (
+                    IntentAction.START.value,
+                    IntentAction.END.value,
+                    IntentAction.ONE.value,
+                )
+                else "",
+                "event_name": leaf.get("event_name") or "",
+                "event_id": str(leaf.get("event_id") or ""),
+                "quantity": quantity,
+            }
+        ]
     return {
-        "target_type": TargetType.FEEDING.value,
-        "action": resolved_action,
+        "target_type": TargetType.HISTORY.value
+        if item_op == IntentOp.READ.value
+        else TargetType.FEEDING.value,
         "event_name": leaf.get("event_name") or "",
         "event_id": str(leaf.get("event_id") or ""),
         "quantity": quantity,
         "keywords": [resolved_action, leaf.get("event_name") or ""],
         "content": "",
-        "events": [],
+        "events": out_events,
         "match_confidence": match_confidence,
         "match_source": match_source,
         "is_new_event": False,
         "need_confirm": False,
         "confirm_type": None,
-        # 空串而非 None：IntentResult.confirm_message 为 str，Pydantic 拒收 null
         "confirm_message": "",
         "options": [],
         "original_utterance": original_utterance,

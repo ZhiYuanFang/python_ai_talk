@@ -2,9 +2,9 @@
 批量落库节点
 
 业务说明：
-已确认（或高置信免确认）的 create/update/delete 走一条 batch，
+已确认（或高置信免确认）的 create/update/delete/end 走一条 batch，
 用模板填写 content，成功后写意图缓存。
-提交前将 end 项排到 create 前面。
+仅对 update/delete 子项现查 latest；create/end 不因无记录而跳过。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
 from app.feeding.services.history_crud import (
     collect_event_items,
     execute_batch,
-    infer_op,
+    infer_route_kind,
     render_persist_content,
     rewrite_standalone_document,
     sort_end_items_first,
@@ -25,6 +25,7 @@ from app.feeding.services.intent_cache_store import (
     intent_cache_store,
     last_cache_turn_store,
 )
+from app.feeding.services.intent_events import normalize_intent_events
 from app.shared.constants import IntentOp
 from app.shared.graphs.state_patch import state_get
 
@@ -38,14 +39,10 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
     未确认不进本节点（由图路由保证）。
     """
     intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
+    intent = normalize_intent_events(intent)
     if state_get(state, "need_confirm"):
         return {}
-    op = infer_op(intent)
-    if op not in {
-        IntentOp.CREATE.value,
-        IntentOp.UPDATE.value,
-        IntentOp.DELETE.value,
-    }:
+    if infer_route_kind(intent) != "cud":
         return {}
     device_no = state_get(state, "device_no") or ""
     full_events = (
@@ -54,20 +51,18 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
         or []
     )
     items, missing = collect_event_items(intent, full_events)
-    # 提交前再排一次：end 必须在 create 前面，不依赖模型顺序
     items = sort_end_items_first(items)
     intent["missing_events"] = missing
-    intent["op"] = op
-    # 改/删缓存不带 history_id：按事件现查最近一条再写
-    if op in (IntentOp.UPDATE.value, IntentOp.DELETE.value):
-        items = await _fill_latest_ids(device_no, items, op)
+
+    # 仅 update/delete 现查 latest；create/end 保持 id=0
+    items = await _fill_latest_ids_for_mutations(device_no, items)
+
     skip_fails = []
     runnable = []
     for it in items:
-        if it.get("_skip_reason") or (
-            op in (IntentOp.UPDATE.value, IntentOp.DELETE.value)
-            and int(it.get("id") or 0) <= 0
-        ):
+        item_op = (it.get("_item_op") or it.get("op") or "").strip().lower()
+        needs_id = item_op in (IntentOp.UPDATE.value, IntentOp.DELETE.value)
+        if it.get("_skip_reason") or (needs_id and int(it.get("id") or 0) <= 0):
             skip_fails.append(
                 {
                     "index": len(runnable) + len(skip_fails),
@@ -81,7 +76,10 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
     items = runnable
     if not items:
         merged_items = [
-            {"_display_name": sf.get("_display_name") or "事件", "op": op}
+            {
+                "_display_name": sf.get("_display_name") or "事件",
+                "op": "update",
+            }
             for sf in skip_fails
         ]
         content = render_persist_content(merged_items, skip_fails, missing)
@@ -94,11 +92,12 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
         results = [
             {"index": i, "ok": False, "reason": str(exc)} for i in range(len(items))
         ]
-    # 把现查失败项并进回执
     merged_items = list(items)
     merged_results = list(results)
     for sf in skip_fails:
-        merged_items.append({"_display_name": sf.get("_display_name") or "事件", "op": op})
+        merged_items.append(
+            {"_display_name": sf.get("_display_name") or "事件", "op": "update"}
+        )
         merged_results.append(sf)
     content = render_persist_content(merged_items, merged_results, missing)
     intent["content"] = content
@@ -110,16 +109,11 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
         intent_cache_store.add(
             doc,
             {
-                "op": op,
                 "target_type": intent.get("target_type"),
-                "action": intent.get("action"),
-                "event_id": intent.get("event_id"),
-                "event_name": intent.get("event_name"),
                 "events": intent.get("events") or [],
                 "remark_keyword": intent.get("remark_keyword"),
             },
         )
-        # 缓存免确认执行成功后记下短窗
         if state_get(state, "intent_cache_hit"):
             last_cache_turn_store.remember(
                 device_no,
@@ -130,14 +124,18 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
     return {"intent_result": IntentResult.model_validate(intent), "response": content}
 
 
-async def _fill_latest_ids(
-    device_no: str, items: list, op: str
+async def _fill_latest_ids_for_mutations(
+    device_no: str, items: list
 ) -> list:
-    """改/删没有 id 时，按 eventId 拉最近一条。"""
+    """仅对 update/delete 且无 id 的项，按 eventId 拉最近一条。"""
     from app.shared.http_client import http_client
 
     filled = []
     for it in items:
+        item_op = (it.get("_item_op") or it.get("op") or "").strip().lower()
+        if item_op not in (IntentOp.UPDATE.value, IntentOp.DELETE.value):
+            filled.append(it)
+            continue
         if int(it.get("id") or 0) > 0:
             filled.append(it)
             continue
@@ -165,7 +163,9 @@ async def _fill_latest_ids(
             it["id"] = int(hid)
         except (TypeError, ValueError):
             it["id"] = 0
-        if op == IntentOp.UPDATE.value and not it.get("eventNumber"):
-            it["eventNumber"] = int(rows[0].get("eventNumber") or rows[0].get("event_number") or 0)
+        if item_op == IntentOp.UPDATE.value and not it.get("eventNumber"):
+            it["eventNumber"] = int(
+                rows[0].get("eventNumber") or rows[0].get("event_number") or 0
+            )
         filled.append(it)
     return filled

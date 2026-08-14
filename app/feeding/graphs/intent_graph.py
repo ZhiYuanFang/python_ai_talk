@@ -3,8 +3,7 @@
 
 业务说明：
 缓存 → 进行中探针 → 分类 →（有未定名称才）备注反查 → 确认 END / 批量落库 / 模板查记录。
-分类后条件边门控反查；反查节点只做 Go 备注定事件。
-分类前不再做备注 OOV 探针。不再做事件名向量匹配，不再调用 clinic agent。
+路由按 events[].op 与 target_type，不读顶层 op/action。
 """
 
 import logging
@@ -24,7 +23,8 @@ from app.feeding.graphs.nodes.speak_history import speak_history
 from app.feeding.graphs.nodes.thinking_messages import get_thinking_message
 from app.feeding.graphs.states.intent_state import IntentState
 from app.feeding.schemas.intent_result import coerce_intent_result
-from app.feeding.services.history_crud import infer_op
+from app.feeding.services.history_crud import infer_route_kind
+from app.feeding.services.intent_events import normalize_intent_events
 from app.shared.constants import IntentOp, TargetType
 from app.shared.graphs.node_thinking import with_node_thinking
 from app.shared.graphs.state_patch import state_get
@@ -38,37 +38,36 @@ def route_after_cache(state: Any) -> str:
     """缓存命中 CRUD 则执行或查记录；否则进行中探针。"""
     if not state_get(state, "intent_cache_hit"):
         return "in_progress_probe"
-    intent = coerce_intent_result(state_get(state, "intent_result"))
-    op = infer_op(intent.to_plain_dict())
-    if op == IntentOp.READ.value:
+    intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
+    kind = infer_route_kind(intent)
+    if kind == IntentOp.READ.value:
         return "speak_history"
-    if op in (IntentOp.CREATE.value, IntentOp.UPDATE.value, IntentOp.DELETE.value):
+    if kind == "cud":
         return "execute_history_crud"
     return "end"
 
 
 def _route_after_intent_ready(state: Any) -> str:
     """
-    意图已就绪（无需再备注反查）后的落点。
+    意图已就绪后的落点。
 
-    确认 → END；read/history → 模板播报；CUD → 批量落库；其余 END。
+    确认 → END；read → 模板播报；CUD → 批量落库；其余 END。
     """
     if state_get(state, "need_confirm"):
         return "end"
-    intent = coerce_intent_result(state_get(state, "intent_result"))
-    op = infer_op(intent.to_plain_dict())
-    target = intent.target_type or TargetType.CONVERSATION.value
-    if op == IntentOp.READ.value or target == TargetType.HISTORY.value:
+    intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
+    intent = normalize_intent_events(intent)
+    target = str(intent.get("target_type") or TargetType.CONVERSATION.value).lower()
+    kind = infer_route_kind(intent)
+    if kind == IntentOp.READ.value or target == TargetType.HISTORY.value:
         return "speak_history"
-    if op in (IntentOp.CREATE.value, IntentOp.UPDATE.value, IntentOp.DELETE.value):
+    if kind == "cud":
         return "execute_history_crud"
     return "end"
 
 
 def route_after_classify(state: Any) -> str:
-    """
-    分类后：有「有名无 id」槽位才进备注反查；否则直达确认/执行/查记录。
-    """
+    """分类后：有「有名无 id」槽位才进备注反查；否则直达确认/执行/查记录。"""
     intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
     if has_unresolved_event_slots(intent):
         return "resolve_remark_event"
@@ -84,7 +83,7 @@ def _wrap(name: str, fn):
     return with_node_thinking(name, fn, get_thinking_message)
 
 
-def build_intent_graph() -> StateGraph:
+def build_intent_graph():
     """构建意图分析图（无事件名向量、无 clinic）。"""
     graph = StateGraph(State)
 
@@ -111,7 +110,6 @@ def build_intent_graph() -> StateGraph:
             "end": END,
         },
     )
-    # 缓存未命中：进行中摘要 → 分类 →（条件）备注反查或直达落点
     graph.add_edge("in_progress_probe", "classify_intent")
     graph.add_conditional_edges(
         "classify_intent",

@@ -120,6 +120,11 @@ def _apply_leaf_to_slot(
         events[slot] = dict(events[slot])
         events[slot]["event_id"] = eid
         events[slot]["event_name"] = ename
+        if events[slot].get("op") == IntentOp.READ.value or not events[slot].get(
+            "remark_keyword"
+        ):
+            if remark_keyword:
+                events[slot]["remark_keyword"] = remark_keyword
         intent["events"] = events
         # 顶层尚无备注时补上，便于确认与正式拉史
         if not (intent.get("remark_keyword") or "").strip():
@@ -139,8 +144,6 @@ def _unrecognized_response(names: List[str]) -> Dict[str, Any]:
     return {
         "intent_result": IntentResult(
             target_type=TargetType.CONVERSATION.value,
-            action=IntentAction.REPLY.value,
-            op="",
             event_name="",
             event_id="",
             event_ids=[],
@@ -246,8 +249,11 @@ async def resolve_remark_event(state: Any) -> Dict[str, Any]:
 
         if len(leaves) > 1:
             # 多命中：消歧，确认前不拉史不落库
-            op = (intent.get("op") or "").strip().lower()
-            action = intent.get("action") or IntentAction.ONE.value
+            from app.feeding.services.intent_events import first_display_event
+
+            head = first_display_event(intent)
+            op = str(head.get("op") or intent.get("op") or "").strip().lower()
+            action = str(head.get("action") or IntentAction.ONE.value)
             pending = create_remark_disambiguation_pending(
                 keyword=name,
                 leaves=leaves,
@@ -288,8 +294,11 @@ async def resolve_remark_event(state: Any) -> Dict[str, Any]:
     # 反查成功后若仍有 CRUD，保持分类给出的 need_confirm
     need_confirm = bool(state_get(state, "need_confirm", True))
     target = intent.get("target_type")
-    op = (intent.get("op") or "").strip().lower()
-    if target in (TargetType.CONVERSATION.value, TargetType.EXIT.value) and not op:
+    from app.feeding.services.intent_events import event_ops
+
+    if target in (TargetType.CONVERSATION.value, TargetType.EXIT.value) and not event_ops(
+        intent
+    ):
         need_confirm = False
     return {
         "intent_result": IntentResult.model_validate(intent),

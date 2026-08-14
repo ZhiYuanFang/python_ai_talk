@@ -75,14 +75,27 @@ class IntentEvent(BaseModel):
     单个事件模型
 
     业务说明：
-    用于描述喂养事件的单个条目，支持多事件场景的事件列表。
+    喂养 CUD / 查记录的唯一事件载体；每项自带 op。
     """
-    action: str = Field("", description="动作类型：start, end, one")
+    op: str = Field(
+        "",
+        description="子项操作：create|update|delete|end|read",
+    )
+    action: str = Field(
+        "",
+        description="可选形态：start|end|one（create/end 时有意义）",
+    )
     event_name: str = Field("", description="事件名称")
     event_id: str = Field("", description="事件ID")
     quantity: Optional[int] = Field(default=None, description="从用户输入中提取的数量值")
     history_id: Optional[int] = Field(default=None, description="本轮解析或落库的历史行 id，不进飞轮")
     remark: Optional[str] = Field(default=None, description="备注")
+    remark_keyword: Optional[str] = Field(
+        default=None,
+        description="查记录备注关键词（子项级）",
+    )
+    start_time: Optional[int] = Field(default=None, description="读窗起始 Unix 秒")
+    end_time: Optional[int] = Field(default=None, description="读窗结束 Unix 秒")
 
 
 class IntentResponse(BaseModel):
@@ -90,34 +103,31 @@ class IntentResponse(BaseModel):
     意图分析响应模型
 
     业务说明：
-    封装意图分析接口的响应数据，与 Go 项目的 deepSeekUnifiedIntent 结构体保持一致。
-    包含向量匹配、用户确认、数据飞轮和多事件相关字段。
+    信封 + events[]；无顶层 op/action。与 Go AnalyzeIntentResponse 对齐。
     """
     target_type: str = Field(..., description="目标类型：feeding, history, suggest, conversation, exit")
-    action: str = Field(..., description="动作类型：start, end, one, search, suggestion, reply, exit, multi")
-    op: Optional[str] = Field(
-        default=None,
-        description="CRUD 操作：create|read|update|delete；空表示闲聊/退出",
-    )
     remark_keyword: Optional[str] = Field(
         default=None,
-        description="查记录备注关键词，如 AD",
+        description="查记录备注关键词（兼容；权威以 events[].remark_keyword 为准）",
     )
     missing_events: List[str] = Field(
         default_factory=list,
         description="字典外、未落库的名称",
     )
-    event_name: str = Field("", description="事件名称（喂养场景，单事件时使用）")
-    event_id: str = Field("", description="事件ID（喂养场景，单事件时使用）")
-    quantity: Optional[int] = Field(default=None, description="从用户输入中提取的数量值（Python 前置提取）")
-    event_type: Optional[str] = Field(default=None, description="事件类型：number, time, one（新事件时 Python 返回）")
-    event_unit: Optional[str] = Field(default=None, description="事件单位：ml、次、分钟（新事件时 Python 返回）")
+    event_name: str = Field("", description="展示用首事件名（可选，权威在 events）")
+    event_id: str = Field("", description="展示用首事件 id（可选，权威在 events）")
+    quantity: Optional[int] = Field(default=None, description="展示用数量（可选）")
+    event_type: Optional[str] = Field(default=None, description="事件类型（兼容字段）")
+    event_unit: Optional[str] = Field(default=None, description="事件单位（兼容字段）")
     is_new_event: Optional[bool] = Field(default=False, description="是否为新事件")
     keywords: List[str] = Field([], description="匹配的关键词列表")
     content: str = Field("", description="回答内容（对话场景）")
 
-    # 多事件列表（当action为multi时使用）
-    events: List[IntentEvent] = Field([], description="多事件列表，当action为multi时返回")
+    # 涉事件意图的唯一事件列表（闲聊/退出可空）
+    events: List[IntentEvent] = Field(
+        default_factory=list,
+        description="事件列表；每项自带 op",
+    )
 
     # 向量匹配置信度（0-1之间，值越大越相似）
     match_confidence: Optional[float] = Field(default=None, description="向量匹配置信度（0-1之间）")

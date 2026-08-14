@@ -3,64 +3,73 @@
 
 业务说明：
 确认后一次调用 Go batch；按结果拼用户可感知的 content。
-禁止新建事件类型；字典外名称进 missing_events。
-结束计时只交 eventId + action=end，不查进行中、不填 history_id。
-落库前按字典 event_type 盖时间：非计时 endTime=startTime。
-同一 batch 先 end 后 create。
+子项 op 为权威；禁止顶层 op 广播。
+结束计时只交 eventId + op=end；仅 update/delete 现查 latest。
+同一 batch 先 end 后其余。
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from app.feeding.services.event_hierarchy import get_event_by_id
+from app.feeding.services.intent_events import (
+    CUD_OPS,
+    derive_item_op,
+    event_ops,
+    has_read_events,
+    normalize_intent_events,
+)
 from app.shared.constants import IntentAction, IntentOp
 from app.shared.http_client import http_client
 
 logger = logging.getLogger(__name__)
 
 
+def infer_route_kind(intent: Dict[str, Any]) -> str:
+    """
+    由图路由使用：read | cud | ""。
+
+    基于 normalize 后的 events[].op，不读顶层 op/action。
+    """
+    data = normalize_intent_events(dict(intent))
+    if has_read_events(data):
+        return IntentOp.READ.value
+    if event_ops(data) & CUD_OPS:
+        return "cud"
+    return ""
+
+
 def infer_op(intent: Dict[str, Any]) -> str:
-    """从 op 或 action 推断 CRUD 轴。"""
-    op = (intent.get("op") or "").strip().lower()
-    if op in {
+    """
+    兼容旧调用：从子项推导一个代表 op。
+
+    有 read → read；否则取首个 CUD 代表值；再否则空。
+    """
+    data = normalize_intent_events(dict(intent))
+    ops = event_ops(data)
+    if IntentOp.READ.value in ops:
+        return IntentOp.READ.value
+    for preferred in (
+        "end",
         IntentOp.CREATE.value,
-        IntentOp.READ.value,
         IntentOp.UPDATE.value,
         IntentOp.DELETE.value,
-    }:
-        return op
-    action = (intent.get("action") or "").strip().lower()
-    if action in (
-        IntentAction.START.value,
-        IntentAction.END.value,
-        IntentAction.ONE.value,
-        IntentAction.MULTI.value,
     ):
-        return IntentOp.CREATE.value
-    if action == IntentAction.SEARCH.value:
-        return IntentOp.READ.value
+        if preferred in ops:
+            return preferred if preferred != "end" else IntentOp.CREATE.value
     return ""
 
 
 def _is_timer_leaf(leaf: Dict[str, Any]) -> bool:
-    """
-    是否为计时事件：只认字典 event_type=time。
-
-    业务说明：缺省或 one/number 一律当非计时，避免被记成进行中。
-    不采信 LLM 返回的 event_type。
-    """
+    """是否为计时事件：只认字典 event_type=time。"""
     return str(leaf.get("event_type") or "").strip().lower() == "time"
 
 
 def sort_end_items_first(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    同一 batch 先提交 end，再提交其余项。
-
-    业务说明：停爬再开坐时必须先结束，不依赖模型 events[] 顺序。
-    """
+    """同一 batch 先提交 end，再提交其余项。"""
     ends = [it for it in items if (it.get("op") or "") == "end"]
     rest = [it for it in items if (it.get("op") or "") != "end"]
     return ends + rest
@@ -73,34 +82,14 @@ def collect_event_items(
     """
     从意图结果收集可落库子项；字典外名称进 missing。
 
-    业务逻辑：
-    - action=end 且字典为计时：op=end，history id 固定 0，不查 latest。
-    - 非计时 create：endTime=startTime，即使模型写了 start/end。
-    - 计时且非 end：create 且 endTime=0（进行中）。
-    - 返回前把 end 项排到 create 前面。
-
-    Returns:
-        (items, missing_names)
+    仅处理 create/update/delete/end；read 不进 batch。
     """
     missing: List[str] = []
     items: List[Dict[str, Any]] = []
-    raw_events = intent.get("events") or []
-    if not raw_events:
-        raw_events = [
-            {
-                "action": intent.get("action") or IntentAction.ONE.value,
-                "event_id": intent.get("event_id") or "",
-                "event_name": intent.get("event_name") or "",
-                "quantity": intent.get("quantity"),
-                "history_id": intent.get("history_id"),
-                "remark": intent.get("remark"),
-            }
-        ]
-    op = infer_op(intent) or IntentOp.CREATE.value
+    data = normalize_intent_events(dict(intent), full_events)
+    raw_events = [e for e in (data.get("events") or []) if isinstance(e, dict)]
     now = int(time.time())
     for ev in raw_events:
-        if not isinstance(ev, dict):
-            continue
         name = str(ev.get("event_name") or "").strip()
         eid = str(ev.get("event_id") or "").strip()
         leaf = get_event_by_id(eid, full_events) if eid else None
@@ -111,35 +100,38 @@ def collect_event_items(
             if name:
                 missing.append(name)
             continue
-        action = str(
-            ev.get("action") or intent.get("action") or IntentAction.ONE.value
-        ).strip().lower()
-        # 计时与否只认字典，忽略意图里 LLM 填的 event_type
+        item_op = derive_item_op(ev, leaf=leaf)
+        if item_op == IntentOp.READ.value:
+            continue
+        if item_op not in CUD_OPS:
+            continue
+        action = str(ev.get("action") or "").strip().lower()
+        if not action:
+            if item_op == "end":
+                action = IntentAction.END.value
+            elif item_op == IntentOp.CREATE.value:
+                action = (
+                    IntentAction.START.value
+                    if _is_timer_leaf(leaf)
+                    else IntentAction.ONE.value
+                )
         is_timer = _is_timer_leaf(leaf)
-        item_op = op
-        if action == IntentAction.END.value:
-            if is_timer:
-                # Go 按 eventId 结束最近一条，Python 不填 history_id
-                item_op = "end"
-            elif op in (IntentOp.CREATE.value, ""):
-                # 非计时不能当计时结束，当成瞬时记录
-                item_op = "create"
+        if item_op == "end" and not is_timer:
+            item_op = IntentOp.CREATE.value
+            action = IntentAction.ONE.value
         qty = ev.get("quantity")
         if qty is None:
-            qty = intent.get("quantity")
+            qty = data.get("quantity")
         try:
             number = int(qty) if qty is not None else 0
         except (TypeError, ValueError):
             number = 0
-        normalized_op = item_op if item_op != IntentOp.CREATE.value else "create"
         start_time = int(ev.get("start_time") or now)
-        if normalized_op == "end":
-            # 结束时间由 Go 补最近一条，Python 不填
+        if item_op == "end":
             hid_int = 0
             end_time = 0
-        elif normalized_op == "create":
+        elif item_op == IntentOp.CREATE.value:
             hid_int = 0
-            # 非计时（one/number/缺省）结束时间必须等于开始时间
             end_time = 0 if is_timer else start_time
         else:
             hid = ev.get("history_id")
@@ -150,7 +142,7 @@ def collect_event_items(
             end_time = int(ev.get("end_time") or 0)
         items.append(
             {
-                "op": normalized_op,
+                "op": item_op if item_op != IntentOp.CREATE.value else "create",
                 "action": action,
                 "id": hid_int,
                 "eventId": int(str(leaf.get("event_id") or eid) or 0),
@@ -159,8 +151,9 @@ def collect_event_items(
                 "eventNumber": number,
                 "startTime": start_time,
                 "endTime": end_time,
-                "remark": str(ev.get("remark") or intent.get("remark") or ""),
+                "remark": str(ev.get("remark") or data.get("remark") or ""),
                 "_display_name": leaf.get("event_name") or name,
+                "_item_op": item_op,
             }
         )
     return sort_end_items_first(items), missing
@@ -182,11 +175,7 @@ def render_persist_content(
     results: List[Dict[str, Any]],
     missing: List[str],
 ) -> str:
-    """
-    模板回执：全成功 / 部分成功 / 全失败。
-
-    业务说明：必须让用户感知入库结果，不用 LLM 编话。
-    """
+    """模板回执：全成功 / 部分成功 / 全失败。"""
     ok_lines: List[str] = []
     fail_lines: List[str] = []
     for i, item in enumerate(items):
@@ -226,28 +215,30 @@ def render_persist_content(
 
 
 def rewrite_standalone_document(intent: Dict[str, Any], original: str) -> str:
-    """
-    把本轮成功意图改写成可缓存的独立句。
-
-    不用「嗯/是的」当 document。
-    """
+    """把本轮成功意图改写成可缓存的独立句。"""
+    data = normalize_intent_events(dict(intent))
     names = []
-    for ev in intent.get("events") or []:
+    for ev in data.get("events") or []:
         n = (ev.get("event_name") or "").strip()
         if n:
             names.append(n)
-    if not names and intent.get("event_name"):
-        names.append(str(intent.get("event_name")))
-    op = infer_op(intent)
-    remark = (intent.get("remark_keyword") or "").strip()
+    if not names and data.get("event_name"):
+        names.append(str(data.get("event_name")))
+    ops = event_ops(data)
+    remark = (data.get("remark_keyword") or "").strip()
+    if not remark:
+        for ev in data.get("events") or []:
+            if isinstance(ev, dict) and ev.get("remark_keyword"):
+                remark = str(ev.get("remark_keyword")).strip()
+                break
     joined = "、".join(names) if names else (original or "").strip()
-    if op == IntentOp.READ.value:
+    if IntentOp.READ.value in ops:
         if remark:
             return f"上一次{joined}备注{remark}是什么时候"
         return f"上一次{joined}是什么时候"
-    if op == IntentOp.UPDATE.value:
+    if IntentOp.UPDATE.value in ops:
         return f"把{joined}改一下"
-    if op == IntentOp.DELETE.value:
+    if IntentOp.DELETE.value in ops:
         return f"删除刚才的{joined}"
     src = (original or "").strip()
     if src and src not in {"嗯", "是的", "好的", "1"}:

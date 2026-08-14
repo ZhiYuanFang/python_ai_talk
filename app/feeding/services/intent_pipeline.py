@@ -49,7 +49,7 @@ def _intent_fields(intent: IntentFields) -> Dict[str, Any]:
 
 
 def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
-    """从字段字典构建 IntentResponse。"""
+    """从字段字典构建 IntentResponse（无顶层 op/action）。"""
     options_raw = fields.get("options") or []
     options: List[IntentEvent] = []
     for opt in options_raw:
@@ -58,16 +58,40 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
         elif isinstance(opt, dict):
             options.append(
                 IntentEvent(
+                    op=str(opt.get("op") or ""),
                     action=opt.get("action") or "",
                     event_name=opt.get("event_name") or "",
                     event_id=str(opt.get("event_id") or ""),
                     quantity=opt.get("quantity"),
+                    remark_keyword=opt.get("remark_keyword"),
+                    start_time=opt.get("start_time"),
+                    end_time=opt.get("end_time"),
+                )
+            )
+
+    events_raw = fields.get("events") or []
+    events: List[IntentEvent] = []
+    for ev in events_raw:
+        if isinstance(ev, IntentEvent):
+            events.append(ev)
+        elif isinstance(ev, dict):
+            events.append(
+                IntentEvent(
+                    op=str(ev.get("op") or ""),
+                    action=ev.get("action") or "",
+                    event_name=ev.get("event_name") or "",
+                    event_id=str(ev.get("event_id") or ""),
+                    quantity=ev.get("quantity"),
+                    history_id=ev.get("history_id"),
+                    remark=ev.get("remark"),
+                    remark_keyword=ev.get("remark_keyword"),
+                    start_time=ev.get("start_time"),
+                    end_time=ev.get("end_time"),
                 )
             )
 
     return IntentResponse(
         target_type=fields.get("target_type", TargetType.CONVERSATION.value),
-        action=fields.get("action", IntentAction.REPLY.value),
         event_name=fields.get("event_name", "") or "",
         event_id=str(fields.get("event_id", "") or ""),
         quantity=fields.get("quantity"),
@@ -76,8 +100,7 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
         is_new_event=False,
         keywords=fields.get("keywords") or [],
         content=fields.get("content", "") or "",
-        events=fields.get("events") or [],
-        op=fields.get("op"),
+        events=events,
         remark_keyword=fields.get("remark_keyword"),
         missing_events=fields.get("missing_events") or [],
         match_confidence=fields.get("match_confidence"),
@@ -187,13 +210,22 @@ async def try_handle_pending(
             parent_id = str(leaf.get("event_id") or "")
             fields = {
                 "target_type": TargetType.HISTORY.value,
-                "action": IntentAction.SEARCH.value,
-                "op": IntentOp.READ.value,
                 "event_id": parent_id,
                 "event_name": leaf.get("event_name") or "",
                 "event_ids": getattr(pending, "event_ids", None) or [parent_id],
                 "remark_keyword": getattr(pending, "remark_keyword", None) or "",
-                "events": getattr(pending, "events", None) or [],
+                "events": getattr(pending, "events", None)
+                or [
+                    {
+                        "op": IntentOp.READ.value,
+                        "event_id": parent_id,
+                        "event_name": leaf.get("event_name") or "",
+                        "remark_keyword": getattr(pending, "remark_keyword", None)
+                        or "",
+                        "start_time": getattr(pending, "start_time", None),
+                        "end_time": getattr(pending, "end_time", None),
+                    }
+                ],
                 "start_time": getattr(pending, "start_time", None),
                 "end_time": getattr(pending, "end_time", None),
                 "match_source": pending.match_source,
@@ -233,8 +265,8 @@ async def try_handle_pending(
                 build_intent_response_from_fields(
                     {
                         "target_type": TargetType.CONVERSATION.value,
-                        "action": IntentAction.REPLY.value,
                         "content": "无法确定具体事件，请重新描述。",
+                        "events": [],
                     }
                 ),
                 False,
@@ -242,6 +274,7 @@ async def try_handle_pending(
 
         # correct：写原话到正确叶子，且不对旧向量 success++
         # 其余：沿用原飞轮条件
+        extra_events = getattr(pending, "events", None) or []
         fields = leaf_intent_result(
             leaf,
             action=pending.action,
@@ -249,23 +282,35 @@ async def try_handle_pending(
             match_source=pending.match_source,
             match_confidence=1.0,
             original_utterance=pending.original_utterance,
+            op=getattr(pending, "op", None) or "",
+            events=extra_events or None,
         )
-        # 确认后走批量落库或查记录模板，不再写单事件飞轮
-        extra_events = getattr(pending, "events", None) or []
+        # 确认后走批量落库或查记录模板
         if extra_events:
             fields["events"] = extra_events
-        fields["op"] = getattr(pending, "op", None) or fields.get("op")
         fields["remark_keyword"] = getattr(pending, "remark_keyword", None) or ""
-        # 查记录确认后带上 unix 窗与原始 event_ids（父 id 不在此展开）
         if getattr(pending, "event_ids", None):
             fields["event_ids"] = pending.event_ids
         elif pending_op == IntentOp.READ.value:
-            # 备注消歧选中叶子：用该叶子 id 拉史
             leaf_id = str(leaf.get("event_id") or "")
             fields["event_ids"] = [leaf_id] if leaf_id else []
             fields["target_type"] = TargetType.HISTORY.value
-            fields["action"] = IntentAction.SEARCH.value
-            fields["op"] = IntentOp.READ.value
+            # 保证 events 含 read
+            if not any(
+                str(e.get("op") or "") == IntentOp.READ.value
+                for e in (fields.get("events") or [])
+                if isinstance(e, dict)
+            ):
+                fields["events"] = [
+                    {
+                        "op": IntentOp.READ.value,
+                        "event_id": leaf_id,
+                        "event_name": leaf.get("event_name") or "",
+                        "remark_keyword": fields.get("remark_keyword") or "",
+                        "start_time": getattr(pending, "start_time", None),
+                        "end_time": getattr(pending, "end_time", None),
+                    }
+                ]
         if getattr(pending, "start_time", None) is not None:
             fields["start_time"] = pending.start_time
         if getattr(pending, "end_time", None) is not None:
@@ -293,8 +338,8 @@ async def try_handle_pending(
             build_intent_response_from_fields(
                 {
                     "target_type": TargetType.CONVERSATION.value,
-                    "action": IntentAction.REPLY.value,
                     "content": "好的，已取消。请重新描述您要记录的事件。",
+                    "events": [],
                 }
             ),
             False,
@@ -357,16 +402,24 @@ def postprocess_feeding_result(
     - 叶子且无需确认 → 直接返回最终结果
     """
     fields = _intent_fields(intent_result)
-    event_id = fields.get("event_id") or ""
-    action = fields.get("action") or IntentAction.ONE.value
+    from app.feeding.services.intent_events import (
+        first_display_event,
+        normalize_intent_events,
+    )
+
+    fields = normalize_intent_events(fields, full_events)
+    head = first_display_event(fields)
+    event_id = str(fields.get("event_id") or head.get("event_id") or "")
+    action = str(head.get("action") or IntentAction.ONE.value)
     quantity = fields.get("quantity")
+    if quantity is None and head.get("quantity") is not None:
+        quantity = head.get("quantity")
     match_source = fields.get("match_source") or MatchSource.LLM.value
     match_confidence = fields.get("match_confidence")
 
     # 多事件：逐个校验，若含父则整体改消歧（取第一个父）
-    # 复合切换可能漏标 action=multi，events 长度>1 同样走多事件确认
     events = fields.get("events") or []
-    if action == IntentAction.MULTI.value or len(events) > 1:
+    if len(events) > 1:
         for ev in events:
             eid = ev.get("event_id") or ""
             if is_parent_event(eid, full_events):
@@ -391,21 +444,19 @@ def postprocess_feeding_result(
                 "extra_names": [],
             },
             original_utterance=user_input,
-            action=IntentAction.MULTI.value,
+            action=events[0].get("action") if events else IntentAction.ONE.value,
             quantity=quantity,
             match_source=match_source,
             matched_vector_id=matched_vector_id,
             device_no=device_no,
             model_config=model_config,
             events=events,
-            op=fields.get("op") or "create",
+            op="",
         )
-        # 多事件确认必须点出每件动作（结束/开始/记录），禁止只说「记录以下事件」
         multi_msg = build_multi_event_confirm_message(events)
         if multi_msg:
             pending.clarify_message = multi_msg
         pending.events = events  # type: ignore[attr-defined]
-        pending.op = fields.get("op") or "create"  # type: ignore[attr-defined]
         clarification_store.set(pending)
         return response_from_pending(pending)
 
@@ -425,24 +476,22 @@ def postprocess_feeding_result(
         if pending:
             logger.info(f"匹配结果为父事件，强制消歧: event_id={event_id}")
             return response_from_pending(pending)
-        # 父事件但无子：拒绝落库
         return build_intent_response_from_fields(
             {
                 "target_type": TargetType.CONVERSATION.value,
-                "action": IntentAction.REPLY.value,
                 "content": "该分类下没有可记录的具体事件，请说明具体事项。",
                 "match_source": match_source,
+                "events": [],
             }
         )
 
     # 叶子：需要确认则 pending；否则直接返回
     leaf = get_event_by_id(event_id, full_events) or {
         "event_id": event_id,
-        "event_name": fields.get("event_name") or "",
+        "event_name": fields.get("event_name") or head.get("event_name") or "",
     }
 
     if need_confirm or match_source == MatchSource.LLM.value:
-        # LLM 或中置信：自由文本软确认
         if event_id:
             pending = create_leaf_confirm_pending(
                 leaf=leaf,
@@ -454,8 +503,10 @@ def postprocess_feeding_result(
                 device_no=device_no,
                 model_config=model_config,
                 events=fields.get("events") or [],
-                op=fields.get("op") or "",
-                remark_keyword=fields.get("remark_keyword") or "",
+                op=str(head.get("op") or ""),
+                remark_keyword=fields.get("remark_keyword")
+                or head.get("remark_keyword")
+                or "",
                 confirm_message=fields.get("confirm_message"),
             )
             return response_from_pending(pending)
@@ -464,7 +515,6 @@ def postprocess_feeding_result(
         **fields,
         "need_confirm": False,
         "confirm_type": None,
-        # 空串而非 None：避免确认后续聊 coerce_intent_result 校验失败
         "confirm_message": "",
         "options": [],
         "conversation_id": None,
@@ -482,7 +532,7 @@ async def _execute_after_confirm(
     """确认通过后执行 batch 或查记录模板。"""
     from app.feeding.graphs.nodes.execute_history_crud import execute_history_crud
     from app.feeding.graphs.nodes.speak_history import speak_history
-    from app.feeding.services.history_crud import infer_op
+    from app.feeding.services.history_crud import infer_route_kind
     from app.shared.constants import IntentOp
 
     state = {
@@ -493,10 +543,10 @@ async def _execute_after_confirm(
         "event_dictionary": full_events,
         "need_confirm": False,
     }
-    op = infer_op(fields)
-    if op == IntentOp.READ.value or fields.get("target_type") == TargetType.HISTORY.value:
+    kind = infer_route_kind(fields)
+    if kind == IntentOp.READ.value or fields.get("target_type") == TargetType.HISTORY.value:
         out = await speak_history(state)
-    elif op in (IntentOp.CREATE.value, IntentOp.UPDATE.value, IntentOp.DELETE.value):
+    elif kind == "cud":
         out = await execute_history_crud(state)
     else:
         return fields
