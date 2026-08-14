@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -92,24 +93,23 @@ def _parse_status(raw: str) -> Optional[AcceptanceStatus]:
     text = (raw or "").strip()
     if not text:
         return None
-    # 尝试直接 JSON
     try:
-        data = json.loads(text)
+        data = loads_llm_json(text)
         if isinstance(data, dict):
             status = str(data.get("status", "")).strip().lower()
             if status in AcceptanceStatus._value2member_map_:
                 return AcceptanceStatus(status)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError, TypeError):
         pass
-    # 从代码块或夹杂文本中抠 JSON
+    # 从夹杂文本中抠含 status 的小对象（仍经去注释）
     match = re.search(r"\{[^{}]*\"status\"[^{}]*\}", text, re.DOTALL)
     if match:
         try:
-            data = json.loads(match.group(0))
+            data = loads_llm_json(match.group(0))
             status = str(data.get("status", "")).strip().lower()
             if status in AcceptanceStatus._value2member_map_:
                 return AcceptanceStatus(status)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, TypeError):
             pass
     lowered = text.lower()
     if "accepted" in lowered and "rejected" not in lowered:

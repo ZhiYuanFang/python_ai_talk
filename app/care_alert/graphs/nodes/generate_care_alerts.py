@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,49 +23,26 @@ from app.care_alert.graphs.nodes.prompts.history_compact import (
 from app.care_alert.schemas.care_alert import CareAlertItemDto, CareAlertReasonDto
 from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
-
-# 从夹杂文本中抠 JSON 对象
-_JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
 
 
 def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
     """
     从 LLM 原文解析顶层 JSON 对象。
 
-    业务逻辑：
-    1. 直接 json.loads
-    2. 去掉 ```json 代码块围栏后再 loads
-    3. 正则抠第一个大括号对象
+    业务逻辑：经共享去围栏/去注释后 loads；list 则包成 items。
     """
-    text = (raw or "").strip()
-    if not text:
+    try:
+        data = loads_llm_json(raw)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        logger.warning("护理留意 JSON 解析失败")
         return None
-
-    # 去掉常见 Markdown 代码围栏
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-
-    for candidate in (text,):
-        try:
-            data = json.loads(candidate)
-            if isinstance(data, dict):
-                return data
-            if isinstance(data, list):
-                return {"items": data}
-        except json.JSONDecodeError:
-            pass
-
-    match = _JSON_OBJECT_RE.search(text)
-    if match:
-        try:
-            data = json.loads(match.group(0))
-            if isinstance(data, dict):
-                return data
-        except json.JSONDecodeError:
-            logger.warning("护理留意 JSON 正则命中但解析失败")
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list):
+        return {"items": data}
     return None
 
 

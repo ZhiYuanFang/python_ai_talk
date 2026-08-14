@@ -36,6 +36,7 @@ from app.shared.constants import (
     VALID_RESOLVE_OPS,
 )
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -598,15 +599,7 @@ def try_hard_resolve(text: str, pending: PendingClarification) -> Optional[Resol
 def _parse_llm_clarify_json(content: str) -> Optional[Dict[str, Any]]:
     """解析澄清 LLM JSON；失败返回 None。"""
     try:
-        cleaned = (content or "").strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        elif cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-        data = json.loads(cleaned)
+        data = loads_llm_json(content)
         if not isinstance(data, dict):
             return None
         return data

@@ -34,6 +34,7 @@ from app.shared.constants import (
 from app.shared.graphs.node_thinking import emit_thinking
 from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.llm_json import loads_llm_json
 
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
@@ -44,9 +45,8 @@ def _parse_intent_result(content: str) -> Dict[str, Any]:
     解析 LLM 返回的意图结果
 
     业务逻辑：
-    1. 清理 LLM 返回的内容（去除 markdown 代码块标记）
-    2. 解析 JSON 格式的意图结果
-    3. 处理解析错误，返回默认的 conversation 类型意图
+    1. 经共享管线去围栏、去注释后 json.loads
+    2. 处理解析错误，返回默认的 conversation 类型意图
 
     Args:
         content: LLM 返回的原始文本内容
@@ -55,20 +55,12 @@ def _parse_intent_result(content: str) -> Dict[str, Any]:
         解析后的意图结果字典
     """
     try:
-        # 清理 markdown 代码块标记
-        cleaned = content.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        elif cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-
-        result = json.loads(cleaned)
+        result = loads_llm_json(content)
+        if not isinstance(result, dict):
+            raise ValueError("意图 JSON 顶层须为对象")
         logger.info(f"LLM 意图解析成功: {json.dumps(result, ensure_ascii=False)}")
         return result
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
         logger.error(f"LLM 返回内容 JSON 解析失败: {e}, content={content[:200]}")
         # 返回默认的 conversation 类型
         return {

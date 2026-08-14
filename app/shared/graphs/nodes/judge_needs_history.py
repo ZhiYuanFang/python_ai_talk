@@ -14,7 +14,6 @@ force_needs_history 时跳过 LLM，直接 needs_history=true。
 
 import json
 import logging
-import re
 from typing import Any, Dict
 
 from app.shared.graphs.nodes.prompts.needs_history import (
@@ -23,6 +22,7 @@ from app.shared.graphs.nodes.prompts.needs_history import (
 )
 from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +70,8 @@ def _parse_needs_history(content: str) -> bool:
         是否需要喂养历史
     """
     content = (content or "").strip()
-    json_match = re.search(r"```json\s*([\s\S]*?)\s*```", content)
-    json_str = json_match.group(1).strip() if json_match else content
-
     try:
-        parsed = json.loads(json_str)
+        parsed = loads_llm_json(content)
     except (json.JSONDecodeError, TypeError, ValueError) as e:
         logger.warning(
             f"门禁结果 JSON 解析失败，默认 true: {e}, 原始内容: {content[:100]}"

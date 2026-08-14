@@ -16,7 +16,6 @@ LangGraph 节点：调用 LLM 根据用户问题判断需要查询哪些类型�
 
 import json
 import logging
-import re
 from typing import Any, Dict, List, Optional
 
 from app.shared.graphs.nodes.prompts.data_requirement import (
@@ -25,6 +24,7 @@ from app.shared.graphs.nodes.prompts.data_requirement import (
 )
 from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.llm_json import loads_llm_json
 from app.shared.schemas.data_requirement import DataRequirement
 
 # 初始化日志记录器
@@ -123,20 +123,11 @@ def _parse_data_requirement(content: str) -> Dict[str, Any]:
         解析后的数据需求字典
     """
     result = DEFAULT_DATA_REQUIREMENT.copy()
-
-    # 去除首尾空白
-    content = content.strip()
-
-    # 尝试提取 JSON 代码块
-    json_match = re.search(r"```json\s*([\s\S]*?)\s*```", content)
-    if json_match:
-        json_str = json_match.group(1).strip()
-    else:
-        # 尝试直接解析 JSON
-        json_str = content
-
+    content = (content or "").strip()
     try:
-        parsed = json.loads(json_str)
+        parsed = loads_llm_json(content)
+        if not isinstance(parsed, dict):
+            raise ValueError("数据需求 JSON 须为对象")
 
         # 提取 event_ids（统一为字符串，兼容 LLM 返回 number）
         event_ids = parsed.get("event_ids", [])
@@ -153,7 +144,7 @@ def _parse_data_requirement(content: str) -> Dict[str, Any]:
         if "limit" in parsed and _is_valid_int(parsed["limit"]):
             result["limit"] = int(parsed["limit"])
 
-    except (json.JSONDecodeError, ValueError) as e:
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
         logger.warning(f"数据需求结果 JSON 解析失败: {str(e)}, 原始内容: {content[:100]}")
 
     return result
