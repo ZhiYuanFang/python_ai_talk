@@ -56,13 +56,9 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
         request.device_no,
         request.day,
         (
-            "(fallback-only)"
-            if request.model is None
-            else (
-                request.model
-                if isinstance(request.model, str)
-                else getattr(request.model, "provider", "?")
-            )
+            request.model
+            if isinstance(request.model, str)
+            else getattr(request.model, "provider", "?")
         ),
     )
     try:

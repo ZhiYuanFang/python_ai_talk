@@ -34,31 +34,21 @@ class Settings(BaseSettings):
     server_port: int = 8000  # 服务端口
     log_level: str = "INFO"  # 日志级别
 
-    # LLM 配置 - DeepSeek（付费通道；默认不进免费保底列表）
+    # LLM 配置 - DeepSeek（付费通道；由 Go 选型传入）
     deepseek_api_key: str = ""  # DeepSeek API Key
     deepseek_base_url: str = "https://api.deepseek.com/v1"  # DeepSeek API 地址
 
-    # LLM 配置 - Zhipu (GLM，Flash 等永久免费档常作 Go 首选)
+    # LLM 配置 - Zhipu (GLM)
     glm_api_key: str = ""  # Zhipu API Key
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"  # Zhipu API 地址
 
-    # LLM 配置 - 硅基流动（国内永久免费模型，$0 + 限速）
+    # LLM 配置 - 硅基流动（可供 Go 选型）
     siliconflow_api_key: str = ""
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
 
-    # LLM 配置 - 魔搭 ModelScope（国内，每日免费推理次数重置）
+    # LLM 配置 - 魔搭 ModelScope（可供 Go 选型）
     modelscope_api_key: str = ""
     modelscope_base_url: str = "https://api-inference.modelscope.cn/v1"
-
-    # 免费保底链（仅 llm_client.invoke；stream 不使用）
-    # 逗号分隔 provider:model（model 可含 /）；未传 model 时整表即候选序
-    # 含智谱 Flash，便于仅靠 env 调整免费顺序；不含付费 deepseek
-    llm_fallback_models: str = (
-        "glm:glm-4.7-flash,"
-        "siliconflow:Qwen/Qwen3.5-4B,"
-        "siliconflow:Qwen/Qwen2.5-7B-Instruct,"
-        "modelscope:Qwen/Qwen3-8B"
-    )
 
     # 兄弟仓服务地址
     history_service_url: str = "http://localhost:9801"  # 历史服务地址

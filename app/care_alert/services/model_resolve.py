@@ -2,7 +2,8 @@
 护理留意模型解析
 
 业务说明：
-Go 可省略 model（非 VIP → 纯保底序），或传字符串 deepseek|zhipu，或完整 ModelConfig。
+Go 必传 model（字符串 deepseek|zhipu，或完整 ModelConfig）。
+VIP/选型由 Go 决定；Python 不换模、无默认单模。
 zhipu 与 glm 等价，沿用 llm_client.normalize_llm_provider。
 无 clinic 配额逻辑。
 """
@@ -23,27 +24,27 @@ _DEFAULT_MODEL_BY_PROVIDER = {
 
 def resolve_model_config(
     model: Optional[Union[str, ModelConfig, Dict[str, Any]]],
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
-    将请求中的 model 规范为图/LLM 使用的 dict；缺省返回 None（纯保底）。
+    将请求中的 model 规范为图/LLM 使用的 dict；缺省抛错。
 
     业务逻辑：
-    1. None → None
+    1. None → ValueError（必须由 Go 传入）
     2. 字符串 → provider + 默认 name
     3. ModelConfig / dict → 取 provider/name/max_in_flight
     4. provider 经 normalize（zhipu→glm）
 
     Args:
-        model: 请求字段；None 表示未传
+        model: 请求字段
 
     Returns:
-        {"provider", "name", "max_in_flight"} 或 None
+        {"provider", "name", "max_in_flight"}
 
     Raises:
-        ValueError: 传入了不完整/未知的 model
+        ValueError: 未传或不完整/未知的 model
     """
     if model is None:
-        return None
+        raise ValueError("model 必传（Go 选型），Python 不换模、无默认单模")
 
     if isinstance(model, str):
         provider = normalize_llm_provider(model)

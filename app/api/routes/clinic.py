@@ -39,9 +39,7 @@ router = APIRouter(prefix="/clinic", tags=["智能陪伴"])
 
 
 def _clinic_model_dict(request: ClinicRequest) -> Dict[str, Any]:
-    """非流式可省略 model，走保底序。"""
-    if request.model is None:
-        return {}
+    """从请求取出 Go 传入的唯一 model（必填；Python 不换模）。"""
     return {
         "provider": request.model.provider,
         "name": request.model.name,

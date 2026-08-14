@@ -18,6 +18,7 @@ from app.clinic.graphs.nodes.prompts.history_answer import (
     build_history_answer_user_message,
 )
 from app.shared.graphs.state_patch import state_get
+from app.shared.constants import LLM_OVERLOAD_RETRY_MESSAGE
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
@@ -54,4 +55,4 @@ async def generate_response(state: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"回答生成 LLM 调用失败: {str(e)}")
-        return {"response": "抱歉，生成回答时出现错误，请稍后再试。"}
+        return {"response": LLM_OVERLOAD_RETRY_MESSAGE}

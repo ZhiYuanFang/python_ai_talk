@@ -399,10 +399,10 @@ async def generate_care_alerts(state: Dict[str, Any]) -> Dict[str, Any]:
         history_summary=state_get(state, "history_summary"),
     )
 
-    # 无首选时 model_config 为 None，走 invoke 纯保底；日志勿解引用
+    # 无 model 时 model_config 为 None，invoke 将直接失败；日志勿解引用
     logger.info(
         "护理留意 LLM 调用: provider=%s name=%s history=%s",
-        model_config.provider if model_config else "(fallback-only)",
+        model_config.provider if model_config else "(missing)",
         model_config.name if model_config else "-",
         len(history_events),
     )

@@ -60,7 +60,7 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
     # 门禁结果决定提示词分叉与是否注入史/对话块
     needs_history = resolve_clinic_needs_history(state)
 
-    # 流式必带 model；缺省由 llm_client.stream 抛错（不走保底）
+    # 流式必带 model；缺省由 llm_client.stream 抛错（不换模）
     model_config = llm_model_config_from_mapping(
         state_get(state, "llm_model") or state_get(state, "model_config")
     )

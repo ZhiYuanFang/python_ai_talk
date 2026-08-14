@@ -106,3 +106,6 @@ STANDARD_INTENT_ACTIONS: tuple[IntentAction, ...] = (
 )
 
 VALID_RESOLVE_OPS: frozenset[str] = frozenset(op.value for op in ResolveOp)
+
+# LLM 调用失败时对用户可见的固定文案（不换模，请稍后重试）
+LLM_OVERLOAD_RETRY_MESSAGE = "脑电波过载，请稍后重试"

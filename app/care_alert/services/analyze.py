@@ -3,7 +3,7 @@
 
 业务说明：
 将 HTTP 请求转为图初始状态，执行 care_alert_graph，返回 items。
-不扣 clinic 配额；VIP 由 Go 传入首选 model，非 VIP 可省略走免费保底序。
+不扣 clinic 配额；model 由 Go 传入（含 VIP 选型），Python 不换模。
 不调用通识向量检索；kg_context 不硬塞进判定。
 analyze 成功后写入 suggestionId → 建议快照（供 prompt 飞轮归因）。
 """
@@ -77,8 +77,8 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         ValueError: 模型解析失败（传了非法 model）
         Exception: 图/LLM 底层异常向上抛，由路由转 500
     """
-    # None → 空 dict，节点侧解析为无首选
-    llm_model = resolve_model_config(request.model) or {}
+    # Go 必传 model；解析失败由 resolve 抛错
+    llm_model = resolve_model_config(request.model)
     day = _resolve_day(request.day)
     window = _care_alert_window()
 
@@ -103,7 +103,7 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         "护理留意分析开始: device_no=%s day=%s provider=%s name=%s age=%s",
         request.device_no,
         day,
-        llm_model.get("provider") or "(fallback-only)",
+        llm_model.get("provider") or "(missing)",
         llm_model.get("name") or "-",
         request.age_months,
     )

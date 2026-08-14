@@ -26,15 +26,13 @@ services:
       VOICE_SERVICE_URL: "${VOICE_SERVICE_URL:-}"
       # --- Redis ---
       REDIS_URL: "${REDIS_URL:-}"
-      # --- AI 密钥（与 go_ai_talk 兄弟仓共用）---
+      # --- AI 密钥（与 go_ai_talk 兄弟仓共用；选型由 Go 传入，Python 不换模）---
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       GLM_API_KEY: "${GLM_API_KEY:-}"
-      # --- 国内永久免费保底（硅基流动 / 魔搭；空则跳过）---
       SILICONFLOW_API_KEY: "${SILICONFLOW_API_KEY:-}"
       SILICONFLOW_BASE_URL: "${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}"
       MODELSCOPE_API_KEY: "${MODELSCOPE_API_KEY:-}"
       MODELSCOPE_BASE_URL: "${MODELSCOPE_BASE_URL:-https://api-inference.modelscope.cn/v1}"
-      LLM_FALLBACK_MODELS: "${LLM_FALLBACK_MODELS:-glm:glm-4.7-flash,siliconflow:Qwen/Qwen3.5-4B,siliconflow:Qwen/Qwen2.5-7B-Instruct,modelscope:Qwen/Qwen3-8B}"
       # --- 向量数据库 ---
       CHROMA_PERSIST_DIR: "${CHROMA_PERSIST_DIR:-/app/data/chroma_db}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}"

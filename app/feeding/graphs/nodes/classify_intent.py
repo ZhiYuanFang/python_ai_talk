@@ -25,7 +25,13 @@ from app.feeding.graphs.nodes.prompts.intent_classification import (
 from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
 from app.feeding.services.event_name_match import match_feeding_event
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
-from app.shared.constants import IntentAction, MatchSource, TargetType
+from app.shared.constants import (
+    IntentAction,
+    LLM_OVERLOAD_RETRY_MESSAGE,
+    MatchSource,
+    TargetType,
+)
+from app.shared.graphs.node_thinking import emit_thinking
 from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
@@ -104,7 +110,7 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
     )
     device_no = state_get(state, "device_no", "")
 
-    # llm_model 为图 State 字段；兼容过渡 dict 键 model_config / model；空则纯保底序
+    # llm_model 为图 State 字段；兼容过渡 dict 键 model_config / model；缺模由 llm_client 抛错
     llm_model = (
         state_get(state, "llm_model")
         or state_get(state, "model_config")
@@ -117,7 +123,7 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
         "开始意图分类: device_no=%s, text=%s..., model=%s/%s",
         device_no,
         text[:20],
-        (llm_model_config.provider if llm_model_config else "(fallback-only)"),
+        (llm_model_config.provider if llm_model_config else "(missing)"),
         (llm_model_config.name if llm_model_config else "-"),
     )
 
@@ -273,7 +279,8 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"意图分类失败: {e}", exc_info=True)
-        # 分类失败时返回默认的 conversation 类型
+        # 失败不换模：推 thinking（有 writer 时）并软回脑电波文案
+        emit_thinking("classify_intent", LLM_OVERLOAD_RETRY_MESSAGE)
         return {
             "intent_result": IntentResult(
                 target_type=TargetType.CONVERSATION.value,
@@ -287,7 +294,7 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
                 match_source=MatchSource.LLM.value,
                 match_confidence=0.0,
                 keywords=[],
-                content="AI 服务暂时不可用，请稍后再试",
+                content=LLM_OVERLOAD_RETRY_MESSAGE,
             ),
             "match_confidence": 0.0,
             "match_source": MatchSource.LLM.value,

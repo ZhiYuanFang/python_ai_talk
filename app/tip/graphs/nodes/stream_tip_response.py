@@ -54,7 +54,7 @@ async def stream_tip_response(state: Dict[str, Any]) -> AsyncGenerator[LLMRespon
     baby_profile = state_get(state, "baby_profile", {})
     chat_context = state_get(state, "chat_context") or ""
 
-    # 流式必带 model；缺省由 llm_client.stream 抛错（不走保底）
+    # 流式必带 model；缺省由 llm_client.stream 抛错（不换模）
     model_config = llm_model_config_from_mapping(
         state_get(state, "llm_model") or state_get(state, "model_config")
     )
