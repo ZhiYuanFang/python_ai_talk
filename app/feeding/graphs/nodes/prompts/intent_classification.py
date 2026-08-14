@@ -88,7 +88,7 @@ def build_intent_classification_system_prompt(
 
 字段含义：
 - op：create=留下新记录或开始计时；read=查看已有记录；update=修改已有记录的内容或结束计时；delete=去掉已有记录；空=闲聊或退出
-- target_type：feeding(CUD事件) | history(R事件) | conversation(闲聊) | exit(退出)
+- target_type：feeding(对事件增删改) | history(读取事件) | conversation(闲聊) | exit(退出)
 - action：start=计时类型的事件开始|end=非一次性类型的事件结束|one=一次性类型的事件记录|multi=含有多个事件|search=查询事件|reply=闲聊|exit=退出
 - event_name / event_id：能对上表时填表内名称与 id；对不上时 event_name 保留用户词、event_id 空
 - events：一句话涉及多件时每件一项，每项自带 action 与叶子 id/name
