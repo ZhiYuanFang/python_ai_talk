@@ -102,6 +102,7 @@ def build_intent_classification_system_prompt(
 - read 可作用于kind=parent的事件
 - 只输出纯 JSON，不包含任何其他文字、解释、问候语
 - JSON 内部不得包含任何注释（//、/* */、# 等均不允许）
+- 时间的使用不需要解释来源，避免json格式错误
 
 JSON 格式：
 {{
