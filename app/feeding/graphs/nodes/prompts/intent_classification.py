@@ -102,7 +102,7 @@ def build_intent_classification_system_prompt(
 - read 可作用于kind=parent的事件
 - 只返回 JSON，不要其它文字
 
-JSON 格式：
+JSON 格式(不可添加注释，保障json格式正确)：
 {{
   "op": "create|read|update|delete|",
   "target_type": "feeding|history|conversation|exit",
