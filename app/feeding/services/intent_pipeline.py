@@ -464,7 +464,8 @@ def postprocess_feeding_result(
         **fields,
         "need_confirm": False,
         "confirm_type": None,
-        "confirm_message": None,
+        # 空串而非 None：避免确认后续聊 coerce_intent_result 校验失败
+        "confirm_message": "",
         "options": [],
         "conversation_id": None,
     }

@@ -67,16 +67,35 @@ class IntentResult(BaseModel):
         return self.model_dump(exclude_none=False)
 
 
+# IntentResult 中「非 Optional、默认空串」的字段：旧管线/LLM 常写 null，校验前需收成 ""
+_INTENT_RESULT_EMPTY_STR_FIELDS = (
+    "target_type",
+    "action",
+    "op",
+    "event_name",
+    "event_id",
+    "remark_keyword",
+    "content",
+    "confirm_message",
+)
+
+
 def coerce_intent_result(value: Any) -> IntentResult:
     """
     图内 intent_result 归一：None / dict / IntentResult → IntentResult。
 
     业务说明：节点读 state、路由读 op 时统一入口，避免主路径混用 .get 与属性。
+    字典入参里默认空串字段若为 None（如确认清态写 confirm_message: null），先归一为 ""，
+    再 model_validate，避免 Pydantic 拒收导致确认后续聊 500。
     """
     if value is None:
         return IntentResult()
     if isinstance(value, IntentResult):
         return value
     if isinstance(value, Mapping):
-        return IntentResult.model_validate(dict(value))
+        data = dict(value)
+        for key in _INTENT_RESULT_EMPTY_STR_FIELDS:
+            if key in data and data[key] is None:
+                data[key] = ""
+        return IntentResult.model_validate(data)
     raise TypeError(f"无法转为 IntentResult: {type(value)!r}")

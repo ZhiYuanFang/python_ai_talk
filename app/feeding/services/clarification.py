@@ -902,7 +902,8 @@ def leaf_intent_result(
         "is_new_event": False,
         "need_confirm": False,
         "confirm_type": None,
-        "confirm_message": None,
+        # 空串而非 None：IntentResult.confirm_message 为 str，Pydantic 拒收 null
+        "confirm_message": "",
         "options": [],
         "original_utterance": original_utterance,
     }
