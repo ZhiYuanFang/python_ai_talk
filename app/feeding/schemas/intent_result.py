@@ -20,6 +20,7 @@ class IntentEventItem(BaseModel):
     业务说明：
     op 为 create|update|delete|end|read；action 可选（start|one|end）。
     查记录可带自有时间窗与 remark_keyword。
+    ignore_time_range：op=read 时由分类判定「上一次」类点查是否忽略时间窗。
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -34,6 +35,8 @@ class IntentEventItem(BaseModel):
     remark_keyword: Optional[str] = None
     start_time: Optional[int] = None
     end_time: Optional[int] = None
+    # 点查「上一次」为 true → 拉史透传 ignoreTimeRange；缺省 false
+    ignore_time_range: bool = False
 
 
 class IntentResult(BaseModel):

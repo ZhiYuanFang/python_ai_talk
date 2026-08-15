@@ -23,6 +23,7 @@ from app.feeding.services.intent_cache_store import (
     intent_cache_store,
     last_cache_turn_store,
 )
+from app.feeding.services.intent_events import coerce_ignore_time_range
 from app.shared.constants import IntentOp, TargetType
 from app.shared.graphs.state_patch import state_get
 from app.shared.history_prompt_fields import (
@@ -304,6 +305,8 @@ async def speak_history(state: Any) -> Dict[str, Any]:
             continue
         query_ids, parent_ids = _expand_query_ids(original_ids, full_events)
         fetch_ids = query_ids or original_ids
+        # LLM 判定「上一次」时为 true → 透传 Go ignoreTimeRange，避免猜测窗踩空
+        ignore_time = coerce_ignore_time_range(item.get("ignore_time_range"))
         try:
             rows = await http_client.get_filtered_history_events(
                 device_no=device_no,
@@ -312,6 +315,7 @@ async def speak_history(state: Any) -> Dict[str, Any]:
                 end_time=end_time,
                 limit=int(intent.get("limit") or 20),
                 remark=remark or None,
+                ignore_time_range=ignore_time,
             )
         except Exception as exc:
             logger.error(f"查记录拉史失败: {exc}", exc_info=True)
@@ -332,6 +336,7 @@ async def speak_history(state: Any) -> Dict[str, Any]:
             names = [n for n in names if n]
             chunk = _template_point(rows or [], names, full_events)
         parts.append(chunk.rstrip("。"))
+        # 缓存快照保留 ignore_time_range，命中后点查行为一致
         cache_events.append(
             {
                 "op": IntentOp.READ.value,
@@ -340,6 +345,7 @@ async def speak_history(state: Any) -> Dict[str, Any]:
                 "remark_keyword": remark,
                 "start_time": start_time,
                 "end_time": end_time,
+                "ignore_time_range": ignore_time,
             }
         )
 

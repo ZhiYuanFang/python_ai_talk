@@ -253,6 +253,7 @@ class HttpClient:
         end_time: Optional[int] = None,
         limit: Optional[int] = None,
         remark: Optional[str] = None,
+        ignore_time_range: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         按条件筛选历史记录
@@ -262,6 +263,8 @@ class HttpClient:
         2. 调用 history-service 的筛选 API，按事件ID列表和时间范围筛选历史记录。
         事件ID是稳定标识（事件名会变但ID不变），因此使用 event_ids 而非 event_names。
         支持不传 event_ids（返回所有事件类型）、不传时间范围（不限制时间）。
+        ignore_time_range 为真时透传 Go query ignoreTimeRange=true，强制忽略已填时间窗
+        （用于「上一次」等点查，避免 LLM 猜测区间踩空）；为假不写该键，行为与现网一致。
 
         Args:
             device_no: 设备编号
@@ -270,6 +273,7 @@ class HttpClient:
             end_time: 结束时间戳（Unix秒，可选）
             limit: 返回数量上限（可选，默认100）
             remark: 备注模糊关键词（可选；空则不按备注过滤）
+            ignore_time_range: 为真时 Go 忽略 startTime/endTime；默认 false
 
         Returns:
             筛选后的历史事件列表
@@ -305,6 +309,10 @@ class HttpClient:
         # 备注模糊：Go 侧排除空/NULL 行，并与 eventIds AND
         if remark and str(remark).strip():
             params["remark"] = str(remark).strip()
+
+        # 仅 true 时写 query，减噪音；与 Go remote 透传风格一致
+        if ignore_time_range:
+            params["ignoreTimeRange"] = "true"
 
         try:
 

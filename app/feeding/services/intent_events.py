@@ -35,6 +35,20 @@ def _is_timer_leaf(leaf: Optional[Dict[str, Any]]) -> bool:
     return str(leaf.get("event_type") or "").strip().lower() == "time"
 
 
+def coerce_ignore_time_range(value: Any) -> bool:
+    """
+    将 LLM/缓存中的 ignore_time_range 规范为 bool。
+
+    兼容 true/1/yes（大小写不敏感）；其余与缺省均为 false。
+    """
+    if value is True or value is False:
+        return bool(value)
+    if value in (1, "1"):
+        return True
+    raw = str(value or "").strip().lower()
+    return raw in ("true", "yes", "1")
+
+
 def derive_item_op(
     ev: Dict[str, Any],
     *,
@@ -174,6 +188,10 @@ def normalize_intent_events(
             "",
         ):
             item["action"] = ""
+        # 保留并归一 ignore_time_range，避免字符串 "true" 或丢键
+        item["ignore_time_range"] = coerce_ignore_time_range(
+            item.get("ignore_time_range")
+        )
         normalized.append(item)
     out["events"] = normalized
     # 顶层不再作为权威；清除以免下游误用
