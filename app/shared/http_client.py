@@ -307,6 +307,10 @@ class HttpClient:
             params["remark"] = str(remark).strip()
 
         try:
+
+            # 打印请求接口和参数
+            logger.info(f"筛选历史记录请求接口: {url}, 参数: {params}")
+
             # 发起 GET 请求
             response = await self._client.get(url, params=params)
 
