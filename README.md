@@ -47,7 +47,8 @@ cd deploy/openclaw
 export OPENCLAW_GATEWAY_TOKEN='与 json5 内 token 一致'
 
 cd plugins/pangbao-tools && npm install && npm run build && cd ../..
-
+#先彻底删掉旧容器
+docker compose -f docker-compose.openclaw.yml down
 # 推荐（云机 / Linux）：
 docker compose -f docker-compose.openclaw.yml up -d
 
