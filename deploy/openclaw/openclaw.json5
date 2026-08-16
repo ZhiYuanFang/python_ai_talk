@@ -39,11 +39,43 @@
       },
     },
   },
+  // 显式登记 DeepSeek，避免 agent 本地空 models.json（providers:{}）掏空 chat 可用模
+  models: {
+    mode: "merge",
+    providers: {
+      deepseek: {
+        baseUrl: "https://api.deepseek.com/v1",
+        apiKey: "$DEEPSEEK_API_KEY",
+        api: "openai-completions",
+        models: [
+          {
+            id: "deepseek-v4-flash",
+            name: "DeepSeek V4 Flash",
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 1000000,
+            maxTokens: 8192,
+          },
+          {
+            id: "deepseek-v4-pro",
+            name: "DeepSeek V4 Pro",
+            reasoning: true,
+            input: ["text"],
+            contextWindow: 1000000,
+            maxTokens: 8192,
+          },
+        ],
+      },
+    },
+  },
   agents: {
     defaults: {
       workspace: "/openclaw/workspaces/default",
       // 产品写死编排 LLM；门禁不转发 x-openclaw-model，故以本项为准
       model: { primary: "deepseek/deepseek-v4-flash" },
+      models: {
+        "deepseek/deepseek-v4-flash": {},
+      },
     },
     // 2026.7.1-2 AgentsSchema：仅 list + defaults（strict）
     list: [

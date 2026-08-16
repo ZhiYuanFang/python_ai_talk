@@ -11,7 +11,7 @@
 | Tools `/v1/tools/*` | 按 **A Token** 路由上游并塑形；无默认 Go 域名 |
 | Gateway 插件 | 仅 `toolsBaseUrl`，转发 `x-pangbao-api-token` |
 
-编排 LLM 当前写死为 **`deepseek/deepseek-v4-flash`**（`openclaw.json5` → `agents.defaults.model`）。  
+编排 LLM 当前写死为 **`deepseek/deepseek-v4-flash`**（`openclaw.json5` → `agents.defaults.model`，并在 `models.providers.deepseek` **显式登记**）。  
 Go 仍可发送 `x-openclaw-model`，但门禁会丢弃，**暂不生效**。请求 body 的 `model`（`openclaw/intent|clinic|care_alert`）仍用于选择 agent。
 
 建议启动顺序：**建网 → OpenClaw Gateway → 本仓 Python → 打开控制台手配 → Go 指门禁**。
@@ -45,7 +45,7 @@ docker network create ai_agent_net
 
 根目录 `env/.env.*` 里的 LLM key **仍留给 Python 飞轮 / tools**，不要删；改 key 时请同步 OpenClaw 这份 env。
 
-改 `openclaw.json5`（含默认 model）后：对该 compose **up -d --force-recreate**（或 restart）即可，不必 rebuild 镜像。
+改 `openclaw.json5`（含默认 model / `models.providers`）后：对该 compose **up -d --force-recreate**（或 restart）即可，不必 rebuild 镜像。若容器内曾生成空的 `~/.openclaw/agents/*/agent/models.json`（`"providers": {}`），recreate 前可删掉，避免盖住显式登记。
 
 ```bash
 cd deploy/openclaw
