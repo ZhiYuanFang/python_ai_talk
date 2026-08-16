@@ -45,7 +45,15 @@ docker network create ai_agent_net
 
 根目录 `env/.env.*` 里的 LLM key **仍留给 Python 飞轮 / tools**，不要删；改 key 时请同步 OpenClaw 这份 env。
 
-改 `openclaw.json5`（含默认 model / `models.providers`）后：对该 compose **up -d --force-recreate**（或 restart）即可，不必 rebuild 镜像。若容器内曾生成空的 `~/.openclaw/agents/*/agent/models.json`（`"providers": {}`），recreate 前可删掉，避免盖住显式登记。
+改 `openclaw.json5`（含默认 model / `models.providers`）后：**up -d --force-recreate** 即可，不必 rebuild。  
+改 **`Dockerfile` / `docker-entrypoint.sh` / `seed/models.json`** 后：必须 **rebuild** 再 recreate。
+
+启动时 entrypoint 会为 `intent` / `clinic` / `care_alert`：
+
+1. 写入非空 `models.json`（覆盖空 `providers:{}` 毒丸；种子里 `apiKey` 仅为 `DEEPSEEK_API_KEY` 名，**禁止明文 key**）
+2. 若 env 有 `DEEPSEEK_API_KEY`，经 CLI 写入各 agent auth store（仅有进程 env 不够）
+
+`models.mode` 须保持 **`merge`**，勿改成 `replace`（resolve 为空时会主动写回空目录）。
 
 ```bash
 cd deploy/openclaw
@@ -60,7 +68,7 @@ cp env/.env.example env/.env.prod
 # 本仓插件（改插件源码后才需要再跑）
 cd plugins/pangbao-tools && npm install && npm run build && cd ../..
 
-# 1) 构建预装 openclaw 的镜像（首次或升版 / 改 Dockerfile 时）
+# 1) 构建预装 openclaw + bootstrap 的镜像（首次 / 升版 / 改 entrypoint·种子·Dockerfile）
 docker compose --env-file env/.env.prod \
   -f docker-compose.openclaw.yml build
 
@@ -69,17 +77,28 @@ docker compose --env-file env/.env.prod \
   -f docker-compose.openclaw.yml up -d
 # 测试环境：--env-file env/.env.test
 
-# 日常只改 json5 / workspaces / env：直接 up 即可，不必 rebuild
+# 日常只改 json5 / workspaces / env：up --force-recreate 即可，不必 rebuild
 # 升 OpenClaw 版本：改 Dockerfile 的 ARG OPENCLAW_VERSION（及 compose args/image 标签）后重新 build
-# 勿再在启动命令里 npm install -g openclaw（已烤进镜像）
 ```
 
-验收：
+验收（token = `OPENCLAW_GATEWAY_TOKEN`）：
 
 ```bash
-# token 与 env/.env.prod 中 OPENCLAW_GATEWAY_TOKEN 一致
+# 列表
 curl -sS http://127.0.0.1:18789/v1/models \
   -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
+
+# 自检：catalog 非空 + auth 已写入 + chat 不再 Unknown / missing-provider-auth
+docker exec openclaw-gateway bash -lc \
+  'wc -c /root/.openclaw/agents/care_alert/agent/models.json; grep -c deepseek-v4-flash /root/.openclaw/agents/care_alert/agent/models.json'
+docker exec openclaw-gateway bash -lc \
+  'OPENCLAW_AGENT_DIR=/root/.openclaw/agents/care_alert/agent openclaw models auth list --provider deepseek'
+
+curl -sS -i http://127.0.0.1:18789/v1/chat/completions \
+  -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openclaw/care_alert","messages":[{"role":"user","content":"ping"}]}'
+# 期望：非 Unknown model、非 missing-provider-auth（上游业务错误另论）
 ```
 
 ---

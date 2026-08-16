@@ -1,14 +1,16 @@
 # OpenClaw Gateway 侧车（与 Python 共网 ai_agent_net）
 # 先建网：docker network create ai_agent_net
-# 预装镜像：钉死 openclaw@2026.7.1-2（见 Dockerfile ARG）；启动不再 npm install
+# 预装镜像：钉死 openclaw@2026.7.1-2（见 Dockerfile ARG）；启动经 entrypoint bootstrap
 # 勿对公网裸放 18789；对外走 Python :8000/agent-gate
 #
 # 密钥：deploy/openclaw/env/.env.prod|test（gitignore）
-# 流程：先 build，再 --env-file up（日常 recreate 不必 rebuild）
+# 流程：先 build，再 --env-file up
 #   docker compose --env-file env/.env.prod -f docker-compose.openclaw.yml build
 #   docker compose --env-file env/.env.prod -f docker-compose.openclaw.yml up -d
+# 改 json5 / workspaces / env：up --force-recreate 即可
+# 改 Dockerfile / docker-entrypoint.sh / seed/：必须 rebuild
 # OPENCLAW_GATEWAY_TOKEN 须与 Python INTERNAL_GATEWAY_TOKEN 一致（进门，非 LLM）
-# DEEPSEEK_API_KEY 等供 Gateway 调上游 LLM；Go 只注 x-openclaw-model，不传 key
+# DEEPSEEK_API_KEY 等供 Gateway 调上游 LLM；entrypoint 写入各 agent auth store
 services:
   openclaw-gateway:
     build:
@@ -19,13 +21,13 @@ services:
     image: openclaw-gateway:2026.7.1-2
     container_name: openclaw-gateway
     working_dir: /openclaw
-    # 依赖镜像 CMD；此处显式写出便于阅读（无 npm install）
+    # 作为 ENTRYPOINT 参数传入（勿改成覆盖 ENTRYPOINT 的 shell 形式，否则跳过 bootstrap）
     command: ["openclaw", "gateway", "--port", "18789", "--bind", "lan"]
     environment:
       # json5 gateway.auth.token 为 env SecretRef；权威值来自 --env-file
       OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-dev-token-change-me}"
       OPENCLAW_CONFIG_PATH: /openclaw/openclaw.json5
-      # 上游 LLM（须经 --env-file 注入进容器进程）
+      # 上游 LLM（须经 --env-file 注入进容器进程；bootstrap 灌入三 agent auth）
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       GLM_API_KEY: "${GLM_API_KEY:-}"
       SILICONFLOW_API_KEY: "${SILICONFLOW_API_KEY:-}"
