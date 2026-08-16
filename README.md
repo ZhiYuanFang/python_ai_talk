@@ -65,8 +65,9 @@ cp env/.env.example env/.env.prod
 # openclaw.json5：gateway.mode=local；auth.token 引用 OPENCLAW_GATEWAY_TOKEN；
 # agents 用 list；并网 toolsBaseUrl=http://python-ai-talk:8000/v1
 
-# 本仓插件（改插件源码后才需要再跑）
+# 本仓插件（改 src 后才需要再 build；仅改 openclaw.plugin.json 的 contracts.tools 后 recreate 即可）
 cd plugins/pangbao-tools && npm install && npm run build && cd ../..
+# 注意：manifest 须含 contracts.tools 显式名；缺则 tools 加载后仍无法 register
 
 # 1) 构建预装 openclaw + bootstrap 的镜像（首次 / 升版 / 改 entrypoint·种子·Dockerfile）
 docker compose --env-file env/.env.prod \

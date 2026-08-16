@@ -9,6 +9,24 @@
       "toolsBaseUrl": { "type": "string" }
     }
   },
+  "contracts": {
+    "tools": [
+      "history_create",
+      "history_update",
+      "history_delete",
+      "history_end_latest",
+      "history_filter",
+      "history_list",
+      "history_options",
+      "baby_profile",
+      "flywheel_intent_retrieve",
+      "flywheel_intent_record",
+      "flywheel_clinic_retrieve",
+      "flywheel_clinic_record",
+      "clinic_judge_implicit_acceptance",
+      "emit_care_cards"
+    ]
+  },
   "tools": [
     "history_create",
     "history_update",
