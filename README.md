@@ -35,27 +35,36 @@ docker network create ai_agent_net
 
 要求：Node `>=22.22.3` 或 `>=24.15`；钉死发行版 `openclaw@2026.7.1-2`。
 
+密钥在 **`deploy/openclaw/env/`**（与根目录 `env/` 分离；真值 gitignore，只提交 `.env.example`）：
+
+- `OPENCLAW_GATEWAY_TOKEN`：进门令牌，须与 Python `INTERNAL_GATEWAY_TOKEN` 一致
+- `DEEPSEEK_API_KEY` 等：Gateway 调上游 LLM（Go 只注 `x-openclaw-model`，不传 key）
+
+根目录 `env/.env.*` 里的 LLM key **仍留给 Python 飞轮 / tools**，不要删；改 key 时请同步 OpenClaw 这份 env。
+
 ```bash
 cd deploy/openclaw
 
-# 编辑 openclaw.json5：
-# - gateway.mode=local
-# - gateway.auth.token 已引用 env OPENCLAW_GATEWAY_TOKEN（勿再写明文 REPLACE_ME）
-# - agents 使用 list（勿用 entries）
-# - 并网时 toolsBaseUrl 已为 http://python-ai-talk:8000/v1
+# 首次：复制模板并填密钥（可从仓库根 env/.env.prod 对齐 LLM key 与 INTERNAL_GATEWAY_TOKEN）
+cp env/.env.example env/.env.prod
+# 编辑 env/.env.prod …
 
-export OPENCLAW_GATEWAY_TOKEN='与 Python INTERNAL_GATEWAY_TOKEN 一致'
+# openclaw.json5：gateway.mode=local；auth.token 引用 OPENCLAW_GATEWAY_TOKEN；
+# agents 用 list；并网 toolsBaseUrl=http://python-ai-talk:8000/v1
 
 cd plugins/pangbao-tools && npm install && npm run build && cd ../..
-# 推荐（云机 / Linux）：
-docker compose -f docker-compose.openclaw.yml up -d --force-recreate
-# 本机直跑（可选）：
+# 推荐（云机 / Linux）——必须 --env-file，否则容器无 LLM key：
+docker compose --env-file env/.env.prod \
+  -f docker-compose.openclaw.yml up -d --force-recreate
+# 测试环境改用：--env-file env/.env.test
+# 本机直跑（可选，须自行 export 同上变量）：
 # openclaw gateway run --port 18789 --force
 ```
 
 验收：
 
 ```bash
+# token 与 env/.env.prod 中 OPENCLAW_GATEWAY_TOKEN 一致
 curl -sS http://127.0.0.1:18789/v1/models \
   -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
 ```

@@ -29,3 +29,14 @@ API 管理页中「Go / 业务壳接入说明」区域 SHALL 将服务端返回�
 
 - **WHEN** 租户进入 API 管理页且 guide 含二级标题与 Markdown 表格
 - **THEN** 页面中可见渲染后的标题与表格结构（非一整块未解析的 Markdown 源码）
+
+### Requirement: Guide SHALL 说明能力、调用方式与完整 http URL
+
+控制台 guide（`_go_guide_markdown` 或等价）SHALL 面向业务接入方说明：（1）本智能体能力概要（至少覆盖 intent / clinic / care_alert 三类 agent 的用途一句）；（2）外界如何调用门禁（G/A 头、`model`、`session-key`、勿直连裸 OpenClaw）；（3）参考 API MUST 以 **完整 URL** 写出（含 `http://` 或 `https://` 与主机占位或当前请求推导的公网/访问基址），至少包括门禁 chat completions、控制台入口，以及下方 tools 上游八槽位的完整示例 URL。MUST NOT 仅给出无主机的 path（如单独 `/agent-gate/...`）作为唯一参考。
+
+#### Scenario: 接入方阅读 guide 可抄完整门禁 URL
+
+- **WHEN** 租户打开 API 管理页查看接入说明
+- **THEN** guide 中出现以 `http://` 或 `https://` 开头的门禁 chat completions 完整 URL
+- **AND** guide 含 intent/clinic/care_alert 能力说明
+- **AND** 上游 history 槽位示例亦为完整 URL（含主机占位或可解析基址）

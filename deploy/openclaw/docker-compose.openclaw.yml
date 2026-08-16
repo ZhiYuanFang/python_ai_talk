@@ -2,6 +2,11 @@
 # 先建网：docker network create ai_agent_net
 # 需要宿主机/镜像内 Node >=22.22.3；钉死 npm openclaw@2026.7.1-2
 # 勿对公网裸放 18789；对外走 Python :8000/agent-gate
+#
+# 密钥：deploy/openclaw/env/.env.prod|test（gitignore）
+# 启动：docker compose --env-file env/.env.prod -f docker-compose.openclaw.yml up -d
+# OPENCLAW_GATEWAY_TOKEN 须与 Python INTERNAL_GATEWAY_TOKEN 一致（进门，非 LLM）
+# DEEPSEEK_API_KEY 等供 Gateway 调上游 LLM；Go 只注 x-openclaw-model，不传 key
 services:
   openclaw-gateway:
     image: node:24.19.0-bookworm
@@ -11,10 +16,16 @@ services:
       bash -lc "npm install -g openclaw@2026.7.1-2 --allow-scripts openclaw
       && openclaw gateway --port 18789 --bind lan"
     environment:
-      # json5 gateway.auth.token 为 env SecretRef；此处为权威值
-      # 须与 Python INTERNAL_GATEWAY_TOKEN 一致
+      # json5 gateway.auth.token 为 env SecretRef；权威值来自 --env-file
       OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-dev-token-change-me}"
       OPENCLAW_CONFIG_PATH: /openclaw/openclaw.json5
+      # 上游 LLM（须经 --env-file 注入进容器进程）
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      GLM_API_KEY: "${GLM_API_KEY:-}"
+      SILICONFLOW_API_KEY: "${SILICONFLOW_API_KEY:-}"
+      SILICONFLOW_BASE_URL: "${SILICONFLOW_BASE_URL:-}"
+      MODELSCOPE_API_KEY: "${MODELSCOPE_API_KEY:-}"
+      MODELSCOPE_BASE_URL: "${MODELSCOPE_BASE_URL:-}"
     volumes:
       - ./openclaw.json5:/openclaw/openclaw.json5:ro
       - ./workspaces:/openclaw/workspaces

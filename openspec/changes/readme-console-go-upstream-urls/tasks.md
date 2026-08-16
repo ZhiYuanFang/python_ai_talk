@@ -6,6 +6,7 @@
 ## 2. 控制台说明
 
 - [x] 2.1 更新 `_go_guide_markdown`：与 README 同语义的基址、path 表、Bearer 留空说明
+- [x] 2.2 扩展 guide：能力（intent/clinic/care_alert）、调用方式、完整 `http(s)://` 参考 URL；按 Request 推导本服务基址
 
 ## 3. Guide Markdown 渲染
 

@@ -5,8 +5,8 @@
 ## What Changes
 
 - 在 `README.md`「管理页」相关章节补充：Catalog 槽位 ↔ Go history API 完整 path 对照表；推荐 `BASE`（主网关或直连 history-service）；明确勿用 gateway-app；上游 Bearer 对现网 history **留空**。
-- 同步控制台页内 Go 接入说明（`_go_guide_markdown`），与 README 一致，避免页内仍无 path 指引。
-- API 管理页对 guide **渲染 Markdown**（前端轻量库 vendoring `marked`，GFM 表格），不再 `textContent` 纯文本。
+- 同步控制台页内 Go 接入说明（`_go_guide_markdown`）：能力概要、调用方式、完整 `http(s)://` 参考 URL（按请求 Host 推导本服务基址），与 README 上游表一致。
+- API 管理页对 guide **渲染 Markdown**（前端轻量库 vendoring `marked`，GFM 表格）。
 - **非 BREAKING**：不改 tools 路由或鉴权实现。
 
 ## Capabilities

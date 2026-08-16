@@ -140,7 +140,7 @@ async def tenant_me(request: Request):
         "pair": pair,
         "endpoints": endpoints,
         "catalog": TOOL_CATALOG,
-        "guide": _go_guide_markdown(),
+        "guide": _go_guide_markdown(request),
     }
 
 
@@ -201,36 +201,92 @@ async def admin_g_enabled(req: SetGEnabledReq, request: Request):
     return {"ok": True}
 
 
-def _go_guide_markdown() -> str:
-    """Go/业务壳接入说明（用户可见）。"""
-    gate = "/agent-gate/v1/chat/completions"
-    return f"""## 从 Go / 业务壳接入智能体
+def _public_base_url(request: Optional[Request] = None) -> str:
+    """
+    推导本服务对外基址（仅用于 guide 文案，不参与鉴权）。
 
-1. **Gateway Token（G）**：放在 `Authorization: Bearer <G>`，调用本平台**门禁** `{gate}`（不要直连裸 OpenClaw，除非内网调试）。
-2. **API Token（A）**：放在独立头 `x-pangbao-api-token: <A>`，供 Agent tools 落库/读史路由。
-3. 另需：`x-openclaw-model`、`x-openclaw-session-key`（如 `intent:{{deviceNo}}`）。
-4. **G 失效** → 无法使用智能体。**缺 A / 未配 URL** → 对话可能到达，但 history CRUD/读史 tools 失败。
-5. 在下方为每个 tool 填写**完整 URL（含域名）**；本页契约说明入参出参；Python **无**默认胖宝 Go 地址。
+    优先 X-Forwarded-Proto / X-Forwarded-Host，否则用请求 URL。
+    """
+    if request is None:
+        return "http://<本服务主机>:8000"
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+    if not host:
+        return "http://<本服务主机>:8000"
+    return f"{proto}://{host}".rstrip("/")
 
-### 上游 URL（tools → Go history）
 
-推荐 BASE：`http://<Go主机>:9701`（主网关，无 App JWT）或 `http://history-service:9801`（直连）。**不要**用 gateway-app `:9702`。现网 history 的「上游 Bearer」**留空**（勿填用户日更 JWT）。
+def _go_guide_markdown(request: Optional[Request] = None) -> str:
+    """Go/业务壳接入说明（用户可见）：能力、如何调用、完整 http URL。"""
+    base = _public_base_url(request)
+    gate = f"{base}/agent-gate/v1/chat/completions"
+    gate_health = f"{base}/agent-gate/health"
+    console = f"{base}/console"
+    go_base = "http://<Go主机>:9701"
+    return f"""## 本智能体能做什么
 
-| tool | Method | path |
-|------|--------|------|
-| history_create | POST | /device/history/api/event/add |
-| history_update | POST | /device/history/api/event/update |
-| history_delete | POST | /device/history/api/event/delete |
-| history_end_latest | POST | /device/history/api/event/end-latest |
-| history_filter | GET | /device/history/api/filter |
-| history_list | GET | /device/history/api/list |
-| history_options | GET | /device/history/api/event/options |
-| baby_profile | GET | /device/history/api/birthday |
+编排在 OpenClaw Gateway；**对外只走本服务门禁**（不要直连 `:18789`）。按 `model` 选用智能体：
 
-环境变量示例：
+| model | 能力 |
+|-------|------|
+| `openclaw/intent` | 喂养意图：查/写历史、事件字典、宝宝画像（经下方 tools） |
+| `openclaw/clinic` | 门诊/建议类对话（可读史与画像；飞轮相关 tools） |
+| `openclaw/care_alert` | 护理提醒 / 卡片类（可读史、画像、`emit_care_cards`） |
+
+本页左侧 **G / A** 为一对租户凭证；下方为各 tool 落库/读史的**完整上游 URL**（指向你的 Go history，非本服务）。
+
+## 外界如何调用
+
+1. **G（Gateway Token）**：`Authorization: Bearer <G>` → 调门禁。
+2. **A（API Token）**：`x-pangbao-api-token: <A>` → tools 按租户解析上游 URL。
+3. **`x-openclaw-model`**：Go 已选型的后端模型（如 `provider/model`）。
+4. **`x-openclaw-session-key`**：稳定会话键，意图建议 `intent:{{deviceNo}}`。
+5. **G 失效** → 无法调智能体。**缺 A / 未配 URL** → 对话可能到达，但 history CRUD/读史 tools 失败。
+
+### 参考 API（完整 URL）
+
+| 用途 | Method | URL |
+|------|--------|-----|
+| 智能体对话（门禁） | POST | `{gate}` |
+| 门禁健康检查 | GET | `{gate_health}` |
+| 本控制台 | GET | `{console}` |
+
+请求示例：
+
+```http
+POST {gate}
+Authorization: Bearer <G>
+x-pangbao-api-token: <A>
+x-openclaw-model: <provider/model>
+x-openclaw-session-key: intent:<deviceNo>
+Content-Type: application/json
+
+{{
+  "model": "openclaw/intent",
+  "messages": [{{ "role": "user", "content": "记录一下喂奶" }}]
+}}
 ```
-OPENCLAW_GATEWAY_URL=https://<your-host>/agent-gate
+
+Go / 业务壳环境变量（`OPENCLAW_GATEWAY_URL` 须为**可达本服务**的地址；分 Docker 网时勿写解析不到的主机名）：
+
+```
+OPENCLAW_GATEWAY_URL={base}/agent-gate
 OPENCLAW_GATEWAY_TOKEN=<G>
 PANGBAO_API_TOKEN=<A>
 ```
+
+## 本页配置：tools → 你的 Go history
+
+Python **无**默认胖宝 Go 域名。推荐 BASE：`{go_base}`（主网关，无 App JWT）或 `http://history-service:9801`（直连）。**不要**用 gateway-app `:9702`。现网 history 的「上游 Bearer」**留空**。
+
+| tool | Method | 完整 URL 示例 |
+|------|--------|----------------|
+| history_create | POST | `{go_base}/device/history/api/event/add` |
+| history_update | POST | `{go_base}/device/history/api/event/update` |
+| history_delete | POST | `{go_base}/device/history/api/event/delete` |
+| history_end_latest | POST | `{go_base}/device/history/api/event/end-latest` |
+| history_filter | GET | `{go_base}/device/history/api/filter` |
+| history_list | GET | `{go_base}/device/history/api/list` |
+| history_options | GET | `{go_base}/device/history/api/event/options` |
+| baby_profile | GET | `{go_base}/device/history/api/birthday` |
 """

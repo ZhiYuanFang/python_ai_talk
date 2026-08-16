@@ -71,4 +71,12 @@ env/.env.local
 env/.env.test
 env/.env.prod
 
+# OpenClaw Gateway 密钥（真值不提交；根规则 env/ 会忽略任意路径下的 env/）
+deploy/openclaw/env/.env.prod
+deploy/openclaw/env/.env.test
+deploy/openclaw/env/.env.local
+# 放开目录与可提交模板
+!deploy/openclaw/env/
+!deploy/openclaw/env/.env.example
+
 *.ps1
