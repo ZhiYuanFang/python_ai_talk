@@ -42,6 +42,8 @@
   agents: {
     defaults: {
       workspace: "/openclaw/workspaces/default",
+      // 产品写死编排 LLM；门禁不转发 x-openclaw-model，故以本项为准
+      model: { primary: "deepseek/deepseek-v4-flash" },
     },
     // 2026.7.1-2 AgentsSchema：仅 list + defaults（strict）
     list: [

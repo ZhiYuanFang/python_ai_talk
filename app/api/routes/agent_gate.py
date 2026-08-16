@@ -4,6 +4,8 @@
 业务说明：
 对外入口为本路由；OpenClaw 仍用内部单 token。
 A 头原样转发，供插件打 Python tools。
+产品写死 Gateway LLM 为 deepseek/deepseek-v4-flash：不转发 x-openclaw-model，
+故 Go 注模头暂时无效（Go 仓可仍发送该头）。
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ async def gate_chat_completions(
     校验 G（Authorization Bearer）后转发 Gateway。
 
     G 失效/未知 → 401；通过后用 internal_gateway_token。
+    不转发 x-openclaw-model（LLM 由 openclaw.json5 钉死 flash）。
     """
     if request.method == "OPTIONS":
         return Response(status_code=204)
@@ -71,9 +74,8 @@ async def gate_chat_completions(
         "Content-Type": request.headers.get("content-type") or "application/json",
         "Accept": request.headers.get("accept") or "application/json",
     }
-    # 透传 OpenClaw / 业务头
+    # 透传会话与 A Token；故意不转发 x-openclaw-model（忽略 Go 注模）
     for name in (
-        "x-openclaw-model",
         "x-openclaw-session-key",
         "x-pangbao-api-token",
     ):
