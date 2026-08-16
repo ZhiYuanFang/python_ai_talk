@@ -23,7 +23,8 @@
 cd deploy/openclaw
 
 # 编辑 openclaw.json5：
-# - gateway.auth.token（内部单 token）
+# - gateway.mode=local（本机开网关；缺了会报 missing gateway.mode）
+# - gateway.auth.token（内部单 token；与 Python INTERNAL_GATEWAY_TOKEN 一致）
 # - plugins.entries["pangbao-tools"].config.toolsBaseUrl → http://<Python主机>:8000/v1
 
 export OPENCLAW_GATEWAY_TOKEN='与 json5 内 token 一致'

@@ -2,6 +2,8 @@
 // History 经 Python tools；多 G 对外走 Python /agent-gate
 {
   gateway: {
+    // 本机跑 Gateway（勿与 auth.mode 混淆）；缺省会被新版 CLI 拦截启动
+    mode: "local",
     port: 18789,
     bind: "loopback",
     auth: {
