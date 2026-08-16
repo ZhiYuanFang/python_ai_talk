@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI喂养智能体</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/console/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">AI喂养智能体 <span>控制台</span></div>
+    <button type="button" class="btn btn-ghost btn-sm" id="btnAdminEntry">管理员入口</button>
+  </header>
+
+  <!-- 主页 -->
+  <section id="viewHome" class="hero">
+    <div class="hero-copy">
+      <h1>AI喂养智能体</h1>
+      <p>为你的业务接上可配置的喂养智能体。使用 Gateway Token 或 API Token 进入，配置落库接口。</p>
+      <div class="panel">
+        <label for="tokenInput">G Token 或 A Token</label>
+        <input id="tokenInput" type="password" autocomplete="off" placeholder="粘贴 gw_… 或 api_…" />
+        <p class="hint">为安全起见，不支持用户名登录配置页。</p>
+        <button type="button" class="btn btn-primary" id="btnEnterApi">进入 API 管理</button>
+        <p class="err hidden" id="homeErr"></p>
+      </div>
+    </div>
+    <div class="illus" aria-hidden="true">
+      <!-- 扁平宝宝 + 奶瓶剪影 -->
+      <svg viewBox="0 0 320 280" xmlns="http://www.w3.org/2000/svg">
+        <ellipse cx="160" cy="240" rx="110" ry="18" fill="rgba(61,143,191,0.12)"/>
+        <circle cx="160" cy="118" r="52" fill="#f5d0b8"/>
+        <ellipse cx="160" cy="100" rx="48" ry="20" fill="#7eb8e0"/>
+        <circle cx="142" cy="120" r="5" fill="#2a3a4a"/>
+        <circle cx="178" cy="120" r="5" fill="#2a3a4a"/>
+        <path d="M148 138 Q160 148 172 138" stroke="#c47a6a" stroke-width="3" fill="none" stroke-linecap="round"/>
+        <rect x="230" y="90" width="28" height="70" rx="10" fill="#a8e0d5"/>
+        <rect x="236" y="72" width="16" height="22" rx="4" fill="#5ba3d9"/>
+        <circle cx="244" cy="68" r="8" fill="#fff6ee" stroke="#5ba3d9" stroke-width="3"/>
+        <path d="M110 170 Q160 210 210 170 L200 230 Q160 250 120 230 Z" fill="#7eb8e0"/>
+      </svg>
+    </div>
+  </section>
+
+  <!-- API 管理 -->
+  <section id="viewApi" class="layout hidden">
+    <div class="topbar" style="padding-left:0;padding-right:0">
+      <div class="brand">API 管理 <span id="apiName"></span></div>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnLogoutTenant">退出</button>
+    </div>
+    <div class="grid-2">
+      <div class="panel">
+        <h2 style="margin-top:0">接入凭证</h2>
+        <label>Gateway Token (G)</label>
+        <div class="token-row">
+          <code id="showG" data-masked="1"></code>
+          <button type="button" class="btn btn-ghost btn-sm" data-toggle="showG">显示</button>
+          <button type="button" class="btn btn-primary btn-sm" data-copy="showG">复制</button>
+        </div>
+        <label>API Token (A)</label>
+        <div class="token-row">
+          <code id="showA" data-masked="1"></code>
+          <button type="button" class="btn btn-ghost btn-sm" data-toggle="showA">显示</button>
+          <button type="button" class="btn btn-primary btn-sm" data-copy="showA">复制</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">Go / 业务壳接入说明</h2>
+        <div class="guide" id="goGuide"></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:1rem">
+      <h2 style="margin-top:0">Tools 落库 URL</h2>
+      <p class="hint">填写完整 URL（含域名）。下方为契约：入参 / 出参 / 是否必填。</p>
+      <div id="toolList"></div>
+    </div>
+  </section>
+
+  <!-- 管理员 -->
+  <section id="viewAdmin" class="layout hidden">
+    <div class="topbar" style="padding-left:0;padding-right:0">
+      <div class="brand">管理员</div>
+      <div>
+        <button type="button" class="btn btn-ghost btn-sm" id="btnBackHome">回主页</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btnLogoutAdmin">退出管理员</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2 style="margin-top:0">成对签发 G + A（1:1）</h2>
+      <label>用户名 / 客户备注</label>
+      <input id="issueName" placeholder="例如：胖宝生产 / acme" />
+      <button type="button" class="btn btn-primary" id="btnIssue">生成并复制就绪</button>
+      <pre class="guide hidden" id="issueResult"></pre>
+    </div>
+    <div class="panel" style="margin-top:1rem">
+      <h2 style="margin-top:0">租户列表 · G 生效/失效</h2>
+      <div id="pairTable"></div>
+    </div>
+  </section>
+
+  <div id="adminModal" class="modal-bg hidden">
+    <div class="modal">
+      <h2 style="margin-top:0">管理员登录</h2>
+      <label>用户名</label>
+      <input id="adminUser" />
+      <label>密码</label>
+      <input id="adminPass" type="password" />
+      <p class="err hidden" id="adminErr"></p>
+      <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+        <button type="button" class="btn btn-ghost" id="btnAdminCancel">取消</button>
+        <button type="button" class="btn btn-primary" id="btnAdminOk">登录</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/console/app.js"></script>
+</body>
+</html>

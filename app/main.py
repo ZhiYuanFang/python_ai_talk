@@ -30,8 +30,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import router
+from app.api.routes.agent_console import router as console_router
+from app.api.routes.agent_gate import router as gate_router
 from app.config.settings import settings
-from app.shared.http_client import http_client
 from app.shared.vector_store import vector_store
 
 # 后台任务取消对象
@@ -183,9 +184,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],  # 允许所有请求头
     )
 
-    # 注册 API 路由
-    # 将路由模块中的所有接口注册到应用中
+    # 注册 API 路由：/v1 tools；门禁；管理后台
     app.include_router(router)
+    app.include_router(gate_router)
+    app.include_router(console_router)
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_exception_handler(
@@ -222,14 +224,21 @@ def create_app() -> FastAPI:
         """
         logger.info("Python AI Talk Service 启动中...")
 
-        # 启动向量存储后台预热任务
-        # 预热在后台执行，不阻塞服务启动
-        # 这样健康检查可以立即响应，而向量库在后台慢慢初始化
+        # Agent 控制面：尝试建表并写入管理员种子（无 MySQL 时仅告警）
+        try:
+            from app.agent_console.db import try_ensure_schema
+            from app.agent_console.repository import seed_admin_if_needed
+
+            if try_ensure_schema():
+                seed_admin_if_needed()
+                logger.info("agent_console MySQL 已就绪")
+        except Exception as e:
+            logger.warning("agent_console 初始化跳过: %s", e)
+
         global _warmup_task
         _warmup_task = asyncio.create_task(_warmup_vector_stores())
         logger.info("向量存储后台预热任务已启动")
 
-        # 启动知识飞轮后台任务（定期清理低质量知识）
         global _cleanup_task
         _cleanup_task = asyncio.create_task(_periodic_cleanup())
         logger.info("知识飞轮后台任务已启动（每 24 小时清理一次低质量知识）")
@@ -270,9 +279,6 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             logger.info("知识飞轮后台任务已取消")
-
-        # 关闭 HTTP 客户端连接
-        await http_client.close()
 
         logger.info("Python AI Talk Service 关闭完成")
 

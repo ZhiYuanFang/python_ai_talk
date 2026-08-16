@@ -1,23 +1,19 @@
-// OpenClaw Gateway 配置草稿（任务 1.2 / 2.1）
-// 钉死发行版：openclaw@2026.7.1-2；端口默认 18789
-// 复制到 Gateway 主机 ~/.openclaw/openclaw.json 或通过 OPENCLAW_CONFIG 指定
+// OpenClaw Gateway 配置草稿
+// History 经 Python tools；多 G 对外走 Python /agent-gate
 {
   gateway: {
     port: 18789,
     bind: "loopback",
     auth: {
       mode: "token",
-      // 生产用环境变量 OPENCLAW_GATEWAY_TOKEN，勿提交真实 token
       token: "REPLACE_ME",
     },
     http: {
       endpoints: {
-        // Go 主路径：OpenAI 兼容 HTTP
         chatCompletions: { enabled: true },
       },
     },
   },
-  // 本地插件：先 npm install && npm run build，再 openclaw plugins install ./plugins/pangbao-tools
   plugins: {
     load: {
       paths: ["./plugins/pangbao-tools"],
@@ -26,8 +22,7 @@
       "pangbao-tools": {
         enabled: true,
         config: {
-          // 可用环境变量 PANGBAO_HISTORY_BASE_URL / PANGBAO_TOOLS_BASE_URL 覆盖
-          historyBaseUrl: "http://127.0.0.1:9702",
+          // 仅 Python tools 基址；租户上游 URL 在控制台按 A 配置
           toolsBaseUrl: "http://127.0.0.1:8000/v1",
         },
       },
@@ -38,8 +33,6 @@
       workspace: "./workspaces/default",
     },
     entries: {
-      // HTTP model 路由：openclaw/intent|clinic|care_alert
-      // workspace 规则见 ./workspaces/<id>/AGENTS.md
       intent: {
         workspace: "./workspaces/intent",
         tools: {
@@ -49,6 +42,7 @@
             "history_delete",
             "history_end_latest",
             "history_filter",
+            "history_list",
             "history_options",
             "baby_profile",
             "flywheel_intent_retrieve",
@@ -63,20 +57,19 @@
             "history_filter",
             "history_list",
             "baby_profile",
-            "knowledge_search",
-            "clinic_judge_implicit_acceptance",
             "flywheel_clinic_retrieve",
             "flywheel_clinic_record",
+            "clinic_judge_implicit_acceptance",
           ],
         },
       },
       care_alert: {
         workspace: "./workspaces/care_alert",
         tools: {
-          // 无飞轮；无写史
           allow: [
             "history_filter",
             "history_list",
+            "history_options",
             "baby_profile",
             "emit_care_cards",
           ],

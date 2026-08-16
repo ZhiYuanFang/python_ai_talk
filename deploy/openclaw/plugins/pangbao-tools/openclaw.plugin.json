@@ -1,13 +1,11 @@
 {
   "id": "pangbao-tools",
   "name": "Pangbao Tools",
-  "description": "History REST + flywheel + care emit_cards for Pangbao agents",
+  "description": "Python shaped history + flywheel + care emit_cards",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "historyBaseUrl": { "type": "string" },
-      "historyToken": { "type": "string" },
       "toolsBaseUrl": { "type": "string" }
     }
   },

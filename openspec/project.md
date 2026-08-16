@@ -48,7 +48,7 @@
 - **Web 框架**：FastAPI（飞轮 / tools / 知识库；**非** Intent/Clinic/Care 产品编排入口）
 - **Agent 编排**：**OpenClaw Gateway**（发行版见 `deploy/openclaw`；Go 经 `OPENCLAW_GATEWAY_URL` + `x-openclaw-model`）
 - **向量数据库**：Chroma（BGE-small-zh-v1.5 嵌入模型）
-- **HTTP 客户端**：httpx（可选调兄弟仓）；History 写权威为 Go REST（Gateway tools 直打）
+- **HTTP 客户端**：httpx；History 经 Python `/v1/tools` 按租户 A 配置的完整 URL 转发并塑形（无默认 Go 域名）
 - **缓存**：cachetools.TTLCache（24小时 TTL）
 - **LLM**：由 Go 注模后经 Gateway 调用；Python tools 侧可复用 DeepSeek / Zhipu
 
@@ -56,7 +56,7 @@
 
 - **编排权威**：OpenClaw Gateway；Go 鉴权/额度/注 model 后打 Gateway，播 NL 或取 Care 卡片 tool result
 - **Python**：飞轮 HTTP tools（Intent/Clinic）、Care `emit_cards`、知识库；**禁止**再作为 Intent/Clinic/Care 产品编排上游
-- 必须通过 HTTP 调用兄弟仓 API，不能直接访问数据库/Redis（Gateway history tools 同理打 Go）
+- 租户业务数据经配置的上游 HTTP；控制面使用与 Go 同址 MySQL（`agent_*` 表）；Redis 仍用于会话/限流等
 - 向量数据库 volume 在运行时挂载，首次启动时构建
 - 服务运行在端口 8000
 

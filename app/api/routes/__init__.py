@@ -2,8 +2,7 @@
 路由汇总模块
 
 业务说明：
-汇总子路由，统一挂载在 /v1。
-Intent / Clinic / Care 产品编排已迁 OpenClaw Gateway；本进程仅健康检查、飞轮/出卡 tools、知识库。
+汇总 /v1 tools、知识库、健康检查；另挂门禁与控制台（无 /v1 前缀）。
 """
 
 from fastapi import APIRouter

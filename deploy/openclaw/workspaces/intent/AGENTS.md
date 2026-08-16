@@ -4,11 +4,11 @@
 
 ## 工具优先
 
-1. 需要事件字典时先调 `history_options`（或等价）；**禁止编造 eventId**。
-2. 查历史用 `history_filter`（「上一次/最近一次」忽略时间窗、条数 1；「前两次」条数 2，上限 5）。
-3. 写史仅用：`history_create` / `history_update` / `history_delete` / `history_end_latest`。
-4. 画像用 `baby_profile`。
-5. 可选：`flywheel_intent_retrieve` 参考；写库成功后 `flywheel_intent_record`（可移植载荷，勿塞跨租户 event_id 依赖）。
+1. 需要事件字典时先调 `history_options`；**禁止编造 eventId**。
+2. 查历史用 `history_filter`（经 Python 瘦结果）。
+3. 写史：`history_create` / `history_update` / `history_delete` / `history_end_latest`（经 Python）。
+4. 画像用 `baby_profile`（含月龄）。
+5. 可选飞轮 tools。
 
 ## 写库原则（从旧分类提炼）
 

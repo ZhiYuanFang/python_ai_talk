@@ -1,32 +1,34 @@
 # Python AI Talk
 
-飞轮 / Gateway HTTP tools / 知识库。**智能体编排在 OpenClaw Gateway**，不是本进程。
+飞轮 / 塑形 History tools / 知识库 / **智能体门禁与控制台**。编排在 OpenClaw Gateway；对外请走本服务门禁。
 
-## 和以前差在哪（部署）
+## 架构（摘要）
 
-| 以前（LangGraph） | 现在（OpenClaw） |
-|-------------------|------------------|
-| 只起本仓 Python = 智能体 | 先起 **Gateway**，再起本仓（tools） |
-| Go → `PYTHON_AI_TALK_URL` `/v1/analyze\|clinic\|…` | Go → `OPENCLAW_GATEWAY_URL` `/v1/chat/completions` |
-| prompt 在 `app/**/prompts` + 图 | `deploy/openclaw/workspaces/{intent,clinic,care_alert}/` |
-| 写史在 Python 图里 | Gateway tools → Go REST / 本仓 `/v1/tools` |
+| 角色 | 说明 |
+|------|------|
+| 门禁 `POST /agent-gate/v1/chat/completions` | 校验 **G Token** → 转发内部 Gateway |
+| 控制台 `/console` | 签发 G↔A（1:1）、配置各 tool **完整 URL** |
+| Tools `/v1/tools/*` | 按 **A Token** 路由上游并塑形；无默认 Go 域名 |
+| Gateway 插件 | 仅 `toolsBaseUrl`，转发 `x-pangbao-api-token` |
 
-云上通常要跑：**Gateway + 本仓 Python + Go**（Go 可另机）。
+建议启动顺序：**OpenClaw Gateway → 本仓 Python → 打开控制台手配 → Go 指门禁**。
 
-## 最短部署
+---
 
-### 1. Gateway（智能体）
+## 1. 启动智能体（OpenClaw Gateway）
+
+要求：Node `>=22.22.3` 或 `>=24.15`；钉死发行版 `openclaw@2026.7.1-2`。
 
 ```bash
-# Node 需 >=22.22.3 或 >=24.15
-node -v
-npm install -g openclaw@2026.7.1-2
-
-# 把本仓 deploy/openclaw 拷到服务器，进入该目录
 cd deploy/openclaw
-# 编辑 openclaw.json5：改 token；historyBaseUrl / toolsBaseUrl 指向 Go 与本仓
-export OPENCLAW_GATEWAY_TOKEN='你的token'
-# 插件（可选，装 history/飞轮 tools）
+
+# 编辑 openclaw.json5：
+# - gateway.auth.token（内部单 token）
+# - plugins.entries["pangbao-tools"].config.toolsBaseUrl → http://<Python主机>:8000/v1
+
+export OPENCLAW_GATEWAY_TOKEN='与 json5 内 token 一致'
+# 须与 Python 的 INTERNAL_GATEWAY_TOKEN 相同
+
 cd plugins/pangbao-tools && npm install && npm run build && cd ../..
 
 openclaw gateway run --port 18789 --force
@@ -40,43 +42,62 @@ curl -sS http://127.0.0.1:18789/v1/models \
   -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN"
 ```
 
-### 2. 本仓 Python（tools，不是编排入口）
+---
+
+## 2. 启动 Python（tools + 门禁 + 控制台）
+
+先配置环境（`env/.env.local` 或 `env/.env.prod`）：
+
+- `MYSQL_*`：控制面库（表前缀 `agent_`）
+- `AGENT_ADMIN_USERNAME` / `AGENT_ADMIN_PASSWORD`：控制台管理员
+- `INTERNAL_GATEWAY_URL`：如 `http://openclaw-gateway:18789` 或本机 `http://127.0.0.1:18789`
+- `INTERNAL_GATEWAY_TOKEN`：与上一步 Gateway token 一致
+- `CONSOLE_SECRET_KEY`：控制台 Cookie 签名（生产用长随机串）
 
 ```bash
-cp .env.example env/.env.local   # 按需改 REDIS / HISTORY / LLM
+cp .env.example env/.env.local   # 按上表改值
+
 docker compose --env-file env/.env.local \
   -f docker-compose.yml -f docker-compose.local.yml \
   up -d --build
+
+# 生产示例：
+# docker compose --env-file env/.env.prod \
+#   -f docker-compose.yml -f docker-compose.prod.yml \
+#   pull && up -d --no-build
 ```
 
 验收：
 
 ```bash
 curl -sS http://127.0.0.1:8000/v1/health
-# 现行面：/v1/tools/* 、/v1/knowledge/* ；不要再调 /v1/analyze/*
+curl -sS http://127.0.0.1:8000/agent-gate/health
 ```
 
-### 3. Go（业务壳）
+---
 
-配置：
+## 3. 管理页地址
+
+| 入口 | 地址 |
+|------|------|
+| 控制台主页（输入 **G 或 A Token** 进入 API 管理） | **http://\<主机\>:8000/console** |
+| 管理员 | 同页右上「管理员入口」；账密见 `AGENT_ADMIN_*` |
+
+首次流程：管理员登录 → 成对签发 G+A → 用 G/A 进 API 页 → 为各 tool 填写完整上游 URL → 业务壳配置：
 
 ```bash
-export OPENCLAW_GATEWAY_URL=http://<gateway主机>:18789
-export OPENCLAW_GATEWAY_TOKEN='与 Gateway 相同'
-# PYTHON_AI_TALK_URL 若仍存在：仅非编排遗留，Intent/Clinic/Care 不要走它
+# Go 示例（指门禁，不是裸 :18789）
+export OPENCLAW_GATEWAY_URL=http://<Python主机>:8000/agent-gate
+export OPENCLAW_GATEWAY_TOKEN=<G>
+export PANGBAO_API_TOKEN=<A>
 ```
 
-Go 请求头需带 `x-openclaw-model`、`x-openclaw-session-key`（如 `intent:{deviceNo}`）。
+---
 
-## 本仓目录（查阅）
+## 目录
 
 ```
-app/api/routes/     # health + openclaw_tools + knowledge
-app/shared/         # 飞轮门面、LLM、HTTP、向量
-deploy/openclaw/    # Gateway 配置、workspaces、plugins
+app/api/routes/          # health / tools / knowledge / gate / console
+app/agent_console/       # DB、租户、塑形、上游、静态控制台
+deploy/openclaw/         # Gateway 配置、workspaces、plugins
 ```
-
-## 文档
-
-- 部署以**本文**为准。旧版长文见 [docs/deploy-guide.md](docs/deploy-guide.md)（文首已声明过期）。
-- 向量库细节：[docs/vector_db_guide.md](docs/vector_db_guide.md)
