@@ -11,7 +11,23 @@
 | Tools `/v1/tools/*` | 按 **A Token** 路由上游并塑形；无默认 Go 域名 |
 | Gateway 插件 | 仅 `toolsBaseUrl`，转发 `x-pangbao-api-token` |
 
-建议启动顺序：**OpenClaw Gateway → 本仓 Python → 打开控制台手配 → Go 指门禁**。
+建议启动顺序：**建网 → OpenClaw Gateway → 本仓 Python → 打开控制台手配 → Go 指门禁**。
+
+Python 与 OpenClaw 共 Docker 网络 **`ai_agent_net`**（本仓自管，不再用 `go-ai-talk-net`）。并网 URL：
+
+- Python → Gateway：`INTERNAL_GATEWAY_URL=http://openclaw-gateway:18789`
+- Gateway → Python：`toolsBaseUrl=http://python-ai-talk:8000/v1`
+
+Go 经宿主机/内网访问门禁即可，不必加入 `ai_agent_net`。**勿对公网裸放 Gateway `:18789`**。
+
+---
+
+## 0. 建网（一次性）
+
+```bash
+docker network create ai_agent_net
+# 测试栈另建：docker network create ai_agent_test_net
+```
 
 ---
 
@@ -23,17 +39,20 @@
 cd deploy/openclaw
 
 # 编辑 openclaw.json5：
-# - gateway.mode=local（本机开网关；缺了会报 missing gateway.mode）
-# - gateway.auth.token（内部单 token；与 Python INTERNAL_GATEWAY_TOKEN 一致）
-# - plugins.entries["pangbao-tools"].config.toolsBaseUrl → http://<Python主机>:8000/v1
+# - gateway.mode=local
+# - gateway.auth.token（内部单 token；与 OPENCLAW_GATEWAY_TOKEN、Python INTERNAL_GATEWAY_TOKEN 一致）
+# - agents 使用 list（勿用 entries）
+# - 并网时 toolsBaseUrl 已为 http://python-ai-talk:8000/v1
 
 export OPENCLAW_GATEWAY_TOKEN='与 json5 内 token 一致'
-# 须与 Python 的 INTERNAL_GATEWAY_TOKEN 相同
 
 cd plugins/pangbao-tools && npm install && npm run build && cd ../..
 
-openclaw gateway run --port 18789 --force
-# 或：docker compose -f docker-compose.openclaw.yml up -d
+# 推荐（云机 / Linux）：
+docker compose -f docker-compose.openclaw.yml up -d
+
+# 本机直跑（可选）：
+# openclaw gateway run --port 18789 --force
 ```
 
 验收：
@@ -51,8 +70,8 @@ curl -sS http://127.0.0.1:18789/v1/models \
 
 - `MYSQL_*`：控制面库（表前缀 `agent_`）
 - `AGENT_ADMIN_USERNAME` / `AGENT_ADMIN_PASSWORD`：控制台管理员
-- `INTERNAL_GATEWAY_URL`：如 `http://openclaw-gateway:18789` 或本机 `http://127.0.0.1:18789`
-- `INTERNAL_GATEWAY_TOKEN`：与上一步 Gateway token 一致
+- `INTERNAL_GATEWAY_URL`：并网用 `http://openclaw-gateway:18789`
+- `INTERNAL_GATEWAY_TOKEN`：与 Gateway token 一致
 - `CONSOLE_SECRET_KEY`：控制台 Cookie 签名（生产用长随机串）
 
 ```bash

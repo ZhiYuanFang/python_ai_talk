@@ -179,17 +179,17 @@ python_ai_talk/
        ├─ 本地 overlay (docker-compose.local.yml)
        │    ├── 添加 ports: 8000:8000
        │    ├── 添加 extra_hosts
-       │    └── 添加 networks: go-ai-talk-net
+       │    └── 添加 networks: ai_agent_net
        │
        ├─ 测试 overlay (docker-compose.test.yml)
        │    ├── 添加 image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
        │    ├── 添加 ports: 18000:8000
-       │    └── 添加 networks: python-ai-talk-test-net
+       │    └── 添加 networks: ai_agent_test_net
        │
        └─ 生产 overlay (docker-compose.prod.yml)
             ├── 添加 image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
             ├── 添加 ports: 8000:8000
-            └── 添加 networks: go-ai-talk-net
+            └── 添加 networks: ai_agent_net
 
 环境变量 (.env.*)
   └── 完整定义所有 ${VAR} 的实际值
@@ -592,17 +592,17 @@ docker compose version
 
 ### 3.2 创建 Docker 网络
 
-Python AI Talk 需要与 go_ai_talk 的服务在同一个 Docker 网络中通信。
+Python AI Talk 与 OpenClaw Gateway 共网 **`ai_agent_net`**（本仓自管，不再使用 `go-ai-talk-net`）。Go 经宿主机门禁 URL 访问即可，不必共此 Docker 网。
 
 ```bash
-# 创建本地开发网络
-docker network create go-ai-talk-net
+# 本地 / 生产（与 OpenClaw 并网）
+docker network create ai_agent_net
 
-# 创建测试环境网络
-docker network create go-ai-talk-test-net
+# 测试环境（隔离）
+docker network create ai_agent_test_net
 ```
 
-> **注意**：生产环境使用 `go-ai-talk-net`，由 go_ai_talk 的生产部署创建。
+> **注意**：生产与本地共用网名 `ai_agent_net`；OpenClaw compose（`deploy/openclaw`）也须加入同一网络。
 
 ### 3.3 登录阿里云容器镜像服务（ACR）
 
@@ -635,9 +635,9 @@ cd python_ai_talk
 ### 4.1 前置条件
 
 - Docker 和 Docker Compose 已安装
-- Docker 网络 `go-ai-talk-net` 已创建
-- go_ai_talk 的本地服务已启动（history-service、device-service、voice-service）
-- 或者通过 `host.docker.internal` 访问宿主机上的服务
+- Docker 网络 `ai_agent_net` 已创建
+- OpenClaw Gateway 已按 README 加入同一网络（或本机直跑时 `INTERNAL_GATEWAY_URL` 指向可达地址）
+- 业务上游 URL 在 `/console` 按租户 A 配置（无默认 Go 域名）
 
 ### 4.2 配置环境变量
 
@@ -734,9 +734,8 @@ docker compose --env-file env/.env.local \
 ### 5.1 前置条件
 
 - Docker 和 Docker Compose 已安装
-- Docker 网络 `go-ai-talk-test-net` 已创建
+- Docker 网络 `ai_agent_test_net` 已创建
 - 已登录 ACR 镜像仓库
-- go_ai_talk 的测试环境已启动
 
 ### 5.2 配置环境变量
 
@@ -793,9 +792,8 @@ docker compose --env-file env/.env.test \
 ### 6.1 前置条件
 
 - Docker 和 Docker Compose 已安装
-- Docker 网络 `go-ai-talk-net` 已存在（由 go_ai_talk 生产部署创建）
+- Docker 网络 `ai_agent_net` 已存在（本仓/运维创建；OpenClaw 与 Python 共网）
 - 已登录 ACR 镜像仓库
-- go_ai_talk 的生产环境已启动
 
 ### 6.2 配置环境变量
 
@@ -931,7 +929,7 @@ docker compose --env-file env/.env.local \
   ps
 
 # 3. 检查 Docker 网络连通性
-docker network inspect go-ai-talk-net
+docker network inspect ai_agent_net
 
 # 4. 检查环境变量是否正确注入
 docker compose --env-file env/.env.local \
@@ -942,8 +940,8 @@ docker compose --env-file env/.env.local \
 
 **常见原因**：
 - 环境变量未正确配置（尤其是 API Key）
-- Docker 网络未创建
-- 依赖服务（go_ai_talk）未启动
+- Docker 网络 `ai_agent_net` 未创建
+- OpenClaw Gateway 未在同网运行（`openclaw-gateway` 不可解析）
 - 端口被占用
 
 ### Q2: 镜像拉取失败，如何排查？

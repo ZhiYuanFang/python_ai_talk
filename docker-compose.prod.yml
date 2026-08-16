@@ -6,6 +6,7 @@
 # 不写 environment：业务环境变量全部由基线 + --env-file .env.prod 注入
 # 宿主机端口在此定义（基线无 ports，避免与 test overlay 合并叠加）
 #
+# 先建网：docker network create ai_agent_net
 # 启动命令：
 #   docker compose --env-file env/.env.prod \
 #     -f docker-compose.yml \
@@ -19,9 +20,9 @@ services:
     image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
     ports:
       - "8000:8000"
-    networks: [go-ai-talk-net]
+    networks: [ai_agent_net]
 
 networks:
-  go-ai-talk-net:
+  ai_agent_net:
     external: true
-    name: go-ai-talk-net
+    name: ai_agent_net

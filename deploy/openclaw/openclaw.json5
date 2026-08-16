@@ -1,13 +1,17 @@
-// OpenClaw Gateway 配置草稿
+// OpenClaw Gateway 配置（钉死 openclaw@2026.7.1-2）
 // History 经 Python tools；多 G 对外走 Python /agent-gate
+// agents 须用 list（勿用 entries，否则 agents: Invalid input）
 {
   gateway: {
     // 本机跑 Gateway（勿与 auth.mode 混淆）；缺省会被新版 CLI 拦截启动
     mode: "local",
     port: 18789,
+    // compose 命令若带 --bind lan，以 CLI 为准；json5 保留 loopback 供本机直跑
     bind: "loopback",
     auth: {
       mode: "token",
+      // 内部单 token：须与环境变量 OPENCLAW_GATEWAY_TOKEN、
+      // Python INTERNAL_GATEWAY_TOKEN 三者一致（勿提交真实 secret）
       token: "REPLACE_ME",
     },
     http: {
@@ -24,19 +28,21 @@
       "pangbao-tools": {
         enabled: true,
         config: {
-          // 仅 Python tools 基址；租户上游 URL 在控制台按 A 配置
-          toolsBaseUrl: "http://127.0.0.1:8000/v1",
+          // 并网 DNS：指向 Python 容器服务名（勿用容器内 127.0.0.1）
+          toolsBaseUrl: "http://python-ai-talk:8000/v1",
         },
       },
     },
   },
   agents: {
     defaults: {
-      workspace: "./workspaces/default",
+      workspace: "/openclaw/workspaces/default",
     },
-    entries: {
-      intent: {
-        workspace: "./workspaces/intent",
+    // 2026.7.1-2 AgentsSchema：仅 list + defaults（strict）
+    list: [
+      {
+        id: "intent",
+        workspace: "/openclaw/workspaces/intent",
         tools: {
           allow: [
             "history_create",
@@ -52,8 +58,9 @@
           ],
         },
       },
-      clinic: {
-        workspace: "./workspaces/clinic",
+      {
+        id: "clinic",
+        workspace: "/openclaw/workspaces/clinic",
         tools: {
           allow: [
             "history_filter",
@@ -65,8 +72,9 @@
           ],
         },
       },
-      care_alert: {
-        workspace: "./workspaces/care_alert",
+      {
+        id: "care_alert",
+        workspace: "/openclaw/workspaces/care_alert",
         tools: {
           allow: [
             "history_filter",
@@ -77,6 +85,6 @@
           ],
         },
       },
-    },
+    ],
   },
 }

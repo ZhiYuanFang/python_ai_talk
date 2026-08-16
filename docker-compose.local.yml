@@ -3,6 +3,7 @@
 # 本文件只改「本地开发特有的部署项」：镜像标签、container_name、端口映射、extra_hosts、网络
 # 不写 environment：业务环境变量全部由基线 + --env-file .env.local 注入
 #
+# 先建网：docker network create ai_agent_net
 # 启动命令：
 #   docker compose --env-file env/.env.local \
 #     -f docker-compose.yml \
@@ -19,6 +20,9 @@ services:
       - "8000:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    networks:
-      external: true
-      name: go-ai-talk-net
+    networks: [ai_agent_net]
+
+networks:
+  ai_agent_net:
+    external: true
+    name: ai_agent_net

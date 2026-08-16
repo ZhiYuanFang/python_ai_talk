@@ -1,19 +1,29 @@
-# OpenClaw Gateway 侧车（任务 1.2 草稿）
+# OpenClaw Gateway 侧车（与 Python 共网 ai_agent_net）
+# 先建网：docker network create ai_agent_net
 # 需要宿主机/镜像内 Node >=22.22.3；钉死 npm openclaw@2026.7.1-2
+# 勿对公网裸放 18789；对外走 Python :8000/agent-gate
 services:
   openclaw-gateway:
     image: node:24.19.0-bookworm
+    container_name: openclaw-gateway
     working_dir: /openclaw
     command: >
       bash -lc "npm install -g openclaw@2026.7.1-2 --allow-scripts openclaw
       && openclaw gateway --port 18789 --bind lan"
     environment:
       OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-dev-token-change-me}"
-      # 将配置挂载进容器后由 openclaw 读取（路径依官方约定可再调）
+      # 须与 openclaw.json5 gateway.auth.token、Python INTERNAL_GATEWAY_TOKEN 一致
       OPENCLAW_CONFIG_PATH: /openclaw/openclaw.json5
     volumes:
       - ./openclaw.json5:/openclaw/openclaw.json5:ro
       - ./workspaces:/openclaw/workspaces
+      - ./plugins:/openclaw/plugins
     ports:
       - "18789:18789"
-    restart: unless-stopped
+    networks: [ai_agent_net]
+    restart: on-failure:1
+
+networks:
+  ai_agent_net:
+    external: true
+    name: ai_agent_net
