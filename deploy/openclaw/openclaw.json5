@@ -39,9 +39,6 @@
       },
     },
   },
-  models: {
-    default: "deepseek/deepseek-v4-flash"
-  },
   agents: {
     defaults: {
       workspace: "/openclaw/workspaces/default",
