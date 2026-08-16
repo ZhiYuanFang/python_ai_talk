@@ -33,7 +33,7 @@ docker network create ai_agent_net
 
 ## 1. 启动智能体（OpenClaw Gateway）
 
-要求：Node `>=22.22.3` 或 `>=24.15`；钉死发行版 `openclaw@2026.7.1-2`。
+要求：Node `>=22.22.3` 或 `>=24.15`（已含在预装镜像基线）；钉死发行版 `openclaw@2026.7.1-2`（写在 `deploy/openclaw/Dockerfile`）。
 
 密钥在 **`deploy/openclaw/env/`**（与根目录 `env/` 分离；真值 gitignore，只提交 `.env.example`）：
 
@@ -52,13 +52,21 @@ cp env/.env.example env/.env.prod
 # openclaw.json5：gateway.mode=local；auth.token 引用 OPENCLAW_GATEWAY_TOKEN；
 # agents 用 list；并网 toolsBaseUrl=http://python-ai-talk:8000/v1
 
+# 本仓插件（改插件源码后才需要再跑）
 cd plugins/pangbao-tools && npm install && npm run build && cd ../..
-# 推荐（云机 / Linux）——必须 --env-file，否则容器无 LLM key：
+
+# 1) 构建预装 openclaw 的镜像（首次或升版 / 改 Dockerfile 时）
 docker compose --env-file env/.env.prod \
-  -f docker-compose.openclaw.yml up -d --force-recreate
-# 测试环境改用：--env-file env/.env.test
-# 本机直跑（可选，须自行 export 同上变量）：
-# openclaw gateway run --port 18789 --force
+  -f docker-compose.openclaw.yml build
+
+# 2) 启动（必须 --env-file，否则容器无 LLM key / token）
+docker compose --env-file env/.env.prod \
+  -f docker-compose.openclaw.yml up -d
+# 测试环境：--env-file env/.env.test
+
+# 日常只改 json5 / workspaces / env：直接 up 即可，不必 rebuild
+# 升 OpenClaw 版本：改 Dockerfile 的 ARG OPENCLAW_VERSION（及 compose args/image 标签）后重新 build
+# 勿再在启动命令里 npm install -g openclaw（已烤进镜像）
 ```
 
 验收：

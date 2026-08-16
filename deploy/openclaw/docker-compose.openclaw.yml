@@ -1,20 +1,26 @@
 # OpenClaw Gateway 侧车（与 Python 共网 ai_agent_net）
 # 先建网：docker network create ai_agent_net
-# 需要宿主机/镜像内 Node >=22.22.3；钉死 npm openclaw@2026.7.1-2
+# 预装镜像：钉死 openclaw@2026.7.1-2（见 Dockerfile ARG）；启动不再 npm install
 # 勿对公网裸放 18789；对外走 Python :8000/agent-gate
 #
 # 密钥：deploy/openclaw/env/.env.prod|test（gitignore）
-# 启动：docker compose --env-file env/.env.prod -f docker-compose.openclaw.yml up -d
+# 流程：先 build，再 --env-file up（日常 recreate 不必 rebuild）
+#   docker compose --env-file env/.env.prod -f docker-compose.openclaw.yml build
+#   docker compose --env-file env/.env.prod -f docker-compose.openclaw.yml up -d
 # OPENCLAW_GATEWAY_TOKEN 须与 Python INTERNAL_GATEWAY_TOKEN 一致（进门，非 LLM）
 # DEEPSEEK_API_KEY 等供 Gateway 调上游 LLM；Go 只注 x-openclaw-model，不传 key
 services:
   openclaw-gateway:
-    image: node:24.19.0-bookworm
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        OPENCLAW_VERSION: "2026.7.1-2"
+    image: openclaw-gateway:2026.7.1-2
     container_name: openclaw-gateway
     working_dir: /openclaw
-    command: >
-      bash -lc "npm install -g openclaw@2026.7.1-2 --allow-scripts openclaw
-      && openclaw gateway --port 18789 --bind lan"
+    # 依赖镜像 CMD；此处显式写出便于阅读（无 npm install）
+    command: ["openclaw", "gateway", "--port", "18789", "--bind", "lan"]
     environment:
       # json5 gateway.auth.token 为 env SecretRef；权威值来自 --env-file
       OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-dev-token-change-me}"
