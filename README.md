@@ -40,18 +40,15 @@ cd deploy/openclaw
 
 # 编辑 openclaw.json5：
 # - gateway.mode=local
-# - gateway.auth.token（内部单 token；与 OPENCLAW_GATEWAY_TOKEN、Python INTERNAL_GATEWAY_TOKEN 一致）
+# - gateway.auth.token 已引用 env OPENCLAW_GATEWAY_TOKEN（勿再写明文 REPLACE_ME）
 # - agents 使用 list（勿用 entries）
 # - 并网时 toolsBaseUrl 已为 http://python-ai-talk:8000/v1
 
-export OPENCLAW_GATEWAY_TOKEN='与 json5 内 token 一致'
+export OPENCLAW_GATEWAY_TOKEN='与 Python INTERNAL_GATEWAY_TOKEN 一致'
 
 cd plugins/pangbao-tools && npm install && npm run build && cd ../..
-#先彻底删掉旧容器
-docker compose -f docker-compose.openclaw.yml down
 # 推荐（云机 / Linux）：
-docker compose -f docker-compose.openclaw.yml up -d
-
+docker compose -f docker-compose.openclaw.yml up -d --force-recreate
 # 本机直跑（可选）：
 # openclaw gateway run --port 18789 --force
 ```

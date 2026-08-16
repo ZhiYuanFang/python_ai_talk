@@ -11,8 +11,9 @@ services:
       bash -lc "npm install -g openclaw@2026.7.1-2 --allow-scripts openclaw
       && openclaw gateway --port 18789 --bind lan"
     environment:
+      # json5 gateway.auth.token 为 env SecretRef；此处为权威值
+      # 须与 Python INTERNAL_GATEWAY_TOKEN 一致
       OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-dev-token-change-me}"
-      # 须与 openclaw.json5 gateway.auth.token、Python INTERNAL_GATEWAY_TOKEN 一致
       OPENCLAW_CONFIG_PATH: /openclaw/openclaw.json5
     volumes:
       - ./openclaw.json5:/openclaw/openclaw.json5:ro

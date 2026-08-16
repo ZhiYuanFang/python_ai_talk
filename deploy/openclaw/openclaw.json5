@@ -10,9 +10,14 @@
     bind: "loopback",
     auth: {
       mode: "token",
-      // 内部单 token：须与环境变量 OPENCLAW_GATEWAY_TOKEN、
-      // Python INTERNAL_GATEWAY_TOKEN 三者一致（勿提交真实 secret）
-      token: "REPLACE_ME",
+      // 引用环境变量（SecretRef）；权威值 = OPENCLAW_GATEWAY_TOKEN
+      // 须与 Python INTERNAL_GATEWAY_TOKEN 一致；勿在此写明文 secret
+      // 明文占位会覆盖 env，导致 curl/门禁用 env 值却 Unauthorized
+      token: {
+        source: "env",
+        provider: "default",
+        id: "OPENCLAW_GATEWAY_TOKEN",
+      },
     },
     http: {
       endpoints: {
