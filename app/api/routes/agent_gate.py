@@ -85,6 +85,8 @@ async def gate_chat_completions(
 
     url = f"{base}/v1/chat/completions"
     try:
+        logger.info(f"请求url: {url}")
+        logger.info(f"请求头: {headers}")
         async with httpx.AsyncClient(timeout=120.0) as client:
             upstream = await client.request(
                 request.method,
