@@ -28,42 +28,35 @@
 - **目录结构**：
   ```
   app/
-  ├── feeding/           # 喂养动作模块
-  │   ├── graphs/        # LangGraph 图定义
-  │   │   ├── nodes/     # 图节点
-  │   │   │   └── prompts/  # 提示词模板
-  │   │   └── states/    # 图状态
-  │   ├── schemas/       # 数据模型
-  │   └── services/      # 业务服务
-  ├── clinic/            # 喂养建议模块
-  │   ├── graphs/
-  │   │   ├── nodes/
-  │   │   │   └── prompts/
-  │   │   └── states/
-  │   ├── schemas/
-  │   └── services/
-  ├── shared/            # 跨模块共享服务
+  ├── feeding/services/  # Intent 飞轮仓（intent_cache_store）；编排在 Gateway
+  ├── clinic/            # 空壳约定；Clinic 编排在 Gateway
+  ├── care_alert/        # 空壳约定；Care 算卡在 Gateway skill
+  ├── api/routes/        # health、/v1/tools、knowledge
+  ├── shared/            # 飞轮门面、LLM、HTTP、向量、隐式采纳
   └── config/            # 全局配置
   ```
+  Workspace / 部署：`deploy/openclaw/workspaces/{intent,clinic,care_alert}/`
 - **禁止跨模块直接导入**：
-  - `feeding` 模块不能直接导入 `clinic` 模块的代码
-  - `clinic` 模块不能直接导入 `feeding` 模块的代码
+  - `feeding` 模块不能直接导入 `clinic` / `care_alert` 模块的代码
+  - `clinic` 模块不能直接导入 `feeding` / `care_alert` 模块的代码
+  - `care_alert` 模块不能直接导入 `feeding` / `clinic` 模块的代码
   - 需要共享的代码必须放在 `shared` 模块
 
 ## 二、技术栈
 
 - **语言**：Python 3.12
-- **Web 框架**：FastAPI
-- **图编排**：LangGraph
+- **Web 框架**：FastAPI（飞轮 / tools / 知识库；**非** Intent/Clinic/Care 产品编排入口）
+- **Agent 编排**：**OpenClaw Gateway**（发行版见 `deploy/openclaw`；Go 经 `OPENCLAW_GATEWAY_URL` + `x-openclaw-model`）
 - **向量数据库**：Chroma（BGE-small-zh-v1.5 嵌入模型）
-- **HTTP 客户端**：httpx（调用兄弟仓 API）
+- **HTTP 客户端**：httpx（可选调兄弟仓）；History 写权威为 Go REST（Gateway tools 直打）
 - **缓存**：cachetools.TTLCache（24小时 TTL）
-- **LLM**：DeepSeek / Zhipu 双提供商
+- **LLM**：由 Go 注模后经 Gateway 调用；Python tools 侧可复用 DeepSeek / Zhipu
 
 ## 三、架构约束
 
-- Python 服务作为"智能内核"，被 go_ai_talk 调用，不独立对外服务
-- 必须通过 HTTP 调用兄弟仓 API，不能直接访问数据库/Redis
+- **编排权威**：OpenClaw Gateway；Go 鉴权/额度/注 model 后打 Gateway，播 NL 或取 Care 卡片 tool result
+- **Python**：飞轮 HTTP tools（Intent/Clinic）、Care `emit_cards`、知识库；**禁止**再作为 Intent/Clinic/Care 产品编排上游
+- 必须通过 HTTP 调用兄弟仓 API，不能直接访问数据库/Redis（Gateway history tools 同理打 Go）
 - 向量数据库 volume 在运行时挂载，首次启动时构建
 - 服务运行在端口 8000
 
@@ -76,9 +69,10 @@
 
 ## 五、API 规范
 
-- 喂养动作 API：`/v1/feeding/` 前缀
-- 喂养建议 API：`/v1/clinic/` 前缀
-- 统一响应格式：`{"code": 0, "message": "success", "data": {...}}`
+- 飞轮 / 出卡 tools：`/v1/tools/*`（供 Gateway 调用）
+- 知识库：`/v1/knowledge/` 前缀
+- **已删除**产品编排：`/v1/analyze/*`、`/v1/clinic*`、`/v1/care-alert/analyze`
+- 统一响应格式（知识库等）：`{"code": 0, "message": "success", "data": {...}}`
 
 ## 六、向量数据库规范
 

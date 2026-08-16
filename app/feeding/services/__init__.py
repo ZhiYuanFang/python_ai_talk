@@ -1,6 +1,5 @@
-"""
-喂养服务模块
+"""feeding.services：Intent 飞轮等进程内实现。"""
 
-业务说明：
-本模块包含喂养动作相关的业务服务与外部调用封装。
-"""
+from app.feeding.services.intent_cache_store import intent_cache_store
+
+__all__ = ["intent_cache_store"]

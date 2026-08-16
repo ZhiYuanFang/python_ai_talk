@@ -152,7 +152,7 @@ class HttpClient:
         self._ensure_initialized()
 
         # 构建请求 URL（对齐 go_ai_talk 的 history-service 实际接口）
-        url = f"{settings.history_service_url}/device/history/api/event/options"
+        url = f"{settings.resolve_history_base_url()}/device/history/api/event/options"
 
         try:
             # 发起 GET 请求
@@ -215,7 +215,7 @@ class HttpClient:
         self._ensure_initialized()
 
         # 构建请求 URL（对齐 go_ai_talk 的 history-service 实际接口）
-        url = f"{settings.history_service_url}/device/history/api/v2/list"
+        url = f"{settings.resolve_history_base_url()}/device/history/api/v2/list"
 
         # 构建查询参数（go 侧用 query 参数）
         params: Dict[str, Any] = {
@@ -285,7 +285,7 @@ class HttpClient:
         self._ensure_initialized()
 
         # 构建请求 URL
-        url = f"{settings.history_service_url}/device/history/api/filter"
+        url = f"{settings.resolve_history_base_url()}/device/history/api/filter"
 
         # 构建查询参数
         params: Dict[str, Any] = {
@@ -326,7 +326,10 @@ class HttpClient:
             response.raise_for_status()
 
             # 从 GoFrame 包装的 data.list 提取列表
-            return self._extract_go_list(response.json())
+            rows = self._extract_go_list(response.json())
+            # 过渡：客户端按 startTime 倒序，保证「前 k 次」语义；
+            # 目标态依赖 Go filter ORDER BY start_time DESC
+            return self._sort_history_by_start_desc(rows)
 
         except httpx.HTTPError as e:
             # 记录错误日志
@@ -336,47 +339,258 @@ class HttpClient:
             )
             raise
 
-    async def batch_history_events(
+    @staticmethod
+    def _sort_history_by_start_desc(rows: List[Any]) -> List[Any]:
+        """按 startTime/start_time 降序；无时间戳的行排后。"""
+
+        def _key(row: Any) -> float:
+            if not isinstance(row, dict):
+                return 0.0
+            raw = row.get("startTime")
+            if raw is None:
+                raw = row.get("start_time")
+            try:
+                return float(raw or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        if not isinstance(rows, list):
+            return []
+        return sorted(rows, key=_key, reverse=True)
+
+    async def create_history_event(
+        self,
+        device_no: str,
+        *,
+        event_id: int,
+        event_name: str = "",
+        event_unit: str = "",
+        event_number: int = 0,
+        start_time: int = 0,
+        end_time: int = 0,
+        remark: str = "",
+        action: str = "one",
+    ) -> Dict[str, Any]:
+        """
+        新增历史记录（单动词 create）。
+
+        业务逻辑：
+        POST /device/history/api/event/add。计时开始可用 action=start（end_time=0）。
+        """
+        self._ensure_initialized()
+        url = f"{settings.resolve_history_base_url()}/device/history/api/event/add"
+        body = {
+            "deviceNo": device_no,
+            "eventId": int(event_id),
+            "eventName": event_name or "",
+            "eventUnit": event_unit or "",
+            "eventNumber": int(event_number or 0),
+            "startTime": int(start_time or 0),
+            "endTime": int(end_time or 0),
+            "remark": remark or "",
+        }
+        # action 供 Go 区分 start|one；若对方忽略也不影响主字段
+        if action:
+            body["action"] = action
+        try:
+            response = await self._client.post(url, json=body)
+            response.raise_for_status()
+            payload = self._unwrap_go_data(response.json())
+            if isinstance(payload, dict):
+                return payload
+            return {}
+        except httpx.HTTPError as e:
+            logger.error(f"新增历史失败: device_no={device_no}, error={e}")
+            raise
+
+    async def update_history_event(
+        self,
+        device_no: str,
+        *,
+        history_id: int,
+        event_id: int = 0,
+        event_name: str = "",
+        event_unit: str = "",
+        event_number: int = 0,
+        start_time: int = 0,
+        end_time: int = 0,
+        remark: str = "",
+    ) -> Dict[str, Any]:
+        """修改历史记录：POST /device/history/api/event/update。"""
+        self._ensure_initialized()
+        url = f"{settings.resolve_history_base_url()}/device/history/api/event/update"
+        body = {
+            "id": int(history_id),
+            "deviceNo": device_no,
+            "eventId": int(event_id or 0),
+            "eventName": event_name or "",
+            "eventUnit": event_unit or "",
+            "eventNumber": int(event_number or 0),
+            "startTime": int(start_time or 0),
+            "endTime": int(end_time or 0),
+            "remark": remark or "",
+        }
+        try:
+            response = await self._client.post(url, json=body)
+            response.raise_for_status()
+            payload = self._unwrap_go_data(response.json())
+            return payload if isinstance(payload, dict) else {}
+        except httpx.HTTPError as e:
+            logger.error(f"修改历史失败: device_no={device_no}, id={history_id}, error={e}")
+            raise
+
+    async def delete_history_event(
+        self,
+        device_no: str,
+        *,
+        history_id: int,
+    ) -> Dict[str, Any]:
+        """删除历史记录：POST /device/history/api/event/delete。"""
+        self._ensure_initialized()
+        url = f"{settings.resolve_history_base_url()}/device/history/api/event/delete"
+        body = {"id": int(history_id), "deviceNo": device_no}
+        try:
+            response = await self._client.post(url, json=body)
+            response.raise_for_status()
+            payload = self._unwrap_go_data(response.json())
+            return payload if isinstance(payload, dict) else {}
+        except httpx.HTTPError as e:
+            logger.error(f"删除历史失败: device_no={device_no}, id={history_id}, error={e}")
+            raise
+
+    async def end_latest_history_event(
+        self,
+        device_no: str,
+        *,
+        event_id: int,
+        end_time: int = 0,
+        remark: str = "",
+    ) -> Dict[str, Any]:
+        """结束指定事件最近未闭合记录：POST /device/history/api/event/end-latest。"""
+        self._ensure_initialized()
+        url = f"{settings.resolve_history_base_url()}/device/history/api/event/end-latest"
+        body = {
+            "deviceNo": device_no,
+            "eventId": int(event_id),
+            "endTime": int(end_time or 0),
+            "remark": remark or "",
+        }
+        try:
+            response = await self._client.post(url, json=body)
+            response.raise_for_status()
+            payload = self._unwrap_go_data(response.json())
+            return payload if isinstance(payload, dict) else {}
+        except httpx.HTTPError as e:
+            logger.error(
+                f"结束计时失败: device_no={device_no}, event_id={event_id}, error={e}"
+            )
+            raise
+
+    async def execute_history_ops(
         self,
         device_no: str,
         items: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """
-        一次批量增/改/删/结束历史记录。
+        按单动词依次执行 create/update/delete/end（Intent 落库主路径）。
 
         业务逻辑：
-        调用 history-service POST /device/history/api/event/batch。
-        部分成功时仍返回 200，results[] 带每条 ok/reason/id。
-        Python 不直连数据库。
-
-        Args:
-            device_no: 设备编号
-            items: 操作列表，每项含 op/action/eventId 等（camel 与 Go 契约对齐）
-
-        Returns:
-            results 列表（index/ok/reason/id）
-
-        Raises:
-            httpx.HTTPError: HTTP 请求失败
+        不再调用 event/batch。调用方须已按「先 end 后其余」排好序。
+        每条返回 {index, ok, reason, id}，与旧 batch results 形状对齐。
         """
-        self._ensure_initialized()
-        url = f"{settings.history_service_url}/device/history/api/event/batch"
-        try:
-            response = await self._client.post(
-                url,
-                json={"deviceNo": device_no, "items": items},
-            )
-            response.raise_for_status()
-            payload = self._unwrap_go_data(response.json())
-            if isinstance(payload, dict):
-                results = payload.get("results") or []
-                if isinstance(results, list):
-                    return results
-            logger.warning(f"批量写历史 data 格式异常: device_no={device_no}")
-            return []
-        except httpx.HTTPError as e:
-            logger.error(f"批量写历史失败: device_no={device_no}, error={str(e)}")
-            raise
+        results: List[Dict[str, Any]] = []
+        for i, raw in enumerate(items):
+            op = str(raw.get("op") or "").strip().lower()
+            try:
+                if op == "end":
+                    data = await self.end_latest_history_event(
+                        device_no,
+                        event_id=int(raw.get("eventId") or 0),
+                        end_time=int(raw.get("endTime") or 0),
+                        remark=str(raw.get("remark") or ""),
+                    )
+                    updated = bool(data.get("updated")) if isinstance(data, dict) else True
+                    results.append(
+                        {
+                            "index": i,
+                            "ok": updated,
+                            "reason": "" if updated else "未找到可结束的进行中记录",
+                            "id": int(raw.get("id") or 0),
+                        }
+                    )
+                elif op == "create":
+                    action = str(raw.get("action") or "one").strip().lower() or "one"
+                    data = await self.create_history_event(
+                        device_no,
+                        event_id=int(raw.get("eventId") or 0),
+                        event_name=str(raw.get("eventName") or ""),
+                        event_unit=str(raw.get("eventUnit") or ""),
+                        event_number=int(raw.get("eventNumber") or 0),
+                        start_time=int(raw.get("startTime") or 0),
+                        end_time=int(raw.get("endTime") or 0),
+                        remark=str(raw.get("remark") or ""),
+                        action=action,
+                    )
+                    new_id = 0
+                    if isinstance(data, dict):
+                        try:
+                            new_id = int(data.get("id") or 0)
+                        except (TypeError, ValueError):
+                            new_id = 0
+                    results.append({"index": i, "ok": True, "reason": "", "id": new_id})
+                elif op == "update":
+                    await self.update_history_event(
+                        device_no,
+                        history_id=int(raw.get("id") or 0),
+                        event_id=int(raw.get("eventId") or 0),
+                        event_name=str(raw.get("eventName") or ""),
+                        event_unit=str(raw.get("eventUnit") or ""),
+                        event_number=int(raw.get("eventNumber") or 0),
+                        start_time=int(raw.get("startTime") or 0),
+                        end_time=int(raw.get("endTime") or 0),
+                        remark=str(raw.get("remark") or ""),
+                    )
+                    results.append(
+                        {
+                            "index": i,
+                            "ok": True,
+                            "reason": "",
+                            "id": int(raw.get("id") or 0),
+                        }
+                    )
+                elif op == "delete":
+                    await self.delete_history_event(
+                        device_no,
+                        history_id=int(raw.get("id") or 0),
+                    )
+                    results.append(
+                        {
+                            "index": i,
+                            "ok": True,
+                            "reason": "",
+                            "id": int(raw.get("id") or 0),
+                        }
+                    )
+                else:
+                    results.append(
+                        {
+                            "index": i,
+                            "ok": False,
+                            "reason": f"未知 op={op}",
+                            "id": int(raw.get("id") or 0),
+                        }
+                    )
+            except Exception as e:
+                logger.warning(f"单条历史写失败 index={i} op={op}: {e}")
+                results.append(
+                    {
+                        "index": i,
+                        "ok": False,
+                        "reason": str(e) or "接口失败",
+                        "id": int(raw.get("id") or 0),
+                    }
+                )
+        return results
 
     async def get_baby_profile(self, device_no: str) -> Optional[Dict[str, Any]]:
         """
@@ -384,7 +598,7 @@ class HttpClient:
 
         业务逻辑：
         1. 确保 HTTP 客户端已初始化（延迟创建）
-        2. 调用 device-service 的宝宝画像 API，获取指定设备对应的宝宝信息。
+        2. 调用 history-service 的 birthday API，获取指定设备对应的宝宝信息。
         主要用于获取宝宝生日，计算宝宝年龄。
 
         Args:
@@ -401,7 +615,7 @@ class HttpClient:
 
         # 构建请求 URL（对齐 go_ai_talk 的 history-service 实际接口）
         # 使用 history-service 的 birthday 接口，deviceNo 以 query 参数传递
-        url = f"{settings.history_service_url}/device/history/api/birthday"
+        url = f"{settings.resolve_history_base_url()}/device/history/api/birthday"
 
         # 构建 query 参数（go 侧用 query 方式传 deviceNo）
         params = {"deviceNo": device_no}

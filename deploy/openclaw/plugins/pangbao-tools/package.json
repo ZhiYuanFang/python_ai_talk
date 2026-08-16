@@ -1,0 +1,27 @@
+{
+  "name": "@pangbao/openclaw-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pangbao history + flywheel + care emit tools for OpenClaw Gateway",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "plugin:build": "npm run build && openclaw plugins build --entry ./dist/index.js",
+    "plugin:validate": "npm run plugin:build && openclaw plugins validate --entry ./dist/index.js"
+  },
+  "dependencies": {
+    "typebox": "^1.0.39"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^5.8.2"
+  }
+}

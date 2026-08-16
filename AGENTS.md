@@ -13,7 +13,9 @@ OpenSpec CLI 制品生成时亦须对照 `openspec/project.md`；细则以 proje
 
 - **禁止**生成或修改任何测试文件；**仅当用户明确要求写测试时**例外。不得在 OpenSpec tasks 中安排测试相关任务。
 - 业务代码须有详细**中文**注释（文件/类/方法/关键行）。
-- 按业务模块分离（`feeding` / `clinic` / `tip` / `shared` / `config`）；禁止 feeding↔clinic 直接互引。
+- 按业务模块分离（`feeding` / `clinic` / `care_alert` / `shared` / `config`）；禁止 feeding↔clinic↔care_alert 直接互引。
+- **Agent 编排权威 = OpenClaw Gateway**（`openclaw/intent|clinic|care_alert`）；Python 为飞轮 / HTTP tools / 知识库，**不是**产品编排入口。
+- 飞轮仅经 `app.shared.flywheel_facade`；Care **无**飞轮。
 
 ## OpenSpec 工作流
 

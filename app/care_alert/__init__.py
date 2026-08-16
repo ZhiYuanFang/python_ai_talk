@@ -1,9 +1,7 @@
 """
-护理留意（care-alert）日分析模块
+care_alert 包
 
 业务说明：
-供 Go 编排内调：基于月龄、近期喂养历史与本地全局 prompt（含可选对比样例），
-由 LLM 产出「值得留意」列表。有近两日史且对照表可用时至少一条（含软兜底）；
-必须结合宝宝月龄。不与 clinic 配额耦合；不调用通识向量库。
-ignore/follow_up 固定意图驱动本地 prompt 飞轮（挂载卷落盘）。
+Care 卡片算力在 OpenClaw Gateway skill；本包不再含日分析/飞轮实现。
+出卡 HTTP 见 app.api.routes.openclaw_tools.emit_care_cards。
 """

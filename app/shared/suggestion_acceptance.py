@@ -231,7 +231,7 @@ async def maybe_apply_implicit_feedback(
     调用方应自行 try/except，避免飞轮异常中断主流程。
     """
     from app.shared.companion_session import companion_session_store
-    from app.shared.qa_fast_path import promote_accepted_qa
+    from app.shared.flywheel_facade import flywheel
     from app.shared.vector_store import vector_store
 
     session = await companion_session_store.get(device_no)
@@ -270,7 +270,7 @@ async def maybe_apply_implicit_feedback(
                 device_no,
             )
         else:
-            qa_id = promote_accepted_qa(
+            qa_id = flywheel.record_clinic_accepted_qa(
                 standalone_question=sug.standalone_question,
                 answer=sug.text,
                 age_band=sug.age_band,

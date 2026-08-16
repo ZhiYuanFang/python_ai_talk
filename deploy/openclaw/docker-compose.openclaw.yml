@@ -1,0 +1,19 @@
+# OpenClaw Gateway 侧车（任务 1.2 草稿）
+# 需要宿主机/镜像内 Node >=22.22.3；钉死 npm openclaw@2026.7.1-2
+services:
+  openclaw-gateway:
+    image: node:24.19.0-bookworm
+    working_dir: /openclaw
+    command: >
+      bash -lc "npm install -g openclaw@2026.7.1-2 --allow-scripts openclaw
+      && openclaw gateway --port 18789 --bind lan"
+    environment:
+      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-dev-token-change-me}"
+      # 将配置挂载进容器后由 openclaw 读取（路径依官方约定可再调）
+      OPENCLAW_CONFIG_PATH: /openclaw/openclaw.json5
+    volumes:
+      - ./openclaw.json5:/openclaw/openclaw.json5:ro
+      - ./workspaces:/openclaw/workspaces
+    ports:
+      - "18789:18789"
+    restart: unless-stopped

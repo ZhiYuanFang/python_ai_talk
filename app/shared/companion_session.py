@@ -1,13 +1,14 @@
 """
-陪伴会话存储（tip / clinic 共享）
+陪伴会话存储（clinic）
 
 业务说明：
 按 device_no 在 Redis 中维护近 N 轮 user+assistant 对话（默认 3 轮，可配置），
-TTL 7 天滑动续期。tip 开场与 clinic 续聊读写同一会话，供口语化上下文与隐式飞轮使用。
+TTL 7 天滑动续期。clinic 续聊读写会话，供口语化上下文与隐式飞轮使用。
+tip Agent 已删除，不再写入合成开场轮。
 
 设计思路：
 1. key = companion:session:{device_no}
-2. 一轮 = user + assistant；tip 开场合成 user「刚记录了「事件」」
+2. 一轮 = user + assistant（真实家长问句）
 3. 截断只保留最近 max_turns 整轮（与注入 chat_context 一致，默认 3）
 4. last_suggestion 记录待隐式判定的建议与 knowledge_ids（与进 prompt 的 knowledge 对齐）
 """
@@ -35,7 +36,7 @@ class CompanionTurn:
 
     user: str
     assistant: str
-    source: str = ""  # tip | clinic
+    source: str = ""  # clinic（历史 tip 轮次可能仍存在于旧 Redis）
 
 
 @dataclass
@@ -54,7 +55,7 @@ class LastSuggestion:
     text: str = ""
     knowledge_ids: List[str] = field(default_factory=list)
     feedback_applied: bool = False
-    source: str = ""  # tip | clinic
+    source: str = ""  # clinic
     standalone_question: str = ""
     age_band: str = ""
     history_grounded: bool = True
@@ -186,18 +187,12 @@ def format_chat_turns_for_prompt(turns: List[CompanionTurn]) -> str:
     return "\n".join(lines)
 
 
-def build_tip_synthetic_user(event_name: str) -> str:
-    """tip 开场合成的家长侧用户文案，保证一轮结构完整。"""
-    name = (event_name or "一件事").strip() or "一件事"
-    return f"刚记录了「{name}」"
-
-
 class CompanionSessionStore:
     """
     Redis 陪伴会话读写。
 
     业务说明：
-    tip/clinic 路由共用；失败时降级为空会话，不阻断主流程。
+    clinic 路由使用；失败时降级为空会话，不阻断主流程。
     """
 
     def __init__(self) -> None:
@@ -280,7 +275,7 @@ class CompanionSessionStore:
             device_no: 设备号
             user: 家长侧文本
             assistant: 回复侧全文
-            source: tip | clinic
+            source: clinic
             answer_id: 本轮回答 id
             knowledge_ids: 本轮检索命中的文档 id
             suggestion_text: 待判定建议文本，默认用 assistant
@@ -318,5 +313,5 @@ class CompanionSessionStore:
         await self.save(session)
 
 
-# 全局单例，供 tip/clinic 路由使用
+# 全局单例，供 clinic 路由使用
 companion_session_store = CompanionSessionStore()

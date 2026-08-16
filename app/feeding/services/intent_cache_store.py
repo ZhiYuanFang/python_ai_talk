@@ -342,7 +342,11 @@ class IntentCacheStore:
 
 
 def _strip_history_ids(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """去掉改/删不可复用的 history_id。"""
+    """
+    去掉改/删不可复用的 history_id；并清空 event_id 仅保留名/动作（可移植飞轮）。
+
+    命中后再用当前租户事件字典把名称解析回 id。
+    """
     out = dict(payload or {})
     out.pop("history_id", None)
     events = []
@@ -351,6 +355,8 @@ def _strip_history_ids(payload: Dict[str, Any]) -> Dict[str, Any]:
             continue
         item = dict(ev)
         item.pop("history_id", None)
+        # 可移植：不缓存租户 event_id
+        item["event_id"] = ""
         events.append(item)
     out["events"] = events
     return out

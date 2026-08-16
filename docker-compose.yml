@@ -20,10 +20,12 @@ services:
       ANONYMIZED_TELEMETRY: "False"
       TZ: Asia/Shanghai
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-      # --- 兄弟仓服务地址 ---
+      # --- Go 业务 API ---
+      GO_API_BASE_URL: "${GO_API_BASE_URL:-}"
       HISTORY_SERVICE_URL: "${HISTORY_SERVICE_URL:-}"
-      DEVICE_SERVICE_URL: "${DEVICE_SERVICE_URL:-}"
-      VOICE_SERVICE_URL: "${VOICE_SERVICE_URL:-}"
+      FLYWHEEL_BASE_URL: "${FLYWHEEL_BASE_URL:-}"
+      OPENCLAW_GATEWAY_URL: "${OPENCLAW_GATEWAY_URL:-}"
+      HISTORY_READ_TOP_K_MAX: "${HISTORY_READ_TOP_K_MAX:-5}"
       # --- Redis ---
       REDIS_URL: "${REDIS_URL:-}"
       # --- AI 密钥（与 go_ai_talk 兄弟仓共用；选型由 Go 传入，Python 不换模）---

@@ -3,13 +3,13 @@
 
 业务说明：
 本模块负责管理所有环境变量配置，使用 pydantic-settings 进行类型安全的配置管理。
-配置项包括服务端口、LLM API Key、兄弟仓服务地址、Redis 地址等。
+配置项包括服务端口、LLM API Key、Go 业务 API 基址、飞轮基址、Redis 等。
 
 设计思路：
 1. 使用 pydantic-settings 的 BaseSettings 自动读取环境变量
 2. 支持通过 .env 文件加载配置（开发环境）
 3. 生产环境通过 Docker Compose 环境变量注入
-4. 提供默认值，便于本地开发调试
+4. 业务 API（HISTORY/GO_API）可重绑；飞轮基址锁定我方（空=进程内）
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -50,9 +50,19 @@ class Settings(BaseSettings):
     modelscope_api_key: str = ""
     modelscope_base_url: str = "https://api-inference.modelscope.cn/v1"
 
-    # 兄弟仓服务地址
-    history_service_url: str = "http://localhost:9801"  # 历史服务地址
-    device_service_url: str = "http://localhost:9803"  # 设备服务地址
+    # Go 业务 API 基址（可 BYO / 重绑；生产默认胖宝网关）
+    go_api_base_url: str = "http://localhost:9801"
+    # 历史服务基址（与 go_api 可同值；http_client 写读均经此）
+    history_service_url: str = "http://localhost:9801"
+
+    # 飞轮基址：空=进程内我方实现；非空须为我方可控 URL，不可被业务 BYO 覆盖语义
+    flywheel_base_url: str = ""
+
+    # OpenClaw Gateway（可选；空则进程内 Agent loop）
+    openclaw_gateway_url: str = ""
+
+    # 查记录 top_k 上限（分类输出钳制）
+    history_read_top_k_max: int = 5
 
     # Redis 配置
     redis_url: str = "redis://localhost:6379/0"  # Redis 连接地址
@@ -64,7 +74,7 @@ class Settings(BaseSettings):
     # 缓存配置
     event_cache_ttl_hours: int = 24  # 事件字典缓存 TTL（小时）
 
-    # 陪伴会话（tip/clinic 共享）：按 device_no，近 N 轮，TTL 天（滑动续期）
+    # 陪伴会话（clinic）：按 device_no，近 N 轮，TTL 天（滑动续期）
     companion_session_ttl_days: int = 7
     companion_session_max_turns: int = 3  # 进 prompt / Redis 截断一致，默认 3 轮省 token
 
@@ -97,6 +107,16 @@ class Settings(BaseSettings):
 
     # 启动一次性清空意图缓存 feeding_intents（默认关；清完务必改回 false）
     clear_feeding_intents_on_startup: bool = False
+
+    def resolve_history_base_url(self) -> str:
+        """
+        解析历史/业务 HTTP 基址。
+
+        优先 HISTORY_SERVICE_URL；若空则回退 GO_API_BASE_URL。
+        去掉尾斜杠，避免 path 拼接双斜杠。
+        """
+        base = (self.history_service_url or self.go_api_base_url or "").strip()
+        return base.rstrip("/")
 
 
 # 创建全局配置实例

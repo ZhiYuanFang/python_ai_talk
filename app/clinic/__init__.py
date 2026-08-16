@@ -1,6 +1,7 @@
 """
-门诊模块
+clinic 包
 
 业务说明：
-本模块包含门诊相关的图定义、节点、状态、数据模型和服务。
+Clinic 编排在 OpenClaw Gateway；本包仅保留空壳目录约定。
+隐式采纳与飞轮见 app.shared.suggestion_acceptance / flywheel_facade / api routes tools。
 """

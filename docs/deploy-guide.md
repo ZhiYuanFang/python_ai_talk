@@ -1,5 +1,10 @@
 # Python AI Talk 部署指南
 
+> **【过期声明】** 现行部署与 LangGraph→OpenClaw 对照以仓库根目录 **[README.md](../README.md)** 为准。
+> 下文含历史环境变量与旧编排说明，仅作考古；请勿再按本文把本仓当意图智能体入口。
+
+---
+
 > 本文档面向新手，提供从零开始部署 Python AI Talk 服务的完整步骤。
 > 部署环境为 Linux，使用 Docker 和 Docker Compose。
 
