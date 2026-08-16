@@ -23,6 +23,22 @@
     el.textContent = masked ? mask(plain[elId]) : plain[elId];
   }
 
+  function renderGuideMarkdown(md) {
+    const el = $("goGuide");
+    const src = (md || "").trim();
+    if (!src) {
+      el.textContent = "";
+      return;
+    }
+    // guide 仅来自服务端常量；用 marked GFM 渲染标题/表格/代码块
+    if (typeof marked !== "undefined" && typeof marked.parse === "function") {
+      marked.setOptions({ gfm: true, breaks: true });
+      el.innerHTML = marked.parse(src);
+    } else {
+      el.textContent = src;
+    }
+  }
+
   $("btnEnterApi").onclick = async () => {
     $("homeErr").classList.add("hidden");
     const token = $("tokenInput").value.trim();
@@ -60,7 +76,7 @@
     $("showA").setAttribute("data-masked", "1");
     renderToken("showG");
     renderToken("showA");
-    $("goGuide").textContent = data.guide || "";
+    renderGuideMarkdown(data.guide || "");
     const epMap = {};
     (data.endpoints || []).forEach((e) => {
       epMap[e.tool_key] = e;

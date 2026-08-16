@@ -169,7 +169,6 @@ a { color: var(--sky-deep); }
 }
 
 .guide {
-  white-space: pre-wrap;
   font-size: 0.9rem;
   line-height: 1.55;
   color: var(--ink);
@@ -177,7 +176,49 @@ a { color: var(--sky-deep); }
   padding: 1rem;
   border-radius: 12px;
   border: 1px dashed rgba(91, 163, 217, 0.4);
+  overflow-x: auto;
 }
+.guide h1,
+.guide h2,
+.guide h3 {
+  margin: 0.75rem 0 0.4rem;
+  font-size: 1rem;
+  font-weight: 800;
+}
+.guide h2 { font-size: 1.05rem; }
+.guide p,
+.guide ul,
+.guide ol {
+  margin: 0.4rem 0;
+}
+.guide pre,
+.guide code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+}
+.guide pre {
+  background: #eef6fb;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.guide table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.6rem 0;
+  font-size: 0.82rem;
+}
+.guide th,
+.guide td {
+  border: 1px solid rgba(91, 163, 217, 0.35);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+.guide th {
+  background: rgba(91, 163, 217, 0.12);
+}
+.guide strong { font-weight: 800; }
 
 .tool-card {
   margin-bottom: 1rem;

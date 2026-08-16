@@ -96,6 +96,15 @@ async def console_css():
     return Response(path.read_text(encoding="utf-8"), media_type="text/css")
 
 
+@router.get("/console/vendor/marked.min.js")
+async def console_marked_js():
+    """控制台 guide Markdown 渲染（vendored marked，离线可用）。"""
+    path = _STATIC / "vendor" / "marked.min.js"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="marked.min.js 缺失")
+    return Response(path.read_text(encoding="utf-8"), media_type="application/javascript")
+
+
 @router.post("/console/api/tenant/login")
 async def tenant_login(req: TokenLoginReq, response: Response):
     """G 或 A 进入配置会话。"""
@@ -202,6 +211,21 @@ def _go_guide_markdown() -> str:
 3. 另需：`x-openclaw-model`、`x-openclaw-session-key`（如 `intent:{{deviceNo}}`）。
 4. **G 失效** → 无法使用智能体。**缺 A / 未配 URL** → 对话可能到达，但 history CRUD/读史 tools 失败。
 5. 在下方为每个 tool 填写**完整 URL（含域名）**；本页契约说明入参出参；Python **无**默认胖宝 Go 地址。
+
+### 上游 URL（tools → Go history）
+
+推荐 BASE：`http://<Go主机>:9701`（主网关，无 App JWT）或 `http://history-service:9801`（直连）。**不要**用 gateway-app `:9702`。现网 history 的「上游 Bearer」**留空**（勿填用户日更 JWT）。
+
+| tool | Method | path |
+|------|--------|------|
+| history_create | POST | /device/history/api/event/add |
+| history_update | POST | /device/history/api/event/update |
+| history_delete | POST | /device/history/api/event/delete |
+| history_end_latest | POST | /device/history/api/event/end-latest |
+| history_filter | GET | /device/history/api/filter |
+| history_list | GET | /device/history/api/list |
+| history_options | GET | /device/history/api/event/options |
+| baby_profile | GET | /device/history/api/birthday |
 
 环境变量示例：
 ```

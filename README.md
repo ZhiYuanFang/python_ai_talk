@@ -110,6 +110,32 @@ export OPENCLAW_GATEWAY_TOKEN=<G>
 export PANGBAO_API_TOKEN=<A>
 ```
 
+### API 管理页：上游 URL（Python tools → Go history）
+
+控制台每个 tool 填**完整 URL**。推荐上游基址（二选一，须 Python 容器可达）：
+
+| 推荐 BASE | 说明 |
+|-----------|------|
+| `http://<Go主机>:9701` | Go **主网关** `gateway-service`，反代 `/device/history/api/*`，**无** App 用户 JWT |
+| `http://history-service:9801` | 直连 history-service（须与 Python 同网或可解析） |
+
+**不要**用 **gateway-app**（`:9702` / 多数需用户日更 JWT）当 Agent tools 上游。
+
+**上游 Bearer**：对现网胖宝 history **留空**。该字段仅当上游真要 `Authorization: Bearer` 时填写；**不要**填终端用户 token。
+
+| 控制台 tool | Method | 完整 URL（`{BASE}` + path） |
+|-------------|--------|------------------------------|
+| `history_create` | POST | `{BASE}/device/history/api/event/add` |
+| `history_update` | POST | `{BASE}/device/history/api/event/update` |
+| `history_delete` | POST | `{BASE}/device/history/api/event/delete` |
+| `history_end_latest` | POST | `{BASE}/device/history/api/event/end-latest` |
+| `history_filter` | GET | `{BASE}/device/history/api/filter` |
+| `history_list` | GET | `{BASE}/device/history/api/list` |
+| `history_options` | GET | `{BASE}/device/history/api/event/options` |
+| `baby_profile` | GET | `{BASE}/device/history/api/birthday` |
+
+示例：`http://192.168.1.10:9701/device/history/api/filter`。
+
 ---
 
 ## 目录
