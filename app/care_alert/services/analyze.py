@@ -22,7 +22,7 @@ from app.care_alert.services.flywheel_store import (
 )
 from app.care_alert.services.model_resolve import resolve_model_config
 from app.shared.graphs.state_patch import state_get
-from app.shared.history_window import enum_to_unix
+from app.shared.history_window import last_n_days
 from app.shared.schemas.data_requirement import DataRequirement
 from app.tip.graphs.nodes.derive_baby_age import shanghai_now
 
@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 def _care_alert_window() -> tuple:
-    """近两日 Unix 窗（昨 00:00 上海 → now）。"""
-    return enum_to_unix("last_2_days")
+    """最近N天 Unix 窗。"""
+    return last_n_days(3)
 
 
 def _resolve_day(day: Optional[str]) -> str:

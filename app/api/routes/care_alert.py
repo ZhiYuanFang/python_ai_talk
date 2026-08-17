@@ -61,6 +61,20 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
             else getattr(request.model, "provider", "?")
         ),
     )
+
+    # 临时将model改为deepseek
+	# Provider    string `json:"provider"`      // 模型提供商，如 deepseek、zhipu
+	# Name        string `json:"name"`          // 模型名称，如 deepseek-v4-flash
+	# MaxInFlight int    `json:"max_in_flight"` // 最大并发数
+    request.model = {
+        "provider": "deepseek",
+        "name": "deepseek-v4-flash",
+        "max_in_flight": 50,
+    }
+
+    # 打印日志，临时修改为deepseek-v4-flash
+    logger.info("护理留意分析请求临时修改为deepseek-v4-flash: model=%s", request.model)
+
     try:
         raw_items = await run_care_alert_analyze(request)
     except ValueError as e:

@@ -28,6 +28,9 @@ def now_unix() -> int:
     """当前 Unix 秒。"""
     return int(time.time())
 
+# 最近N天
+def last_n_days(n: int) -> Tuple[int, int]:
+    return now_unix() - n * 86400, now_unix()
 
 def enum_to_unix(time_range: str, *, now: Optional[int] = None) -> Tuple[int, int]:
     """

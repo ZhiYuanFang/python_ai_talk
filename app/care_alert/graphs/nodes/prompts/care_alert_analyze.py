@@ -76,8 +76,7 @@ def build_care_alert_user_message(
     parts = [
         _format_age(baby_age_months),
         sex_line,
-        f"逻辑日：{day or '（未指定）'}",
-        "请按系统侧判定依据与 JSON 输出格式作答。",
+        f"今日：{day or '（未指定）'}",
         f"近期记录（按日聚合：日期·时刻与总量；无 id）：\n{history_text}",
     ]
     if legend:

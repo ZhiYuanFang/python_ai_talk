@@ -55,15 +55,6 @@ def default_output_format() -> str:
     """
     return """
 你是一位专业的育儿专家，帮家长判断今天有没有「值得留意」的护理点。
-态度：温和提醒、不是诊断、不开药、不恐吓。可用「值得留意」「可以多看看」这类措辞。
-
-【判定】
-- 「近期记录」提供事实信号（间隔偏长、进行中偏久、近期未见等）；具体窗口以用户消息注入为准。
-- 「宝宝月龄」必须参与判定与措辞；已知时 reasons.ageMonths 与表述须一致；未知时不要编造月龄或常模数字。
-- 禁止编造通识/知识库依据；依据来自近期史 + 月龄 +（若有）对比样例条件。
-- 近期记录非空且「事件名与 id」对照表可用时：items 至少 1 条；弱信号可轻语气、偏低 score，禁止因此返回空列表。仅当记录为空或无法回填 eventId 时，items 才可为 []。
-- eventId 必须来自对照表，禁止臆造。
-- 「用户反馈对比样例」（若有）为全局口径（宜提/轻提），不得写成当前宝宝记录；有近期记录时不得理解成全部不提。
 
 【输出】只输出一个 JSON 对象（不要 Markdown 代码块，不要其它说明）：
 {
@@ -94,12 +85,6 @@ def default_output_format() -> str:
     }
   ]
 }
-
-【细则】
-- items 按值得留意程度从高到低；每项必须含 eventId、eventName、summaryLine、followUpPrompt、reasons（≥1）。
-- followUpPrompt 须为家长可直接发送的口语，勿命令式「请点击」。
-- 时长字段用毫秒整数；不确定则省略，勿编造；数据不足时勿编 medianGapMs。
-- type 优先 elongatedInterval（间隔偏长）、longActive（进行中偏久）、suddenAbsence（近期未见）；其它短驼峰英文。
 """.strip()
 
 
