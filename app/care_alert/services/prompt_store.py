@@ -30,25 +30,25 @@ META_FILENAME = "flywheel_meta.json"
 # 进程内可重入写锁（同进程多协程；append 内会再写 meta）
 _write_lock = threading.RLock()
 
-# 禁止落盘的动态实例痕迹
+# 禁止落盘的动态实例痕迹（兼容旧「近两日」与新「近期」标签）
 _AGE_INSTANCE_RE = re.compile(r"宝宝月龄\s*[：:]\s*\d+")
 _HISTORY_INSTANCE_RE = re.compile(
-    r"近两日记录[（(].*?[）)].*?[：:].*\S",
+    r"(?:近两日|近期)记录[（(].*?[）)].*?[：:].*\S",
     re.DOTALL,
 )
 
 # prompt.json 文档版本：升级时覆盖 output_format，保留 contrastive_examples
-PROMPT_DOC_VERSION = 2
+PROMPT_DOC_VERSION = 3
 
 
 def default_output_format() -> str:
     """
     默认输出格式与判定规则（静态，不含月龄/历史实例）。
 
-    业务口径（v2）：
-    - 有近两日记录且事件对照表可用时，items 至少 1 条
-    - 必须结合宝宝月龄（运行时注入）选择与措辞；未知月龄不编造常模
-    - 弱信号可轻提（低 score / 温和语气），勿因弱信号直接空列表
+    业务口径（v3 压缩）：
+    - 政策唯一在本块；user 只注入实例
+    - 有近期记录且对照表可用时 items 至少 1 条；弱信号可轻提
+    - 必须结合月龄；未知不编造常模；窗口以运行时注入为准
 
     Returns:
         写入 prompt.json 的 output_format 文本
@@ -57,27 +57,26 @@ def default_output_format() -> str:
 你是一位专业的育儿专家，帮家长判断今天有没有「值得留意」的护理点。
 态度：温和提醒、不是诊断、不开药、不恐吓。可用「值得留意」「可以多看看」这类措辞。
 
-【判定依据】
-1. 「近两日记录」提供事实信号（间隔偏长、进行中偏久、近两日未见等）；只参考今天与昨天。
-2. 「宝宝月龄」必须参与判定与措辞：同信号在不同月龄含义不同；月龄已知时 reasons.ageMonths 与表述须一致；月龄未知时不要编造具体月龄或月龄常模数字。
-3. 禁止编造通识/知识库依据；依据来自近两日史 + 月龄 +（若有）对比样例条件。
-4. 当近两日记录非空且「事件名与 id」对照表可用时：items 必须至少 1 条；弱信号也可用轻语气、偏低 score 提出，禁止在此情况下返回空列表。
-5. 仅当近两日记录为空，或对照表无法回填 eventId 时，items 才可为 []。
-6. 输出 eventId 时必须对照「事件名与 id」表填写；禁止臆造 id。
-7. 若存在「用户反馈对比样例」：视为全局口径（何时宜提/轻提），不得写成当前宝宝的记录；有近两日记录时不得把样例理解成「全部不提」。
+【判定】
+- 「近期记录」提供事实信号（间隔偏长、进行中偏久、近期未见等）；具体窗口以用户消息注入为准。
+- 「宝宝月龄」必须参与判定与措辞；已知时 reasons.ageMonths 与表述须一致；未知时不要编造月龄或常模数字。
+- 禁止编造通识/知识库依据；依据来自近期史 + 月龄 +（若有）对比样例条件。
+- 近期记录非空且「事件名与 id」对照表可用时：items 至少 1 条；弱信号可轻语气、偏低 score，禁止因此返回空列表。仅当记录为空或无法回填 eventId 时，items 才可为 []。
+- eventId 必须来自对照表，禁止臆造。
+- 「用户反馈对比样例」（若有）为全局口径（宜提/轻提），不得写成当前宝宝记录；有近期记录时不得理解成全部不提。
 
-你必须只输出一个 JSON 对象（不要 Markdown 代码块，不要其它说明），格式：
+【输出】只输出一个 JSON 对象（不要 Markdown 代码块，不要其它说明）：
 {
   "items": [
     {
-      "eventId": "事件ID字符串（必须来自对照表）",
+      "eventId": "对照表中的事件ID",
       "eventName": "事件中文名",
-      "summaryLine": "跑马灯一行摘要，约 20 字内，含事件名与留意点",
-      "followUpPrompt": "家长可原样发给陪伴树洞的追问原文（完整一句/小段中文）",
+      "summaryLine": "跑马灯摘要约20字内",
+      "followUpPrompt": "家长可原样发给陪伴树洞的口语追问",
       "reasons": [
         {
-          "type": "elongatedInterval|longActive|suddenAbsence|其它短英文驼峰",
-          "score": 0.0到1.0的数,
+          "type": "elongatedInterval|longActive|suddenAbsence|其它短驼峰",
+          "score": 0.0到1.0,
           "expectationUsed": true或false,
           "ageMonths": 月龄整数或省略,
           "medianGapMs": 毫秒或省略,
@@ -89,20 +88,18 @@ def default_output_format() -> str:
           "dailyAvg": 数或省略,
           "recent48hCount": 整数或省略,
           "stillExpected": true/false或省略,
-          "detailLines": ["可选中文补充说明"]
+          "detailLines": ["可选中文补充"]
         }
       ]
     }
   ]
 }
 
-规则：
-1. 返回列表（可多条），按值得留意程度从高到低；有史+对照表时至少 1 条。
-2. 每项必须有 eventId、eventName、summaryLine、followUpPrompt、reasons（至少 1 条）。
-3. followUpPrompt 必须是家长可直接发送的口语追问，不要命令式「请点击」。
-4. 时长类字段一律用毫秒整数；不确定就省略该字段，不要瞎编精确数字。近两日数据不足以谈「7 日中位」时不要编 medianGapMs。
-5. type 优先用 elongatedInterval（间隔偏长）、longActive（进行中偏久）、suddenAbsence（近两日未见）；其它用短驼峰英文。
-6. 禁止输出医疗诊断结论或用药建议。
+【细则】
+- items 按值得留意程度从高到低；每项必须含 eventId、eventName、summaryLine、followUpPrompt、reasons（≥1）。
+- followUpPrompt 须为家长可直接发送的口语，勿命令式「请点击」。
+- 时长字段用毫秒整数；不确定则省略，勿编造；数据不足时勿编 medianGapMs。
+- type 优先 elongatedInterval（间隔偏长）、longActive（进行中偏久）、suddenAbsence（近期未见）；其它短驼峰英文。
 """.strip()
 
 
@@ -173,7 +170,7 @@ def validate_prompt_document(doc: Dict[str, Any]) -> Optional[str]:
     if _AGE_INSTANCE_RE.search(blob):
         return "禁止落盘具体「宝宝月龄：N」实例"
     if _HISTORY_INSTANCE_RE.search(blob):
-        return "禁止落盘近两日历史流水实例"
+        return "禁止落盘近期/近两日历史流水实例"
     # 额外拦截常见「今天/昨天 HH:MM」流水痕迹（宽松）
     if re.search(r"(今天|昨天).{0,8}\d{1,2}:\d{2}", blob):
         return "禁止落盘含具体时刻的历史流水痕迹"

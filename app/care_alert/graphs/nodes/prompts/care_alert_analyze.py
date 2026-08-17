@@ -2,9 +2,8 @@
 护理留意分析提示词
 
 业务说明：
-系统侧静态块来自本地挂载卷 prompt.json（含输出格式与可选对比样例）；
-用户侧运行时注入宝宝月龄、近期按日聚合紧凑史与事件 id 对照表。
-有近期史且对照表可用时至少一条留意；必须结合月龄；无通识知识摘录。
+系统侧静态块来自本地挂载卷 prompt.json（判定规则 + JSON 格式 + 可选对比样例）；
+用户侧仅运行时注入月龄、性别、逻辑日、近期按日聚合史与事件 id 对照表，不复述政策。
 """
 
 from __future__ import annotations
@@ -49,7 +48,7 @@ def build_care_alert_user_message(
     history_summary: Any = None,
 ) -> str:
     """
-    组装用户消息：日键、月龄、画像、近期按日聚合紧凑史、名 id 对照。
+    组装用户消息：仅实例数据（月龄/性别/逻辑日/史/对照表），政策见 system。
 
     Args:
         day: 上海逻辑日
@@ -74,26 +73,11 @@ def build_care_alert_user_message(
     else:
         sex_line = "宝宝性别：未知"
 
-    age_hint = (
-        f"你是一位专业的育儿专家，请结合宝宝月龄（{baby_age_months} 个月）选择留意点与措辞；"
-        if isinstance(baby_age_months, int)
-        else "宝宝月龄未知：不要编造具体月龄或月龄常模数字；"
-    )
-
     parts = [
         _format_age(baby_age_months),
         sex_line,
         f"逻辑日：{day or '（未指定）'}",
-        (
-            f"{age_hint}"
-            "请结合「近期记录」判断今天值得留意的点，如涉及建议则必须阐明不作为医疗诊断。"
-            "当近期记录非空且下方「事件名与 id」对照表可用时：items 必须至少 1 条；"
-            "弱信号也可用温和语气、偏低 score 轻提，禁止因此返回空列表。"
-            "仅当记录为空或无法回填 eventId 时，items 才可为 []。"
-            "若系统侧有「用户反馈对比样例」，按样例调节宜提/轻提，勿当作本宝宝记录，"
-            "有近期记录时不要理解成全部不提。"
-            "eventId 必须来自对照表。严格按系统要求输出 JSON。"
-        ),
+        "请按系统侧判定依据与 JSON 输出格式作答。",
         f"近期记录（按日聚合：日期·时刻与总量；无 id）：\n{history_text}",
     ]
     if legend:
@@ -101,9 +85,7 @@ def build_care_alert_user_message(
             f"事件名与 id（仅回填 eventId 用，勿写入流水）：\n{legend}"
         )
     else:
-        parts.append(
-            "事件名与 id：（无）无法可靠回填 eventId，此时允许 items 为空，禁止臆造 id。"
-        )
+        parts.append("事件名与 id：（无）")
 
     if history_summary not in (None, {}, [], ""):
         try:
