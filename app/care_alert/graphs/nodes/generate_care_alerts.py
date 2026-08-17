@@ -198,7 +198,7 @@ def synthesize_soft_care_alert_item(
     业务逻辑：
     - 对照表取合法 eventId
     - 低 score、expectationUsed=false；已知月龄写入 ageMonths，不编造常模数字
-    - 文案标明结合近两日记录的温和提醒
+    - 文案标明结合近期记录的温和提醒
 
     Returns:
         camelCase item dict，或无法合成时 None
@@ -216,10 +216,10 @@ def synthesize_soft_care_alert_item(
         return None
     event_name, event_id, recent_count = picked
 
-    summary_line = f"值得留意 · {event_name}：结合近两日记录可多看看"
-    detail = "近两日有相关记录，结合月龄做温和提醒（非诊断）"
+    summary_line = f"值得留意 · {event_name}：结合近期记录可多看看"
+    detail = "近期有相关记录，结合月龄做温和提醒（非诊断）"
     if recent_count > 0:
-        detail = f"近两日约出现 {recent_count} 次相关记录；{detail}"
+        detail = f"近期约出现 {recent_count} 次相关记录；{detail}"
 
     reason = CareAlertReasonDto(
         type="softHistoryReminder",

@@ -3,8 +3,8 @@
 
 业务说明：
 系统侧静态块来自本地挂载卷 prompt.json（含输出格式与可选对比样例）；
-用户侧运行时注入宝宝月龄、近两日紧凑史与事件 id 对照表。
-有近两日史且对照表可用时至少一条留意；必须结合月龄；无通识知识摘录。
+用户侧运行时注入宝宝月龄、近期按日聚合紧凑史与事件 id 对照表。
+有近期史且对照表可用时至少一条留意；必须结合月龄；无通识知识摘录。
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def build_care_alert_user_message(
     history_summary: Any = None,
 ) -> str:
     """
-    组装用户消息：日键、月龄、画像、今昨紧凑史、名 id 对照。
+    组装用户消息：日键、月龄、画像、近期按日聚合紧凑史、名 id 对照。
 
     Args:
         day: 上海逻辑日
@@ -63,7 +63,7 @@ def build_care_alert_user_message(
     """
     now = shanghai_now()
     history_text, legend = build_care_alert_history_prompt_blocks(
-        history_events, now=now
+        history_events, now=now, day=day
     )
 
     sex_raw = baby_profile.get("sex")
@@ -86,16 +86,15 @@ def build_care_alert_user_message(
         f"逻辑日：{day or '（未指定）'}",
         (
             f"{age_hint}"
-            "请结合「近两日记录」判断今天值得留意的点，如涉及建议则必须阐明不作为医疗诊断。"
-            "当近两日记录非空且下方「事件名与 id」对照表可用时：items 必须至少 1 条；"
+            "请结合「近期记录」判断今天值得留意的点，如涉及建议则必须阐明不作为医疗诊断。"
+            "当近期记录非空且下方「事件名与 id」对照表可用时：items 必须至少 1 条；"
             "弱信号也可用温和语气、偏低 score 轻提，禁止因此返回空列表。"
             "仅当记录为空或无法回填 eventId 时，items 才可为 []。"
-            "不要编造通识/知识库依据。"
             "若系统侧有「用户反馈对比样例」，按样例调节宜提/轻提，勿当作本宝宝记录，"
-            "有近两日记录时不要理解成全部不提。"
+            "有近期记录时不要理解成全部不提。"
             "eventId 必须来自对照表。严格按系统要求输出 JSON。"
         ),
-        f"近两日记录（今天/昨天；相对次数/时间；无 id）：\n{history_text}",
+        f"近期记录（按日聚合：日期·时刻与总量；无 id）：\n{history_text}",
     ]
     if legend:
         parts.append(
