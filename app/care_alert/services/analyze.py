@@ -38,7 +38,7 @@ def _resolve_day(day: Optional[str]) -> str:
     """逻辑日缺省为上海今天 YYYY-MM-DD。"""
     if day and str(day).strip():
         return str(day).strip()
-    return shanghai_now().date().isoformat()
+    return shanghai_now().strftime("%Y-%m-%d %H:%M")
 
 
 def _history_from_summary(history_summary: Any) -> Optional[List[Dict[str, Any]]]:
