@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _THINKING_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "enabled"}}
 
 # 已接入的提供商（规范名）
-_KNOWN_PROVIDERS = frozenset({"deepseek", "glm", "siliconflow", "modelscope"})
+_KNOWN_PROVIDERS = frozenset({"deepseek", "glm", "siliconflow", "modelscope", "aliyun_dashscope"})
 
 # 默认并发上限（与历史默认 max_in_flight 对齐）
 _DEFAULT_MAX_IN_FLIGHT = 3
