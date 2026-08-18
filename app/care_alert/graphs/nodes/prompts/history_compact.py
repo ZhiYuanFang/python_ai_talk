@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from numbers import Number
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.shared.history_prompt_fields import (
@@ -42,37 +43,26 @@ def _event_unit(raw: Dict[str, Any]) -> str:
             return str(v).strip()
     return ""
 
-
 def _event_type(raw: Dict[str, Any]) -> str:
     """
     解析事件类型：number|time|one。
 
     业务逻辑：
-    优先 eventType；缺省时：有起止且时长>=1 秒 → time；
-    有 eventNumber → number；否则 one。
+    eventNumber > 1  → number
+    eventNumber == 0 → time
+    eventNumber == 1 → one
     """
-    t = raw.get("eventType") or raw.get("event_type") or ""
-    t = str(t).strip().lower()
-    if t in ("number", "time", "one"):
-        return t
-
-    start = raw.get("startTime", raw.get("start_time"))
-    end = raw.get("endTime", raw.get("end_time"))
-    dt_s = _parse_epoch(start)
-    dt_e = _parse_epoch(end)
-    if dt_s is not None and dt_e is not None:
-        secs = int((dt_e - dt_s).total_seconds())
-        if secs >= 1:
-            return "time"
-
-    num = raw.get("eventNumber", raw.get("event_number"))
-    if num is not None and num != "":
-        try:
-            float(num)
-            return "number"
-        except (TypeError, ValueError):
-            pass
-    return "one"
+    event_number = raw.get("eventNumber", raw.get("event_number"))
+    
+    if event_number is None:
+        return "one"  # 缺省兜底
+    
+    if event_number > 1:
+        return "number"
+    elif event_number == 0:
+        return "time"
+    else:
+        return "one"
 
 
 def _duration_seconds(raw: Dict[str, Any]) -> Optional[int]:
