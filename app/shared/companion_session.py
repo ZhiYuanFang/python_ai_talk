@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from app.config.settings import settings
+from app.shared.graphs.state_patch import state_get
 from app.shared.redis_gate import create_async_redis_client
 
 logger = logging.getLogger(__name__)
@@ -151,9 +152,12 @@ def extract_knowledge_ids(knowledge: Any) -> List[str]:
     return ids
 
 
-def derive_history_grounded(state: Dict[str, Any]) -> bool:
+def derive_history_grounded(state: Any) -> bool:
     """
     由 clinic 终态推导本轮是否史接地（供 last_suggestion / promote 门禁）。
+
+    Args:
+        state: 图 State（Pydantic 或 dict）；字段经 state_get 读取。
 
     业务逻辑：
     - Q&A 捷径命中：答案来自全局库，视为未史接地（False）
@@ -161,11 +165,11 @@ def derive_history_grounded(state: Dict[str, Any]) -> bool:
     - needs_history 显式布尔：原样
     - 缺省：True（保守，阻止误 promote）
     """
-    if state.get("qa_hit"):
+    if state_get(state, "qa_hit"):
         return False
-    if state.get("force_needs_history"):
+    if state_get(state, "force_needs_history"):
         return True
-    needs = state.get("needs_history")
+    needs = state_get(state, "needs_history")
     if needs is None:
         return True
     return bool(needs)

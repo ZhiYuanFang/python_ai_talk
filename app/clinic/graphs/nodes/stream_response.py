@@ -34,7 +34,7 @@ from app.shared.llm_client import LLMResponse, llm_client, llm_model_config_from
 logger = logging.getLogger(__name__)
 
 
-async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, None]:
+async def stream_response(state: Any) -> AsyncGenerator[LLMResponse, None]:
     """
     流式回答生成节点函数（生成器版本）
 
@@ -45,7 +45,7 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
     此函数提供核心的流式调用逻辑。
 
     Args:
-        state: 当前图状态（含 question, history_events, knowledge, baby_profile, llm_model）
+        state: 图 State（Pydantic 或 dict；含 question, history_events, knowledge, baby_profile, llm_model）
 
     Yields:
         LLMResponse 对象（流式逐块返回）
@@ -87,7 +87,7 @@ async def stream_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, 
         yield chunk
 
 
-async def stream_response_node(state: Dict[str, Any]) -> Dict[str, Any]:
+async def stream_response_node(state: Any) -> Dict[str, Any]:
     """
     流式回答生成节点（StateGraph 兼容版本）
 
@@ -97,7 +97,7 @@ async def stream_response_node(state: Dict[str, Any]) -> Dict[str, Any]:
     实际的流式输出在路由层直接调用 stream_response 生成器函数。
 
     Args:
-        state: 当前图状态
+        state: 图 State（Pydantic 或 dict）
 
     Returns:
         需要更新的 State 字段字典（response 字段）

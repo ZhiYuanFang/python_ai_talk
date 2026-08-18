@@ -11,25 +11,27 @@ import logging
 from typing import Any, Dict, Optional
 
 from app.shared.graphs.nodes.derive_baby_age import derive_baby_age
+from app.shared.graphs.state_patch import state_get
 
 logger = logging.getLogger(__name__)
 
 
-async def resolve_baby_age(state: Dict[str, Any]) -> Dict[str, Any]:
+async def resolve_baby_age(state: Any) -> Dict[str, Any]:
     """
     解析月龄：画像派生 → 请求透传兜底。
 
     Args:
-        state: 可含 baby_profile、以及路由预置的 baby_age_months
+        state: 图 State（Pydantic 或 dict）；可含 baby_profile、以及路由预置的 baby_age_months
 
     Returns:
         {"baby_age_months": int|None}
     """
-    # 请求侧预置月龄（Go 可能已算好）
+    # 请求侧预置月龄（Go 可能已算好）；经 state_get 兼容 Pydantic
     preset: Optional[int] = None
-    if "baby_age_months" in state and state.get("baby_age_months") is not None:
+    raw_preset = state_get(state, "baby_age_months")
+    if raw_preset is not None:
         try:
-            preset = int(state.get("baby_age_months"))
+            preset = int(raw_preset)
         except (TypeError, ValueError):
             preset = None
 

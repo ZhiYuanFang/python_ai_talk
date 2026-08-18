@@ -11,9 +11,12 @@ from app.shared.qa_fast_path import is_block_fast_path, rewrite_standalone_quest
 logger = logging.getLogger(__name__)
 
 
-async def rewrite_standalone_question_node(state: Dict[str, Any]) -> Dict[str, Any]:
+async def rewrite_standalone_question_node(state: Any) -> Dict[str, Any]:
     """
     写出 standalone_question；拦截或失败时置 None（后续 search 必 miss）。
+
+    Args:
+        state: 图 State（Pydantic 或 dict）；字段经 state_get 读取。
     """
     blocked, reason = is_block_fast_path(state)
     if blocked:

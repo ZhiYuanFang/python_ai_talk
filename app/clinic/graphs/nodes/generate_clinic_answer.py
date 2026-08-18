@@ -25,12 +25,12 @@ from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 logger = logging.getLogger(__name__)
 
 
-async def generate_clinic_answer(state: Dict[str, Any]) -> Dict[str, Any]:
+async def generate_clinic_answer(state: Any) -> Dict[str, Any]:
     """
     同步回答：clinic_answer + invoke。
 
     Args:
-        state: 含 question（或 user_input）、chat_context、数据准备结果、llm_model
+        state: 图 State（Pydantic 或 dict）；含 question（或 user_input）、chat_context、数据准备结果、llm_model
 
     Returns:
         {"response": 全文}；失败抛异常由调用方兜底

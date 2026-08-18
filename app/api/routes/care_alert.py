@@ -105,44 +105,46 @@ async def care_alert_feedback(request: CareAlertFeedbackRequest) -> CareAlertFee
     3. 有快照则写入本地 ledger，并按阈值重写全局对比样例；无快照/失败仅打日志
     4. 始终返回 ok=true（不阻断 Go/客户端）；不通识质量分
     """
-    try:
-        snapshot = await care_alert_flywheel_store.get_snapshot(request.suggestion_id)
-        if not snapshot:
-            logger.info(
-                "护理留意飞轮无快照: device_no=%s suggestion_id=%s intent=%s",
-                request.device_no,
-                request.suggestion_id,
-                request.intent,
-            )
-        else:
-            entry = {
-                "ts": int(time.time()),
-                "device_no": request.device_no,
-                "suggestion_id": request.suggestion_id,
-                "intent": request.intent,
-                "day": request.day or snapshot.get("day") or "",
-                "event_name": snapshot.get("event_name") or "",
-                "event_id": snapshot.get("event_id") or "",
-                "reason_type": snapshot.get("reason_type") or "other",
-                "score_band": snapshot.get("score_band") or "weak",
-                "summary_line": snapshot.get("summary_line") or "",
-            }
-            record_feedback_and_maybe_rewrite(entry)
-            logger.info(
-                "护理留意 prompt 飞轮已记: device_no=%s suggestion_id=%s intent=%s type=%s band=%s",
-                request.device_no,
-                request.suggestion_id,
-                request.intent,
-                entry["reason_type"],
-                entry["score_band"],
-            )
-    except Exception as e:
-        # 飞轮异常不阻断 ACK
-        logger.error(
-            "护理留意飞轮异常（仍 ACK）: suggestion_id=%s err=%s",
-            request.suggestion_id,
-            e,
-            exc_info=True,
-        )
+# 考虑到可能家长懒得补记录，而选择忽略建议，但当前的飞轮是应用于所有家长的，所以此飞轮可能不适用于所有家长，因此暂时注释掉
+
+    # try:
+    #     snapshot = await care_alert_flywheel_store.get_snapshot(request.suggestion_id)
+    #     if not snapshot:
+    #         logger.info(
+    #             "护理留意飞轮无快照: device_no=%s suggestion_id=%s intent=%s",
+    #             request.device_no,
+    #             request.suggestion_id,
+    #             request.intent,
+    #         )
+    #     else:
+    #         entry = {
+    #             "ts": int(time.time()),
+    #             "device_no": request.device_no,
+    #             "suggestion_id": request.suggestion_id,
+    #             "intent": request.intent,
+    #             "day": request.day or snapshot.get("day") or "",
+    #             "event_name": snapshot.get("event_name") or "",
+    #             "event_id": snapshot.get("event_id") or "",
+    #             "reason_type": snapshot.get("reason_type") or "other",
+    #             "score_band": snapshot.get("score_band") or "weak",
+    #             "summary_line": snapshot.get("summary_line") or "",
+    #         }
+    #         record_feedback_and_maybe_rewrite(entry)
+    #         logger.info(
+    #             "护理留意 prompt 飞轮已记: device_no=%s suggestion_id=%s intent=%s type=%s band=%s",
+    #             request.device_no,
+    #             request.suggestion_id,
+    #             request.intent,
+    #             entry["reason_type"],
+    #             entry["score_band"],
+    #         )
+    # except Exception as e:
+    #     # 飞轮异常不阻断 ACK
+    #     logger.error(
+    #         "护理留意飞轮异常（仍 ACK）: suggestion_id=%s err=%s",
+    #         request.suggestion_id,
+    #         e,
+    #         exc_info=True,
+    #     )
 
     return CareAlertFeedbackResponse(ok=True)

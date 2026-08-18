@@ -19,9 +19,12 @@ from app.shared.suggestion_acceptance import (
 logger = logging.getLogger(__name__)
 
 
-async def implicit_feedback(state: Dict[str, Any]) -> Dict[str, Any]:
+async def implicit_feedback(state: Any) -> Dict[str, Any]:
     """
     隐式采纳判定节点。
+
+    Args:
+        state: 图 State（Pydantic 或 dict）；字段经 state_get 读取。
 
     Returns:
         rejected 时 {"block_fast_path": True}；否则空 patch（副作用写会话/向量分）

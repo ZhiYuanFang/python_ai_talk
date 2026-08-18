@@ -14,6 +14,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config.settings import settings
+from app.shared.graphs.state_patch import state_get
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
@@ -29,24 +30,29 @@ _SENSITIVE_PATTERNS = (
 )
 
 
-def is_block_fast_path(state: Dict[str, Any]) -> Tuple[bool, str]:
+def is_block_fast_path(state: Any) -> Tuple[bool, str]:
     """
     是否强制跳过 Q&A 捷径。
+
+    Args:
+        state: 图 State（Pydantic 或 dict）；字段经 state_get 读取。
 
     Returns:
         (blocked, reason)
     """
     if not bool(settings.qa_fast_path_enabled):
         return True, "feature_disabled"
-    if state.get("force_needs_history"):
+    if state_get(state, "force_needs_history"):
         return True, "force_needs_history"
-    if state.get("skip_knowledge"):
+    if state_get(state, "skip_knowledge"):
         # history 点查与捷径互斥
         return True, "skip_knowledge_history"
-    if state.get("block_fast_path"):
+    if state_get(state, "block_fast_path"):
         return True, "block_fast_path_flag"
 
-    question = str(state.get("question") or state.get("user_input") or "")
+    question = str(
+        state_get(state, "question") or state_get(state, "user_input") or ""
+    )
     for pat in _SENSITIVE_PATTERNS:
         if re.search(pat, question):
             return True, f"sensitive:{pat}"

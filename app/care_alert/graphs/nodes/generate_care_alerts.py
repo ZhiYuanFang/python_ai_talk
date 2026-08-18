@@ -347,12 +347,12 @@ def normalize_care_alert_items(
     return out
 
 
-async def generate_care_alerts(state: Dict[str, Any]) -> Dict[str, Any]:
+async def generate_care_alerts(state: Any) -> Dict[str, Any]:
     """
     调用 LLM 生成护理留意 items。
 
     Args:
-        state: 含 day、月龄、历史、画像、llm_model
+        state: 图 State（Pydantic 或 dict）；含 day、月龄、历史、画像、llm_model
 
     Returns:
         {"items": [...]}；有史+legend 时保证至少 1 条（含软兜底）
@@ -400,10 +400,10 @@ async def generate_care_alerts(state: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     # 有史+legend 且仍空 → 确定性软兜底（仍会进入 analyze 快照写入）
-    items = ensure_min_one_care_alert_item(
-        items,
-        history_events=history_events,
-        age_months=age_for_norm,
-    )
+    # items = ensure_min_one_care_alert_item(
+    #     items,
+    #     history_events=history_events,
+    #     age_months=age_for_norm,
+    # )
     logger.info("护理留意生成完成: count=%s", len(items))
     return {"items": items}

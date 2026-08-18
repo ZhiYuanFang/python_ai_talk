@@ -12,6 +12,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from app.shared.baby_age import format_age_months_text
+from app.shared.graphs.state_patch import state_get
 from app.shared.history_prompt_fields import (
     build_daily_history_summary,
     looks_like_summary_query,
@@ -19,15 +20,18 @@ from app.shared.history_prompt_fields import (
 )
 
 
-def resolve_clinic_needs_history(state: Dict[str, Any]) -> bool:
+def resolve_clinic_needs_history(state: Any) -> bool:
     """
     从 clinic state 解析本轮是否按「需要喂养史」模式生成提示词。
 
+    Args:
+        state: 图 State（Pydantic 或 dict）；字段经 state_get 读取。
+
     force_needs_history 优先为 True；needs_history 缺省按 True（保守走有据路径）。
     """
-    if state.get("force_needs_history"):
+    if state_get(state, "force_needs_history"):
         return True
-    needs = state.get("needs_history")
+    needs = state_get(state, "needs_history")
     if needs is None:
         return True
     return bool(needs)

@@ -6,19 +6,23 @@ import logging
 from typing import Any, Dict
 
 from app.shared.baby_age import age_band_from_months
+from app.shared.graphs.state_patch import state_get
 from app.shared.qa_fast_path import evaluate_qa_hit, is_block_fast_path
 from app.shared.vector_store import vector_store
 
 logger = logging.getLogger(__name__)
 
 
-async def search_qa_fast_path(state: Dict[str, Any]) -> Dict[str, Any]:
+async def search_qa_fast_path(state: Any) -> Dict[str, Any]:
     """
     检索全局 Q&A；命中则写 qa_hit/qa_answer，否则 miss。
+
+    Args:
+        state: 图 State（Pydantic 或 dict）；字段经 state_get 读取。
     """
-    months = state.get("baby_age_months")
+    months = state_get(state, "baby_age_months")
     age_band = age_band_from_months(months if months is not None else None)
-    standalone = (state.get("standalone_question") or "").strip()
+    standalone = (state_get(state, "standalone_question") or "").strip()
 
     base = {
         "age_band": age_band,
@@ -33,7 +37,7 @@ async def search_qa_fast_path(state: Dict[str, Any]) -> Dict[str, Any]:
         return {**base, "qa_miss_reason": reason}
 
     if not standalone:
-        reason = state.get("qa_rewrite_miss_reason") or "no_standalone_question"
+        reason = state_get(state, "qa_rewrite_miss_reason") or "no_standalone_question"
         logger.info("Q&A 检索跳过: reason=%s", reason)
         return {**base, "qa_miss_reason": str(reason)}
 

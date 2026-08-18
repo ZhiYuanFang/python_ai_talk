@@ -24,12 +24,12 @@ from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 logger = logging.getLogger(__name__)
 
 
-async def generate_response(state: Dict[str, Any]) -> Dict[str, Any]:
+async def generate_response(state: Any) -> Dict[str, Any]:
     """
     History 同步回答生成。
 
     Args:
-        state: 含 user_input、history_events、llm_model
+        state: 图 State（Pydantic 或 dict）；含 user_input、history_events、llm_model
 
     Returns:
         {"response": "..."}

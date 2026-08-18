@@ -30,7 +30,7 @@ from app.shared.llm_client import LLMResponse, llm_client, llm_model_config_from
 logger = logging.getLogger(__name__)
 
 
-async def stream_tip_response(state: Dict[str, Any]) -> AsyncGenerator[LLMResponse, None]:
+async def stream_tip_response(state: Any) -> AsyncGenerator[LLMResponse, None]:
     """
     小贴士流式回答生成器函数
 
@@ -41,7 +41,7 @@ async def stream_tip_response(state: Dict[str, Any]) -> AsyncGenerator[LLMRespon
     4. 逐块 yield LLMResponse 对象
 
     Args:
-        state: 当前图状态（含 event_info, baby_age_months, history_events, knowledge, baby_profile, llm_model）
+        state: 图 State（Pydantic 或 dict；含 event_info, baby_age_months, history_events, knowledge, baby_profile, llm_model）
 
     Yields:
         LLMResponse 对象（流式逐块返回，包含 thinking 和 content 字段）
