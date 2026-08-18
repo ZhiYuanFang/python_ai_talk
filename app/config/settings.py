@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     glm_api_key: str = ""  # Zhipu API Key
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"  # Zhipu API 地址
 
+    # LLM 配置 - DashScope（可供 Go 选型）
+    aliyun_dashscope_api_key: str = ""
+    aliyun_dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
     # LLM 配置 - 硅基流动（可供 Go 选型）
     siliconflow_api_key: str = ""
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"

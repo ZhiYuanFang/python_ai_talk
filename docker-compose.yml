@@ -29,6 +29,7 @@ services:
       # --- AI 密钥（与 go_ai_talk 兄弟仓共用；选型由 Go 传入，Python 不换模）---
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       GLM_API_KEY: "${GLM_API_KEY:-}"
+      ALIYUN_DASHSCOPE_API_KEY: "${ALIYUN_DASHSCOPE_API_KEY:-}"
       SILICONFLOW_API_KEY: "${SILICONFLOW_API_KEY:-}"
       SILICONFLOW_BASE_URL: "${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}"
       MODELSCOPE_API_KEY: "${MODELSCOPE_API_KEY:-}"

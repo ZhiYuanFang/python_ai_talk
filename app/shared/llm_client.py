@@ -64,6 +64,8 @@ def _provider_api_key(canonical: str) -> str:
     """读取规范提供商对应的 API Key（可能为空串）。"""
     if canonical == "deepseek":
         return (settings.deepseek_api_key or "").strip()
+    if canonical == "aliyun_dashscope":
+        return (settings.aliyun_dashscope_api_key or "").strip()
     if canonical == "glm":
         return (settings.glm_api_key or "").strip()
     if canonical == "siliconflow":
@@ -83,6 +85,8 @@ def _provider_base_url(canonical: str) -> str:
         return settings.siliconflow_base_url
     if canonical == "modelscope":
         return settings.modelscope_base_url
+    if canonical == "aliyun_dashscope":
+        return settings.aliyun_dashscope_base_url
     return ""
 
 
@@ -380,7 +384,8 @@ class LLMClient:
             base_url=base_url,
             temperature=0.7,
             max_tokens=4096,
-            timeout=30,
+            timeout=60,
+            max_retries=0,
         )
         self._clients[cache_key] = client
         return client
