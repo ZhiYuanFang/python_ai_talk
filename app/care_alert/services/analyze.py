@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def _care_alert_window() -> tuple:
     """最近N天 Unix 窗。"""
-    return last_n_days(3)
+    return last_n_days(2)
 
 
 def _resolve_day(day: Optional[str]) -> str:
