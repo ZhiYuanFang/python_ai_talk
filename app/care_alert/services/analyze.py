@@ -36,8 +36,8 @@ def _care_alert_window() -> tuple:
 
 def _resolve_day(day: Optional[str]) -> str:
     """逻辑日缺省为上海今天 YYYY-MM-DD。"""
-    if day and str(day).strip():
-        return str(day).strip()
+    # if day and str(day).strip():
+    #     return str(day).strip()
     return shanghai_now().strftime("%Y-%m-%d %H:%M")
 
 

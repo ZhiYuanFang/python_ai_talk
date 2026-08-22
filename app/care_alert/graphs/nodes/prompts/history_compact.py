@@ -126,6 +126,35 @@ def _format_day_label(event_day: date, anchor: date) -> str:
         return f"{event_day.month:02d}-{event_day.day:02d}"
     return event_day.isoformat()
 
+def _clock_hm_with_ongoing(raw: Dict[str, Any]) -> Tuple[str, bool]:
+    """
+    返回 (时钟字符串, 是否进行中)。
+    进行中 = 有 start，无 end 或 end <= start
+    """
+    dt_s = _parse_epoch(raw.get("startTime", raw.get("start_time")))
+    dt_e = _parse_epoch(raw.get("endTime", raw.get("end_time")))
+    
+    if dt_s is None:
+        return "", False
+    
+    start_str = f"{dt_s.hour:02d}:{dt_s.minute:02d}"
+    
+    # 无 end → 进行中
+    if dt_e is None:
+        return f"{start_str}~", True
+    
+    # end <= start → 异常或没写 end，当进行中处理
+    if dt_e <= dt_s:
+        return f"{start_str}~", True
+    
+    # 跨天：显示范围
+    if dt_e.date() != dt_s.date():
+        end_str = f"{dt_e.hour:02d}:{dt_e.minute:02d}"
+        return f"{start_str}-{end_str}", False
+    
+    # 同一天正常事件
+    return start_str, False
+
 
 def _clock_hm(raw: Dict[str, Any]) -> Optional[str]:
     """单次 start 的 HH:MM；无 start 则用 end。"""
@@ -188,39 +217,56 @@ def format_care_alert_history_group(
     items: List[Dict[str, Any]],
 ) -> str:
     """
-    聚合紧凑行：{日历日}·{某事}·{HH:MM/...}·{总量段}，不含 eventId。
+    聚合紧凑行：{日历日}·{事件名}·{时刻/...}·{总量段}
 
     业务逻辑：
+    - 进行中事件时刻后加 ~（如 20:56~）
+    - time 类型：有进行中时总时长后加 +进行中 标注
     - 组内 items 须已按 start 升序
-    - 类型取组内第一条；time/number/one 分型写总量
-
-    Returns:
-        非空行；无法格式化时返回空串
     """
     if not items:
         return ""
+    
+    kind = _event_type(items[0])
+    
+    # 构建 clocks，同时检测是否有进行中
     clocks: List[str] = []
+    has_ongoing = False
+    
     for raw in items:
-        hm = _clock_hm(raw)
+        hm, ongoing = _clock_hm_with_ongoing(raw)
         if hm:
             clocks.append(hm)
+        if ongoing:
+            has_ongoing = True
+    
     if not clocks:
         return ""
-
-    kind = _event_type(items[0])
+    
+    clocks_str = "/".join(clocks)
+    
+    # 总量段
     if kind == "time":
         secs_sum = 0
         for raw in items:
             secs = _duration_seconds(raw)
             if secs is not None:
                 secs_sum += secs
-        total_seg = _format_total_duration_xhym(secs_sum)
+        
+        if secs_sum > 0:
+            total_seg = _format_total_duration_xhym(secs_sum)
+            if has_ongoing:
+                total_seg = f"{total_seg}+进行中"
+        else:
+            # 所有事件都是进行中或时长为0
+            total_seg = "进行中" if has_ongoing else "总时长0m"
+    
     elif kind == "number":
         total_seg = _format_number_sum(items)
     else:
         total_seg = f"{len(items)}次"
-
-    return f"{day_label}·{event_name}·{'/'.join(clocks)}·{total_seg}"
+    
+    return f"{day_label}·{event_name}·{clocks_str}·{total_seg}"
 
 
 def build_care_alert_history_prompt_blocks(
