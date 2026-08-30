@@ -213,13 +213,13 @@ def build_leaf_confirm_message(
         IntentAction.END.value: "结束记录",
         IntentAction.ONE.value: "记录",
     }.get(action, "记录")
-    return f"您是要{action_desc}「{event_name}」吗？请回复确认或取消，也可直接说明具体事件。"
+    return f"您是要{action_desc}「{event_name}」吗？"
 
 
 def build_delete_confirm_message(event_name: str) -> str:
     """删除确认：点出事件名与删除，不说成查询历史。"""
     name = (event_name or "").strip() or "该记录"
-    return f"您是要删除「{name}」的记录吗？请回复确认或取消。"
+    return f"您是要删除「{name}」的记录吗？"
 
 
 def _confirm_verb_for_event(ev: Dict[str, Any]) -> str:
@@ -249,7 +249,7 @@ def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
     """
     多事件确认问句：逐项点出动作与字典名。
 
-    例：您是要结束「爬练习」并开始「坐练习」吗？请回复确认或取消。
+    例：您是要结束「爬练习」并开始「坐练习」吗？
     """
     parts: List[str] = []
     for ev in events or []:
@@ -268,7 +268,7 @@ def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
         body = f"{parts[0]}并{parts[1]}"
     else:
         body = "、".join(parts[:-1]) + "并" + parts[-1]
-    return f"您是要{body}吗？请回复确认或取消。"
+    return f"您是要{body}吗？"
 
 
 

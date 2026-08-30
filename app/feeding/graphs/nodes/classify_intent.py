@@ -220,7 +220,7 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"意图分类失败: {e}", exc_info=True)
+        logger.error(f"意图分类失败: {e}")
         emit_thinking("classify_intent", LLM_OVERLOAD_RETRY_MESSAGE)
         return {
             "intent_result": IntentResult(
