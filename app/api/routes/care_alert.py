@@ -73,11 +73,11 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
     # }
 
     # 轨迹流动，免费替代
- request.model = {
-  "provider": "siliconflow",
-  "name": "Qwen/Qwen3-8B",
-  "max_in_flight": 50
-}
+    request.model = {
+        "provider": "siliconflow",
+        "name": "Qwen/Qwen3-8B",
+         "max_in_flight": 50
+    }
     # 打印日志
     logger.info("护理留意分析请求固定模型为: model=%s", request.model)
 

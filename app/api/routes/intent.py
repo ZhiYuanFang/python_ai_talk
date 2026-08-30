@@ -43,10 +43,15 @@ def _run_config(thread_id: str) -> Dict[str, Any]:
 
 def _model_config_dict(request: IntentRequest) -> Dict[str, Any]:
     """从请求取出 Go 传入的唯一 model（必填）。"""
+    # return {
+    #     "provider": request.model.provider,
+    #     "name": request.model.name,
+    #     "max_in_flight": request.model.max_in_flight,
+    # }
     return {
-        "provider": request.model.provider,
-        "name": request.model.name,
-        "max_in_flight": request.model.max_in_flight,
+         "provider": "siliconflow",
+        "name": "Qwen/Qwen3-8B",
+        "max_in_flight": 50
     }
 
 
@@ -212,13 +217,7 @@ async def analyze_intent_stream(request: IntentRequest):
     )
 
     full_events, leaf_events = await _prepare_dictionaries()
-
- request.model = {
-  "provider": "siliconflow",
-  "name": "Qwen/Qwen3-8B",
-  "max_in_flight": 50
-}
- logger.info("意图分析请求固定模型为: model=%s", request.model)
+    
     model_config = _model_config_dict(request)
 
     # pending 续聊：无图节点，直接返回 answer
