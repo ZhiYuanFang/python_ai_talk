@@ -67,7 +67,7 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
 	# Name        string `json:"name"`          // 模型名称，如 deepseek-v4-flash
 	# MaxInFlight int    `json:"max_in_flight"` // 最大并发数
     request.model = {
-        "provider": "deepseek",
+        "provider": "aliyun_dashscope",
         "name": "deepseek-v4-flash",
         "max_in_flight": 50,
     }
