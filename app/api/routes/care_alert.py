@@ -67,17 +67,11 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
 	# Name        string `json:"name"`          // 模型名称，如 deepseek-v4-flash
 	# MaxInFlight int    `json:"max_in_flight"` // 最大并发数
     request.model = {
-        "provider": "aliyun_dashscope",
+        "provider": "deepseek",
         "name": "deepseek-v4-flash",
         "max_in_flight": 50,
     }
 
-    # 硅基流动，免费替代，不行，上下文不够
-    # request.model = {
-    #     "provider": "siliconflow",
-    #     "name": "Qwen/Qwen3-8B",
-    #      "max_in_flight": 50
-    # }
     # 打印日志
     logger.info("护理留意分析请求固定模型为: model=%s", request.model)
 
