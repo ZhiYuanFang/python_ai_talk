@@ -20,21 +20,20 @@ logger = logging.getLogger(__name__)
 
 
 def _fallback_markdown(*, horizon_days: int, age_months: Any) -> str:
-    """LLM 失败时的可读兜底 Markdown。"""
+    """LLM 失败时的可读兜底 Markdown（整段注意点，禁止按日拆分）。"""
     age = "月龄未知" if age_months is None else f"约 {age_months} 个月"
-    days = "\n".join(
-        f"### 第{i}天\n- 观察精神与食欲；保持规律作息；按需安抚。\n"
-        for i in range(1, max(1, horizon_days) + 1)
-    )
     return (
-        f"# 未来{horizon_days}天成长轨迹\n\n"
-        f"## 总览\n"
-        f"结合当前信息（宝宝{age}）给出温和观察建议；"
-        f"非医疗诊断，如有不适请就医。\n\n"
-        f"## 按日建议\n{days}\n"
-        f"## 温馨提示\n"
-        f"- 本结果仅供日常参考。\n"
-        f"- 喂养记录不足时已弱化喂养相关推断。\n"
+        f"## 🌟 未来{horizon_days}天可能发生什么\n"
+        f"- 结合当前信息（宝宝{age}），宝宝可能在大运动或作息上有小幅变化，"
+        f"多观察精神与互动即可。\n\n"
+        f"## ⚠️ 这几天需要注意什么\n"
+        f"- 🛡️ 保证安全环境，满足探索需求但不勉强超能力动作。\n"
+        f"- 💤 尽量保持规律作息，按需安抚。\n"
+        f"- 👀 留意食欲与情绪波动，异常持续请就医。\n\n"
+        f"## 🍼 结合近期喂养\n"
+        f"- 喂养记录不足时已弱化推断；有记录时再细化辅食/奶量建议。\n\n"
+        f"## 💛 小结\n"
+        f"- 本结果仅供日常参考，期待宝宝稳步成长。\n"
     )
 
 
