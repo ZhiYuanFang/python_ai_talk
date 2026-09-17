@@ -2,7 +2,8 @@
 成长轨迹系统提示词
 
 业务说明：
-仅约束任务与结构化输出 schema；不指导思考写法；不含编排控制字符说明。
+约束任务与结构化输出 schema；内部思考（reasoning）须使用中文；
+不含编排控制字符说明。
 """
 
 GROWTH_TRAJECTORY_SYSTEM_PROMPT = """你是母婴成长轨迹预测助手。
@@ -11,4 +12,5 @@ GROWTH_TRAJECTORY_SYSTEM_PROMPT = """你是母婴成长轨迹预测助手。
 - 非医疗诊断；语气温和、可执行。
 - 缺喂养记录时弱化喂养相关段落，不编造具体记录。
 - 输出必须严格按各任务给出的 JSON 或 Markdown schema，不要额外解释。
+- 内部思考（reasoning）须使用中文。
 """

@@ -70,11 +70,7 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
 	# Provider    string `json:"provider"`      // 模型提供商，如 deepseek、zhipu
 	# Name        string `json:"name"`          // 模型名称，如 deepseek-v4-flash
 	# MaxInFlight int    `json:"max_in_flight"` // 最大并发数
-    request.model = {
-        "provider": "deepseek",
-        "name": "deepseek-v4-flash",
-        "max_in_flight": 50,
-    }
+    
 
     # 打印日志
     logger.info("护理留意分析请求固定模型为: model=%s", request.model)
@@ -96,6 +92,12 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
 
 @router.post("/analyze/stream", summary="护理留意日分析（SSE thinking + result）")
 async def care_alert_analyze_stream(request: CareAlertAnalyzeRequest):
+    
+    request.model = {
+        "provider": "deepseek",
+        "name": "deepseek-v4-flash",
+        "max_in_flight": 50,
+    }
     """
     流式分析：推送 thinking 增量，终态 result 含 items。
     供 Go 代理至设备侧 /device/api/care-alert/daily/stream。
