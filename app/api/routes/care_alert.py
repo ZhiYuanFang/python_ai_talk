@@ -56,7 +56,6 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
             else getattr(request.model, "provider", "?")
         ),
     )
-    logger.info("护理留意分析请求固定模型为: model=%s", request.model)
 
     try:
         raw_items = await run_care_alert_analyze(request)
@@ -77,11 +76,7 @@ async def care_alert_analyze_stream(request: CareAlertAnalyzeRequest):
     流式分析：推送 thinking 增量，终态 result 含 items。
     供 Go 代理至设备侧 /device/api/care-alert/daily/stream。
     """
-    request.model = {
-        "provider": "deepseek",
-        "name": "deepseek-v4-flash",
-        "max_in_flight": 50,
-    }
+    # 临时选型由 llm_client 硬编码覆盖；路由不再写死 request.model
     logger.info(
         "护理留意 SSE 分析请求: device_no=%s day=%s model=%s",
         request.device_no,

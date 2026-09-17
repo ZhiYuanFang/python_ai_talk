@@ -3,13 +3,14 @@ LLM 客户端封装模块
 
 业务说明：
 本模块负责封装对不同 LLM 提供商的调用，提供统一的接口。
-invoke 与 stream 均只打调用方传入的唯一 model；缺 model 立即失败。
-不做跨 provider/name 换模；选型（含 VIP）由 Go 决定，Python 不参与。
+TEMPORARY（产品验证）：invoke / stream 经 `_require_model_config` 强制使用硬编码
+runtime 型号，忽略 Go / 调用方传入的 model；不读 env、不恢复 fallback 换模链。
+验证通过后删除硬编码，恢复尊重调用方选型。
 保留 Redis 并发闸门等待；不新增同模 LLM N 次重试。
 
 设计思路：
 1. 使用 langchain-openai 库作为统一接口，通过不同的 base_url 区分提供商
-2. 支持动态选择模型，由调用方传入 provider 和 model 参数
+2. 临时阶段由本模块常量强制选型；目标态仍由调用方传入 provider/name
 3. 实现 Redis 闸门控制，避免超过并发限制
 4. 流式 thinking：经底层 OpenAI 客户端读 reasoning_content（ChatOpenAI 会丢该字段）
 """
@@ -34,8 +35,14 @@ _THINKING_EXTRA_BODY: Dict[str, Any] = {"thinking": {"type": "enabled"}}
 # 已接入的提供商（规范名）
 _KNOWN_PROVIDERS = frozenset({"deepseek", "glm", "siliconflow", "modelscope", "aliyun_dashscope"})
 
-# 默认并发上限（与历史默认 max_in_flight 对齐）
+# 默认并发上限（与历史默认 max_in_flight 对齐；目标态尊重调用方时使用）
 _DEFAULT_MAX_IN_FLIGHT = 3
+
+# TEMPORARY：产品验证阶段全站强制型号（常量硬编码，不读 env；验证后删除）
+_RUNTIME_OVERRIDE_PROVIDER = "aliyun_dashscope"
+# deepseek-v4-flash
+_RUNTIME_OVERRIDE_NAME = "qwen3.5-flash"
+_RUNTIME_OVERRIDE_MAX_IN_FLIGHT = 50
 
 
 def normalize_llm_provider(provider: str) -> str:
@@ -166,7 +173,8 @@ class LLMModelConfig(BaseModel):
     LLM 模型配置类
 
     业务说明：
-    封装调用 LLM 时的模型配置参数，由 Go 服务传入；Python 不换模、不按 VIP 选型。
+    封装调用 LLM 时的模型配置参数。目标态由 Go 传入；TEMPORARY 阶段由
+    `_require_model_config` 硬编码覆盖，调用方传入值仅作日志对比。
     """
 
     provider: str = Field(
@@ -333,19 +341,45 @@ class LLMClient:
         self, model_config: Optional[LLMModelConfig]
     ) -> LLMModelConfig:
         """
-        校验并规范化唯一 model；缺省或不完整则抛错（不换模、无默认单模）。
+        解析唯一 model 配置。
+
+        业务逻辑（TEMPORARY）：
+        1. 一律返回硬编码 runtime（deepseek / deepseek-v4-flash / max_in_flight=50）
+        2. 不读 env；不按 VIP；不恢复 fallback 换模链
+        3. 若调用方传入的 provider/name 与硬编码不一致，INFO 记录「忽略」
+        4. 传入可为 None（临时阶段不再依赖 Go 选型完整性）
+
+        Args:
+            model_config: 调用方/Go 传入的模型（可被忽略）
+
+        Returns:
+            硬编码并规范化后的 LLMModelConfig
         """
-        if model_config is None:
-            raise ValueError("必须传入 model（Go 选型），Python 不换模、无默认单模")
-        provider = normalize_llm_provider(model_config.provider)
-        name = (model_config.name or "").strip()
-        if not provider or not name:
-            raise ValueError("model 须含 provider 与 name")
-        return LLMModelConfig(
-            provider=provider,
-            name=name,
-            max_in_flight=int(model_config.max_in_flight or _DEFAULT_MAX_IN_FLIGHT),
+        # TEMPORARY：强制 runtime；验证后改回尊重传入并缺省抛错
+        runtime = LLMModelConfig(
+            provider=normalize_llm_provider(_RUNTIME_OVERRIDE_PROVIDER),
+            name=_RUNTIME_OVERRIDE_NAME.strip(),
+            max_in_flight=int(_RUNTIME_OVERRIDE_MAX_IN_FLIGHT),
         )
+        if model_config is not None:
+            passed_provider = normalize_llm_provider(model_config.provider or "")
+            passed_name = (model_config.name or "").strip()
+            if passed_provider != runtime.provider or passed_name != runtime.name:
+                logger.info(
+                    "忽略调用方/Go model provider=%s name=%s，"
+                    "改用 TEMPORARY runtime provider=%s name=%s",
+                    passed_provider or "(empty)",
+                    passed_name or "(empty)",
+                    runtime.provider,
+                    runtime.name,
+                )
+        else:
+            logger.info(
+                "调用方未传 model，使用 TEMPORARY runtime provider=%s name=%s",
+                runtime.provider,
+                runtime.name,
+            )
+        return runtime
 
     def _get_client(self, provider: str, model_name: str) -> ChatOpenAI:
         """
@@ -431,16 +465,16 @@ class LLMClient:
         system_prompt: Optional[str] = None,
     ) -> LLMResponse:
         """
-        同步调用 LLM（唯一 model，不换模）
+        同步调用 LLM（唯一 model；TEMPORARY 阶段由硬编码覆盖选型）
 
         业务逻辑：
-        1. 必须传入可用 model_config（Go 选型）
+        1. 经 `_require_model_config` 得到 runtime（临时忽略传入）
         2. 仅对该 model 发起一次 invoke；失败直接上抛
-        3. 不切换其它 provider/name
+        3. 不切换其它 provider/name（不做 fallback）
 
         Args:
             messages: 消息列表，格式为 [{"role": "user", "content": "..."}]
-            model_config: 唯一模型；None / 缺字段则报错
+            model_config: 调用方模型（TEMPORARY 可被忽略）
             system_prompt: 系统提示词（可选）
 
         Returns:
@@ -541,16 +575,16 @@ class LLMClient:
         thinking_enabled: bool = False,
     ) -> AsyncGenerator[LLMResponse, None]:
         """
-        流式调用 LLM（唯一 model，不换模）
+        流式调用 LLM（唯一 model；TEMPORARY 阶段由硬编码覆盖选型）
 
         业务逻辑：
-        1. 必须传入可用 model_config（Go 必带）
+        1. 经 `_require_model_config` 得到 runtime（临时忽略传入）
         2. 仅对该 model 发起一次 stream；失败直接上抛
-        3. 不切换其它 provider/name
+        3. 不切换其它 provider/name（不做 fallback）
 
         Args:
             messages: 消息列表
-            model_config: 唯一模型；None / 缺字段则报错
+            model_config: 调用方模型（TEMPORARY 可被忽略）
             system_prompt: 系统提示词（可选）
             thinking_enabled: 是否启用提供商原生思考模式
 

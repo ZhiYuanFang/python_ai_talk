@@ -28,20 +28,14 @@ async def growth_trajectory_turn(request: GrowthTrajectoryTurnRequest):
 
     action=start|restart 启动会话；answer 用 Command(resume) 恢复 interrupt。
     """
+    # 临时选型由 llm_client 硬编码覆盖；路由不再写死 request.model
     logger.info(
-        "成长轨迹 turn 请求: device_no=%s action=%s session_id=%s",
+        "成长轨迹 turn 请求: device_no=%s action=%s session_id=%s model=%s",
         request.device_no,
         request.action,
         request.session_id,
+        request.model,
     )
-    request.model = {
-        "provider": "deepseek",
-        "name": "deepseek-v4-flash",
-        "max_in_flight": 50,
-    }
-
-    # 打印日志
-    logger.info("成长轨迹预测请求固定模型为: model=%s", request.model)
     return StreamingResponse(
         iter_growth_trajectory_sse(request),
         media_type="text/event-stream",

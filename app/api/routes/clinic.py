@@ -35,7 +35,11 @@ router = APIRouter(prefix="/clinic", tags=["智能陪伴"])
 
 
 def _clinic_model_dict(request: ClinicRequest) -> Dict[str, Any]:
-    """从请求取出 Go 传入的唯一 model（必填；Python 不换模）。"""
+    """
+    从请求取出 Go 传入的 model（写入 state/日志）。
+
+    TEMPORARY 实际上游选型由 llm_client 硬编码覆盖。
+    """
     return {
         "provider": request.model.provider,
         "name": request.model.name,
