@@ -41,7 +41,7 @@ _DEFAULT_MAX_IN_FLIGHT = 3
 # TEMPORARY：产品验证阶段全站强制型号（常量硬编码，不读 env；验证后删除）
 _RUNTIME_OVERRIDE_PROVIDER = "aliyun_dashscope"
 # deepseek-v4-flash
-_RUNTIME_OVERRIDE_NAME = "qwen3.5-flash"
+_RUNTIME_OVERRIDE_NAME = "qwen3.8-flash"
 _RUNTIME_OVERRIDE_MAX_IN_FLIGHT = 50
 
 
