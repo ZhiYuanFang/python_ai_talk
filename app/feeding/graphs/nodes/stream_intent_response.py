@@ -49,8 +49,6 @@ NODE_THINKING_MESSAGES: Dict[str, str] = {
     "judge_data_requirement": "正在判断数据需求...",
     # 历史拉取节点：拉取历史喂养记录数据
     "fetch_history": "正在拉取历史记录...",
-    # 向量检索节点：检索相关知识库内容
-    "search_vectors": "正在检索相关知识...",
     # 宝宝画像获取节点：获取宝宝画像信息
     "fetch_baby_profile": "正在获取宝宝画像...",
     # 回答生成节点：调用 LLM 生成最终回答

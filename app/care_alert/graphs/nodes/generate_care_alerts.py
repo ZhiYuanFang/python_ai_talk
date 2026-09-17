@@ -2,7 +2,7 @@
 护理留意 LLM 生成节点
 
 业务说明：
-调用 llm_client.invoke 拿 JSON，解析并规范为 CareAlertItemDto 列表。
+调用 llm_client.stream 聚合 JSON，解析并规范为 CareAlertItemDto 列表。
 失败时返回空 items，不抛到路由（由路由决定是否 500）。
 """
 
@@ -204,7 +204,7 @@ def synthesize_soft_care_alert_item(
     Returns:
         camelCase item dict，或无法合成时 None
     """
-    from app.tip.graphs.nodes.derive_baby_age import shanghai_now
+    from app.shared.baby_age import shanghai_now
 
     history_text, legend = build_care_alert_history_prompt_blocks(
         history_events, now=shanghai_now()
@@ -366,7 +366,7 @@ async def generate_care_alerts(state: Any) -> Dict[str, Any]:
     age_for_norm = baby_age_months if isinstance(baby_age_months, int) else None
     history_events = state_get(state, "history_events") or []
 
-    # system：本地 prompt 静态块；user：运行时月龄/历史
+    # system：内联常量；user：运行时月龄/历史
     system_prompt = build_care_alert_system_prompt()
     user_message = build_care_alert_user_message(
         day=str(state_get(state, "day") or ""),

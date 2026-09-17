@@ -1,15 +1,16 @@
 """
-陪伴会话存储（tip / clinic 共享）
+陪伴会话存储（clinic 续聊）
 
 业务说明：
 按 device_no 在 Redis 中维护近 N 轮 user+assistant 对话（默认 3 轮，可配置），
-TTL 7 天滑动续期。tip 开场与 clinic 续聊读写同一会话，供口语化上下文与隐式飞轮使用。
+TTL 7 天滑动续期。clinic 续聊读写会话，供口语化上下文。
+不再要求/依赖 tip 开场、通识 knowledge_ids、Q&A qa_match_id 等飞轮字段。
 
 设计思路：
 1. key = companion:session:{device_no}
-2. 一轮 = user + assistant；tip 开场合成 user「刚记录了「事件」」
+2. 一轮 = user + assistant
 3. 截断只保留最近 max_turns 整轮（与注入 chat_context 一致，默认 3）
-4. last_suggestion 记录待隐式判定的建议与 knowledge_ids（与进 prompt 的 knowledge 对齐）
+4. last_suggestion 仅保留回答 id/文本/来源，兼容读取旧 Redis 中多余字段
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from app.config.settings import settings
-from app.shared.graphs.state_patch import state_get
 from app.shared.redis_gate import create_async_redis_client
 
 logger = logging.getLogger(__name__)
@@ -36,30 +36,20 @@ class CompanionTurn:
 
     user: str
     assistant: str
-    source: str = ""  # tip | clinic
+    source: str = ""  # clinic（兼容旧 tip）
 
 
 @dataclass
 class LastSuggestion:
     """
-    上一条待飞轮判定的建议。
+    上一条助手建议摘要（供会话元数据；不再驱动通识/Q&A 飞轮）。
 
-    feedback_applied=True 后不再对同一条加减分。
-    standalone_question / age_band 供 accepted 时写入全局 Q&A。
-    history_grounded=True 表示本轮按需要喂养史路径生成，禁止 promote。
-    旧会话缺省 history_grounded 时按 True 处理（保守不入库）。
-    qa_match_id 记录捷径命中条目，供 rejected 时下调问答质量分。
+    旧会话可能仍带 knowledge_ids / qa_match_id 等字段，反序列化时忽略即可。
     """
 
     answer_id: str = ""
     text: str = ""
-    knowledge_ids: List[str] = field(default_factory=list)
-    feedback_applied: bool = False
-    source: str = ""  # tip | clinic
-    standalone_question: str = ""
-    age_band: str = ""
-    history_grounded: bool = True
-    qa_match_id: str = ""
+    source: str = ""  # clinic（兼容旧 tip）
 
 
 @dataclass
@@ -84,7 +74,7 @@ class CompanionSession:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CompanionSession":
-        """从 Redis JSON 反序列化。"""
+        """从 Redis JSON 反序列化（容忍旧飞轮字段缺失或多余）。"""
         turns = [
             CompanionTurn(
                 user=str(t.get("user", "")),
@@ -97,23 +87,11 @@ class CompanionSession:
         raw_sug = data.get("last_suggestion")
         last_suggestion = None
         if isinstance(raw_sug, dict):
-            # 缺省 history_grounded → True，避免旧数据误 promote
-            if "history_grounded" in raw_sug:
-                history_grounded = bool(raw_sug.get("history_grounded"))
-            else:
-                history_grounded = True
+            # 只取会话文本所需字段；旧 knowledge_ids / qa_match_id 等一律忽略
             last_suggestion = LastSuggestion(
                 answer_id=str(raw_sug.get("answer_id", "")),
                 text=str(raw_sug.get("text", "")),
-                knowledge_ids=[
-                    str(x) for x in (raw_sug.get("knowledge_ids") or []) if x
-                ],
-                feedback_applied=bool(raw_sug.get("feedback_applied", False)),
                 source=str(raw_sug.get("source", "")),
-                standalone_question=str(raw_sug.get("standalone_question", "")),
-                age_band=str(raw_sug.get("age_band", "")),
-                history_grounded=history_grounded,
-                qa_match_id=str(raw_sug.get("qa_match_id", "") or ""),
             )
         return cls(
             device_no=str(data.get("device_no", "")),
@@ -121,58 +99,6 @@ class CompanionSession:
             last_suggestion=last_suggestion,
             updated_at=float(data.get("updated_at") or 0),
         )
-
-
-def extract_knowledge_ids(knowledge: Any) -> List[str]:
-    """
-    从向量检索结果提取真实文档 id（chunk id）。
-
-    业务逻辑：
-    优先 item["id"]；其次 metadata.doc_id。去重保序。
-    """
-    if not knowledge or not isinstance(knowledge, list):
-        return []
-    ids: List[str] = []
-    seen = set()
-    for item in knowledge:
-        if not isinstance(item, dict):
-            continue
-        kid = item.get("id")
-        if not kid:
-            meta = item.get("metadata") or {}
-            if isinstance(meta, dict):
-                kid = meta.get("doc_id") or meta.get("id")
-        if not kid:
-            continue
-        kid_s = str(kid)
-        if kid_s in seen:
-            continue
-        seen.add(kid_s)
-        ids.append(kid_s)
-    return ids
-
-
-def derive_history_grounded(state: Any) -> bool:
-    """
-    由 clinic 终态推导本轮是否史接地（供 last_suggestion / promote 门禁）。
-
-    Args:
-        state: 图 State（Pydantic 或 dict）；字段经 state_get 读取。
-
-    业务逻辑：
-    - Q&A 捷径命中：答案来自全局库，视为未史接地（False）
-    - force_needs_history：强制接地 True
-    - needs_history 显式布尔：原样
-    - 缺省：True（保守，阻止误 promote）
-    """
-    if state_get(state, "qa_hit"):
-        return False
-    if state_get(state, "force_needs_history"):
-        return True
-    needs = state_get(state, "needs_history")
-    if needs is None:
-        return True
-    return bool(needs)
 
 
 def format_chat_turns_for_prompt(turns: List[CompanionTurn]) -> str:
@@ -190,18 +116,12 @@ def format_chat_turns_for_prompt(turns: List[CompanionTurn]) -> str:
     return "\n".join(lines)
 
 
-def build_tip_synthetic_user(event_name: str) -> str:
-    """tip 开场合成的家长侧用户文案，保证一轮结构完整。"""
-    name = (event_name or "一件事").strip() or "一件事"
-    return f"刚记录了「{name}」"
-
-
 class CompanionSessionStore:
     """
     Redis 陪伴会话读写。
 
     业务说明：
-    tip/clinic 路由共用；失败时降级为空会话，不阻断主流程。
+    clinic 路由使用；失败时降级为空会话，不阻断主流程。
     """
 
     def __init__(self) -> None:
@@ -270,15 +190,10 @@ class CompanionSessionStore:
         assistant: str,
         source: str,
         answer_id: str,
-        knowledge_ids: Optional[List[str]] = None,
         suggestion_text: Optional[str] = None,
-        standalone_question: Optional[str] = None,
-        age_band: Optional[str] = None,
-        history_grounded: Optional[bool] = None,
-        qa_match_id: Optional[str] = None,
     ) -> CompanionSession:
         """
-        追加一轮并更新 last_suggestion（新建议默认未飞轮）。
+        追加一轮并更新 last_suggestion（仅文本元数据，无飞轮字段）。
 
         Args:
             device_no: 设备号
@@ -286,41 +201,20 @@ class CompanionSessionStore:
             assistant: 回复侧全文
             source: tip | clinic
             answer_id: 本轮回答 id
-            knowledge_ids: 本轮检索命中的文档 id
-            suggestion_text: 待判定建议文本，默认用 assistant
-            standalone_question: 本轮改写独立问句（供 Q&A 推广）
-            age_band: 本轮月龄带
-            history_grounded: 本轮是否史接地；None 时按 True（保守）
-            qa_match_id: Q&A 捷径命中 id；非捷径为空
+            suggestion_text: 建议文本，默认用 assistant
         """
         session = await self.get(device_no)
         session.turns.append(
             CompanionTurn(user=user or "", assistant=assistant or "", source=source)
         )
-        # None → True：未显式传入时禁止误 promote
-        grounded = True if history_grounded is None else bool(history_grounded)
         session.last_suggestion = LastSuggestion(
             answer_id=answer_id or "",
             text=(suggestion_text if suggestion_text is not None else assistant) or "",
-            knowledge_ids=list(knowledge_ids or []),
-            feedback_applied=False,
             source=source,
-            standalone_question=(standalone_question or "").strip(),
-            age_band=(age_band or "").strip(),
-            history_grounded=grounded,
-            qa_match_id=(qa_match_id or "").strip(),
         )
         await self.save(session)
         return session
 
-    async def mark_feedback_applied(self, device_no: str) -> None:
-        """将 last_suggestion.feedback_applied 置 True 并写回。"""
-        session = await self.get(device_no)
-        if not session.last_suggestion:
-            return
-        session.last_suggestion.feedback_applied = True
-        await self.save(session)
 
-
-# 全局单例，供 tip/clinic 路由使用
+# 全局单例，供 clinic 路由使用
 companion_session_store = CompanionSessionStore()

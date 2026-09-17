@@ -4,8 +4,7 @@
 业务说明：
 将 HTTP 请求转为图初始状态，执行 care_alert_graph，返回 items。
 不扣 clinic 配额；model 由 Go 传入（含 VIP 选型），Python 不换模。
-不调用通识向量检索；kg_context 不硬塞进判定。
-analyze 成功后写入 suggestionId → 建议快照（供 prompt 飞轮归因）。
+不调用通识向量检索；无 feedback 飞轮快照。
 """
 
 from __future__ import annotations
@@ -17,16 +16,12 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from app.care_alert.graphs.care_alert_graph import care_alert_graph
 from app.care_alert.graphs.states.care_alert_state import CareAlertState
 from app.care_alert.schemas.care_alert import CareAlertAnalyzeRequest
-from app.care_alert.services.flywheel_store import (
-    care_alert_flywheel_store,
-    snapshot_from_item,
-)
 from app.care_alert.services.model_resolve import resolve_model_config
 from app.shared.graphs.node_thinking import GRAPH_STREAMING
 from app.shared.graphs.state_patch import state_get
 from app.shared.history_window import last_n_days
 from app.shared.schemas.data_requirement import DataRequirement
-from app.tip.graphs.nodes.derive_baby_age import shanghai_now
+from app.shared.baby_age import shanghai_now
 
 logger = logging.getLogger(__name__)
 
@@ -145,16 +140,6 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         regenerated = await generate_care_alerts(final_state)
         items = regenerated.get("items") or []
 
-    # 飞轮快照：每条 suggestion → 归因字段（非 knowledge_ids）
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        sid = str(item.get("suggestionId") or item.get("suggestion_id") or "").strip()
-        if not sid:
-            continue
-        snap = snapshot_from_item(item, device_no=request.device_no, day=day)
-        await care_alert_flywheel_store.save_snapshot(sid, snap)
-
     logger.info(
         "护理留意分析结束: device_no=%s day=%s count=%s",
         request.device_no,
@@ -198,7 +183,7 @@ async def _finalize_care_alert_items(
     final_state: Any,
     day: str,
 ) -> List[Dict[str, Any]]:
-    """与阻塞路径一致：补历史、重跑生成、写飞轮快照。"""
+    """与阻塞路径一致：补历史、必要时重跑生成。"""
     history_events = state_get(final_state, "history_events") or []
     history_seeded = False
     if not history_events:
@@ -218,15 +203,6 @@ async def _finalize_care_alert_items(
         logger.info("历史由编排侧补齐后重跑 LLM 生成")
         regenerated = await generate_care_alerts(final_state)
         items = regenerated.get("items") or []
-
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        sid = str(item.get("suggestionId") or item.get("suggestion_id") or "").strip()
-        if not sid:
-            continue
-        snap = snapshot_from_item(item, device_no=request.device_no, day=day)
-        await care_alert_flywheel_store.save_snapshot(sid, snap)
 
     return items
 

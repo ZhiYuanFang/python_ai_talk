@@ -4,6 +4,13 @@
 
 ## 一、代码生成约束
 
+### 1.0 LLM Agent 提示词与流式约定（强制）
+
+- **每模块 system 提示词**：存活业务模块（`feeding` / `clinic` / `care_alert` / `growth_trajectory` / `shared` 判定节点等）的 system 文案 MUST 落在各自 `graphs/nodes/prompts/system.py`（或等价 `prompts/system.py`）常量中，禁止依赖运行时外置 `prompt.json` 飞轮读写。
+- **中文思考与输出**：面向用户的主回答与内部思考（reasoning / thinking）MUST 使用中文；system 中须显式约束「内部思考（reasoning）须使用中文」。
+- **对外 SSE 真流式**：对外 SSE 接口（如 clinic stream、care-alert analyze/stream、growth-trajectory turn、intent stream）的主 LLM 调用 MUST 使用 `llm_client.stream`，禁止「先 `invoke` 拿全文再伪造成 SSE」。图内部判定节点（意图分类、needs_history、data_requirement 等）允许 `invoke`。同步非 SSE 接口（如 `/v1/clinic`）可继续 `invoke`。
+- **禁止恢复 tip / 外置 prompt 飞轮**：禁止新建 tip 产品线或 care-alert/其它模块的外置 prompt 飞轮与对应反馈写回路；意图缓存飞轮（`feeding_intents`）除外。
+
 ### 1.1 不生成、不改动测试文件
 
 - **禁止生成测试文件**：不创建单元测试、集成测试或其他测试文件（如 `tests/**`、`test_*.py`）
@@ -28,27 +35,19 @@
 - **目录结构**：
   ```
   app/
-  ├── feeding/           # 喂养动作模块
-  │   ├── graphs/        # LangGraph 图定义
-  │   │   ├── nodes/     # 图节点
-  │   │   │   └── prompts/  # 提示词模板
-  │   │   └── states/    # 图状态
-  │   ├── schemas/       # 数据模型
-  │   └── services/      # 业务服务
-  ├── clinic/            # 喂养建议模块
-  │   ├── graphs/
-  │   │   ├── nodes/
-  │   │   │   └── prompts/
-  │   │   └── states/
-  │   ├── schemas/
-  │   └── services/
-  ├── shared/            # 跨模块共享服务
-  └── config/            # 全局配置
+  ├── feeding/              # 喂养动作 / 意图识别
+  ├── clinic/               # 喂养建议（clinic）
+  ├── care_alert/           # 护理留意点
+  ├── growth_trajectory/    # 成长轨迹
+  ├── shared/               # 跨模块共享（含判定节点 prompts）
+  └── config/               # 全局配置
   ```
+  各业务模块下统一：`graphs/nodes/prompts/system.py` 承载 system 常量。
 - **禁止跨模块直接导入**：
   - `feeding` 模块不能直接导入 `clinic` 模块的代码
   - `clinic` 模块不能直接导入 `feeding` 模块的代码
   - 需要共享的代码必须放在 `shared` 模块
+- **已下线**：`tip` 模块与通识知识向量库（`mother_baby_knowledge` / `/v1/knowledge`）不再作为必建能力；勿在新代码中恢复。
 
 ## 二、技术栈
 
@@ -76,15 +75,17 @@
 
 ## 五、API 规范
 
-- 喂养动作 API：`/v1/feeding/` 前缀
+- 喂养动作 / 意图 API：`/v1/feeding/`、`/v1/intent/` 前缀
 - 喂养建议 API：`/v1/clinic/` 前缀
+- 护理留意点 API：`/v1/care-alert/` 前缀
+- 成长轨迹 API：`/v1/growth-trajectory/` 前缀
 - 统一响应格式：`{"code": 0, "message": "success", "data": {...}}`
+- **已下线**：`/v1/tip/`、`/v1/knowledge/`、care-alert prompt 反馈写回路
 
 ## 六、向量数据库规范
 
-- 喂养事件向量库：`feeding_events` Collection
-- 母婴知识向量库：`mother_baby_knowledge` Collection
-- 两个 Collection 物理隔离，避免数据紊乱
+- 喂养事件向量库：`feeding_events` Collection（意图缓存飞轮）
+- 通识知识向量库已下线，不再作为必建 volume / 启动步骤
 
 ## 七、详细规范参考
 

@@ -11,6 +11,10 @@
 import json
 from typing import Any, Dict, List, Optional
 
+from app.clinic.graphs.nodes.prompts.system import (
+    CLINIC_ANSWER_SYSTEM_PROMPT_WITH_HISTORY,
+    CLINIC_ANSWER_SYSTEM_PROMPT_WITHOUT_HISTORY,
+)
 from app.shared.baby_age import format_age_months_text
 from app.shared.graphs.state_patch import state_get
 from app.shared.history_prompt_fields import (
@@ -45,38 +49,8 @@ def build_clinic_answer_system_prompt(*, needs_history: bool = True) -> str:
         needs_history: True 保留记录必点与点查/汇总规则；False 关闭史依据
     """
     if needs_history:
-        return """
-你是育儿专家，用「你/宝宝」对家长作答。温和、清晰、克制；不要自称医生或儿科助手。
-
-【依据】
-1. 下方若有「喂养记录」：正文必须点名与本轮最相关的 1 条事实（时间/次数/间隔等），再作答；禁止只空谈不碰数据、禁止堆砌多条。
-2. 下方若有「近期陪伴对话」：可作背景参考，不必点名「上次」；禁止编造未出现的对话内容。
-3. 没有记录时：禁止编造「记录里」；没有对话时：禁止编造「上次你说」。
-4. 口述与记录不一致时：以记录为准，简要说明即可。
-5. 记录时间距今超过 2 天：用「之前有一次/上次看到」，不要说成「现在/今天」。
-
-【点查时间题】问上次/什么时候/分别何时等：
-以喂养记录为准；直接念注入的可读时间（优先 startTime）；没有对应记录就诚实说没记到；禁止只用「最近」糊弄。
-
-【汇总题】问最近N天/总结/趋势：
-优先参考「按日汇总」再结合明细；用有数的信息说变化；数据不够就老实说。
-
-【安全】
-不做疾病诊断，不开药物剂量或处方，不做决断式医疗结论。家长明显担心身体时，可温和建议咨询医生，勿恐吓。信息不够就说不够，勿制造焦虑。
-
-回复尽量简短（约 80 字内；点查/汇总念清事实时可略超）。勿写成注意事项清单标题。若开启思考：可用 [思考]... 再给出回答。
-""".strip()
-
-    return """
-你是育儿专家，用「你/宝宝」对家长作答。温和、清晰、克制；不要自称医生或儿科助手。
-
-本轮不提供喂养记录与近期陪伴对话。禁止点名或编造「上次你说」「记录里」「宝宝今天/最近」等本机事实。可用通用母婴常识作轻背景，不得写成对方宝宝的事实。
-
-【安全】
-不做疾病诊断，不开药物剂量或处方，不做决断式医疗结论。家长明显担心身体时，可温和建议咨询医生，勿恐吓。信息不够就说不够，勿制造焦虑。
-
-回复尽量简短（约 80 字内）。勿写成注意事项清单标题。不要征求家长「说得对吗/有用吗」之类肯定。若开启思考：可用 [思考]... 再给出回答。
-""".strip()
+        return CLINIC_ANSWER_SYSTEM_PROMPT_WITH_HISTORY
+    return CLINIC_ANSWER_SYSTEM_PROMPT_WITHOUT_HISTORY
 
 
 def _clinic_closing_instruction(
@@ -119,7 +93,6 @@ def _clinic_closing_instruction(
 def build_clinic_answer_user_message(
     question: str,
     history_events: List[Dict[str, Any]],
-    knowledge_results: List[Dict[str, Any]],
     baby_profile: Dict[str, Any],
     chat_context: Optional[str] = None,
     baby_age_months: Optional[int] = None,
@@ -130,7 +103,7 @@ def build_clinic_answer_user_message(
     构建 clinic 用户消息。
 
     needs_history=False 时不注入喂养记录块与 chat_context 块。
-    有记录则标注必点；有对话仅作可选背景。
+    有记录则标注必点；有对话仅作可选背景。不再注入通识「知识库参考」。
     """
     baby_info = ""
     if baby_profile or baby_age_months is not None:
@@ -177,16 +150,6 @@ def build_clinic_answer_user_message(
     else:
         is_summary = False
 
-    knowledge_info = ""
-    if knowledge_results:
-        knowledge_texts = [
-            f"- {r['content']}（相似度：{r['score']}）" for r in knowledge_results
-        ]
-        knowledge_info = f"""
-可参考的知识（轻背景，不得编造为「记录」或「上次说过」）：
-{"\n".join(knowledge_texts)}
-"""
-
     closing = _clinic_closing_instruction(
         needs_history=needs_history,
         has_history=bool(slim),
@@ -200,7 +163,6 @@ def build_clinic_answer_user_message(
 {baby_info}
 {summary_block}
 {history_info}
-{knowledge_info}
 {chat_block}
 {closing}
 """

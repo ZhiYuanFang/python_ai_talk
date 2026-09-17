@@ -3,7 +3,7 @@
 
 业务说明：
 定义 LangGraph 图中各节点执行时对应的中文字幕（thinking 事件内容）。
-用于 clinic_graph 和 tip_graph 的流式思考展示，让用户实时感知 AI 正在做什么。
+用于 clinic_graph 的流式思考展示，让用户实时感知 AI 正在做什么。
 
 设计思路：
 1. 集中维护节点名→中文文案的映射，便于统一管理和国际化
@@ -11,29 +11,19 @@
 3. 未知节点返回通用文案，保证不会出现空内容
 """
 
-from typing import Optional
-
 # 节点名→中文思考文案映射表
 # 业务说明：每个 key 对应 LangGraph 图中注册的节点名，value 为推送给前端的中文文案
 NODE_THINKING_MESSAGES = {
-    # clinic：隐式判定上一条建议是否被接受（飞轮）
-    "implicit_feedback": "正在回想咱们刚聊到的建议...",
     # 门禁：是否需要喂养历史
     "judge_needs_history": "正在看看要不要翻翻最近的记录...",
     # 范围：拉哪些事件、多长时间
     "judge_data_requirement": "正在想想要翻多久的记录...",
     # 历史拉取：Go 侧喂养记录（仅 needs_history 为真时执行）
     "fetch_history": "正在翻翻最近的喂养记录...",
-    # 向量检索：知识背景
-    "search_vectors": "正在想想有没有相关经验可以参考...",
     # 宝宝画像
     "fetch_baby_profile": "正在了解宝宝的基本情况...",
-    # tip/clinic：自算月龄
+    # clinic：自算月龄
     "derive_baby_age": "正在根据生日算算宝宝月龄...",
-    # Q&A 捷径
-    "rewrite_standalone_question": "正在把问题整理得更清楚...",
-    "search_qa_fast_path": "正在看看有没有类似的优质问答...",
-    "format_qa_answer": "命中历史优质问答，正在组织回答...",
     # 开始生成口语回复
     "llm_start": "正在想怎么跟你说...",
 }

@@ -2,8 +2,8 @@
 护理留意分析提示词
 
 业务说明：
-系统侧静态块来自本地挂载卷 prompt.json（判定规则 + JSON 格式 + 可选对比样例）；
-用户侧仅运行时注入月龄、性别、逻辑日、近期按日聚合史与事件 id 对照表，不复述政策。
+系统侧静态块来自 prompts/system.py 常量；
+用户侧仅运行时注入月龄、性别、逻辑日、近期按日聚合史与事件 id 对照表。
 """
 
 from __future__ import annotations
@@ -14,22 +14,18 @@ from typing import Any, Dict, List, Optional
 from app.care_alert.graphs.nodes.prompts.history_compact import (
     build_care_alert_history_prompt_blocks,
 )
-from app.care_alert.services.prompt_store import (
-    build_system_prompt_from_doc,
-    load_or_bootstrap_prompt,
-)
-from app.tip.graphs.nodes.derive_baby_age import shanghai_now
+from app.care_alert.graphs.nodes.prompts.system import CARE_ALERT_SYSTEM_PROMPT
+from app.shared.baby_age import shanghai_now
 
 
 def build_care_alert_system_prompt() -> str:
     """
-    系统提示词：从本地 prompt 文档加载（缺失则 bootstrap / 版本迁移）。
+    系统提示词：内联常量（判定规则 + JSON 格式 + 中文思考）。
 
     Returns:
-        系统提示词字符串（输出格式 + 可选对比样例）
+        系统提示词字符串
     """
-    doc = load_or_bootstrap_prompt()
-    return build_system_prompt_from_doc(doc)
+    return CARE_ALERT_SYSTEM_PROMPT
 
 
 def _format_age(baby_age_months: Optional[int]) -> str:
@@ -58,7 +54,7 @@ def build_care_alert_user_message(
         history_summary: Go 可选透传历史摘要
 
     Returns:
-        用户消息字符串（动态，不写入 prompt.json）
+        用户消息字符串
     """
     now = shanghai_now()
     history_text, legend = build_care_alert_history_prompt_blocks(

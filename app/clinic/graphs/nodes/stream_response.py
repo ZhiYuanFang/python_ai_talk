@@ -7,8 +7,8 @@ LangGraph 节点：用于诊疗场景的流式回答生成。
 返回异步生成器，用于 SSE 流式输出。
 
 设计思路：
-1. 从 State 中读取 question、history_events、knowledge、baby_profile、llm_model
-2. 使用诊疗提示词构建系统提示词和用户消息
+1. 从 State 中读取 question、history_events、baby_profile、llm_model
+2. 使用诊疗提示词构建系统提示词和用户消息（无通识知识注入）
 3. 调用 llm_client.stream 进行流式调用
 4. 支持 thinking 模式
 5. 返回异步生成器（注意：LangGraph 流式节点需要特殊处理）
@@ -45,15 +45,14 @@ async def stream_response(state: Any) -> AsyncGenerator[LLMResponse, None]:
     此函数提供核心的流式调用逻辑。
 
     Args:
-        state: 图 State（Pydantic 或 dict；含 question, history_events, knowledge, baby_profile, llm_model）
+        state: 图 State（Pydantic 或 dict；含 question, history_events, baby_profile, llm_model）
 
     Yields:
         LLMResponse 对象（流式逐块返回）
     """
-    # 读取输入参数（chat_context 为 tip/clinic 共享会话，与喂养史分离）
+    # 读取输入参数（chat_context 为 clinic 会话，与喂养史分离）
     question = state_get(state, "question", "")
     history_events = state_get(state, "history_events", [])
-    knowledge = state_get(state, "knowledge", [])
     baby_profile = state_get(state, "baby_profile", {})
     chat_context = state_get(state, "chat_context") or ""
     baby_age_months = state_get(state, "baby_age_months")
@@ -65,12 +64,11 @@ async def stream_response(state: Any) -> AsyncGenerator[LLMResponse, None]:
         state_get(state, "llm_model") or state_get(state, "model_config")
     )
 
-    # 构建提示词
+    # 构建提示词（无通识「知识库参考」）
     system_prompt = build_clinic_answer_system_prompt(needs_history=needs_history)
     user_message = build_clinic_answer_user_message(
         question=question,
         history_events=history_events,
-        knowledge_results=knowledge,
         baby_profile=baby_profile,
         chat_context=chat_context,
         baby_age_months=baby_age_months,

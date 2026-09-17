@@ -3,7 +3,7 @@ FastAPI 应用主入口
 
 业务说明：
 本文件是 Python AI 服务的启动入口，负责初始化 FastAPI 应用、加载配置、注册路由。
-包含知识飞轮的定期清理任务，自动清理低质量知识。
+后台任务仅清理低分意图缓存（feeding_intents）；不再维护通识知识飞轮。
 采用延迟初始化 + 后台预热策略，确保服务快速启动并响应健康检查。
 
 设计思路：
@@ -12,8 +12,8 @@ FastAPI 应用主入口
 3. 注册 API 路由，组织接口结构
 4. 支持跨域请求（CORS）
 5. 提供优雅的启动和关闭钩子
-6. 启动后台定时任务，定期清理低质量知识（知识飞轮）
-7. 向量存储采用后台预热，不阻塞服务启动
+6. 启动后台定时任务，定期清理低分意图缓存
+7. 意图缓存 embedding 在后台预热，不阻塞服务启动
 """
 
 import asyncio
@@ -32,7 +32,6 @@ from fastapi.responses import JSONResponse
 from app.api.routes import router
 from app.config.settings import settings
 from app.shared.http_client import http_client
-from app.shared.vector_store import vector_store
 
 # 后台任务取消对象
 _cleanup_task = None
@@ -41,21 +40,13 @@ _warmup_task = None
 
 async def _periodic_cleanup():
     """
-    定期清理低质量知识与低分意图缓存
+    定期清理低分意图缓存
 
     业务逻辑：
     1. 每隔 24 小时执行一次
-    2. 清理通识知识 quality_score 低于 0.3 的条目
-    3. 清理 feeding_intents 质量分低于 0.3 的条目，不得动知识库
+    2. 仅清理 feeding_intents 质量分低于 0.3 的条目
     """
     while True:
-        try:
-            logger.info("开始执行定期清理低质量知识任务（知识飞轮）...")
-            vector_store.cleanup_low_quality_knowledge(threshold=0.3)
-            logger.info("定期清理任务执行完成")
-        except Exception as e:
-            logger.error(f"定期清理任务执行失败: {str(e)}", exc_info=True)
-
         try:
             from app.feeding.services.intent_cache_store import intent_cache_store
 
@@ -65,69 +56,42 @@ async def _periodic_cleanup():
         except Exception as e:
             logger.error(f"意图缓存清理失败: {str(e)}", exc_info=True)
 
-        # 等待 24 小时后再次执行
         await asyncio.sleep(24 * 60 * 60)
 
 
-async def _warmup_vector_stores():
+async def _warmup_intent_cache():
     """
-    后台预热向量存储的任务
+    后台预热意图缓存向量存储
 
     业务逻辑：
-    1. 在后台线程中初始化知识向量存储（加载 Embedding 模型和 ChromaDB）
-    2. 检查并构建向量库（如果为空）
-    3. 不初始化 feeding_events（事件名向量已拆除）
-    4. 不阻塞服务启动，健康检查可正常响应
+    1. 触发 feeding_intents 集合初始化（加载 Embedding）
+    2. 可选：启动时清空测脏缓存
+    3. 不阻塞服务启动
     """
     try:
-        logger.info("开始后台预热向量存储...")
+        logger.info("开始后台预热意图缓存...")
+        from app.feeding.services.intent_cache_store import intent_cache_store
 
-        # 初始化知识向量存储服务
-        # 这会加载 BGE-small-zh-v1.5 模型并初始化 Chroma 客户端
-        # 如果是第一次启动，可能需要下载模型（约 90MB）
-        logger.info("初始化知识向量存储服务...")
-        doc_count = vector_store.get_document_count()
+        # 触发懒加载初始化
+        _ = intent_cache_store.search("__warmup__", n_results=1)
+        logger.info("意图缓存预热完成（feeding_intents）")
 
-        # 检查向量库是否为空，如果为空则尝试构建
-        if doc_count == 0:
-            logger.warning("向量库为空，尝试自动构建...")
-            try:
-                # 尝试从知识库目录加载文档并构建向量库
-                from scripts.build_vector_db import build_vector_db
-                build_vector_db()
-                logger.info("向量库构建完成")
-            except Exception as e:
-                logger.error(f"向量库自动构建失败: {str(e)}", exc_info=True)
-        else:
-            # 向量库已有数据，补全旧数据的扩展元数据字段（用于知识飞轮）
-            logger.info("向量库已有数据，检查并补全扩展元数据...")
-            vector_store.ensure_metadata_completeness()
-
-        # 意图路径只使用 feeding_intents；不再创建或填充 feeding_events
-        logger.info("跳过喂养事件名向量预热（feeding_events 已拆除）")
-        # 运维开关：一次性丢掉测脏的意图缓存，不得动知识库
         if settings.clear_feeding_intents_on_startup:
-            from app.feeding.services.intent_cache_store import intent_cache_store
-
             intent_cache_store.reset_collection()
             logger.warning(
                 "CLEAR_FEEDING_INTENTS_ON_STARTUP=true，已清空 feeding_intents；"
                 "完成后请改回 false，避免每次重启丢掉飞轮"
             )
-
-        logger.info("向量存储后台预热完成")
-
     except Exception as e:
-        logger.error(f"向量存储后台预热失败: {str(e)}", exc_info=True)
+        logger.error(f"意图缓存后台预热失败: {str(e)}", exc_info=True)
 
 
 # 配置日志系统
-# 设置日志级别（DEBUG < INFO < WARNING < ERROR < CRITICAL）
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper()),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.StreamHandler(),  # 输出到控制台
+        logging.StreamHandler(),
     ],
 )
 
@@ -136,18 +100,12 @@ class _HealthCheckAccessFilter(logging.Filter):
     """过滤健康检查路径的 uvicorn access log，避免 Docker healthcheck 刷屏。"""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        # uvicorn 默认格式形如：'127.0.0.1:12345 - "GET /v1/health HTTP/1.1" 200'
         return "/v1/health" not in record.getMessage()
 
 
-# 挂到 uvicorn.access，覆盖 python -m app.main 与 Docker uvicorn CMD 两条启动路径
 logging.getLogger("uvicorn.access").addFilter(_HealthCheckAccessFilter())
-
-# 静音 chromadb 与 posthog≥6 不兼容产生的 telemetry ERROR 刷屏
-# Settings(anonymized_telemetry=False) 仍可能触发失败路径并打 ERROR，故抬高该 logger
 logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 
-# 初始化日志记录器
 logger = logging.getLogger(__name__)
 
 
@@ -164,40 +122,29 @@ def create_app() -> FastAPI:
     Returns:
         FastAPI 应用实例
     """
-    # 创建 FastAPI 应用实例
     app = FastAPI(
-        title="Python AI Talk Service",  # 应用名称
-        description="母婴喂养场景的自然语言意图识别服务",  # 应用描述
-        version="0.1.0",  # 应用版本
-        docs_url="/docs",  # Swagger UI 文档地址
-        redoc_url="/redoc",  # ReDoc 文档地址
+        title="Python AI Talk Service",
+        description="母婴喂养场景的自然语言意图识别服务",
+        version="0.1.0",
+        docs_url="/docs",
+        redoc_url="/redoc",
     )
 
-    # 添加 CORS 中间件
-    # 允许跨域请求，方便前端或其他服务调用
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # 允许所有来源（生产环境应限制具体域名）
-        allow_credentials=True,  # 允许携带凭证
-        allow_methods=["*"],  # 允许所有 HTTP 方法
-        allow_headers=["*"],  # 允许所有请求头
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
-    # 注册 API 路由
-    # 将路由模块中的所有接口注册到应用中
     app.include_router(router)
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_exception_handler(
         request: Request, exc: RequestValidationError
     ):
-        """
-        请求体/查询参数校验失败（422）时记录摘要，便于区分缺字段与别名问题。
-
-        业务说明：
-        不改变 FastAPI 默认 422 响应结构，仅额外打 WARNING 日志。
-        """
-        # 截断错误列表，避免日志过长
+        """请求体/查询参数校验失败（422）时记录摘要。"""
         errors = exc.errors()[:8]
         logger.warning(
             f"请求校验失败 422: path={request.url.path}, errors={errors}"
@@ -207,8 +154,6 @@ def create_app() -> FastAPI:
             content={"detail": exc.errors()},
         )
 
-    # 添加启动钩子
-    # 在应用启动前执行初始化操作
     @app.on_event("startup")
     async def startup_event():
         """
@@ -216,42 +161,26 @@ def create_app() -> FastAPI:
 
         业务逻辑：
         1. 记录启动日志
-        2. 启动向量存储后台预热任务（不阻塞服务启动）
-        3. 启动知识飞轮后台任务（定期清理低质量知识）
-        4. 服务可立即响应健康检查请求
+        2. 启动意图缓存后台预热
+        3. 启动意图缓存定期清理
         """
         logger.info("Python AI Talk Service 启动中...")
 
-        # 启动向量存储后台预热任务
-        # 预热在后台执行，不阻塞服务启动
-        # 这样健康检查可以立即响应，而向量库在后台慢慢初始化
         global _warmup_task
-        _warmup_task = asyncio.create_task(_warmup_vector_stores())
-        logger.info("向量存储后台预热任务已启动")
+        _warmup_task = asyncio.create_task(_warmup_intent_cache())
+        logger.info("意图缓存后台预热任务已启动")
 
-        # 启动知识飞轮后台任务（定期清理低质量知识）
         global _cleanup_task
         _cleanup_task = asyncio.create_task(_periodic_cleanup())
-        logger.info("知识飞轮后台任务已启动（每 24 小时清理一次低质量知识）")
+        logger.info("意图缓存清理任务已启动（每 24 小时）")
 
         logger.info("Python AI Talk Service 启动完成")
 
-    # 添加关闭钩子
-    # 在应用关闭前执行清理操作
     @app.on_event("shutdown")
     async def shutdown_event():
-        """
-        应用关闭钩子
-
-        业务逻辑：
-        1. 取消后台预热任务
-        2. 取消后台任务（知识飞轮定期清理）
-        3. 关闭 HTTP 客户端连接
-        4. 记录关闭日志
-        """
+        """应用关闭钩子：取消后台任务并关闭 HTTP 客户端。"""
         logger.info("Python AI Talk Service 关闭中...")
 
-        # 取消后台预热任务
         global _warmup_task
         if _warmup_task:
             _warmup_task.cancel()
@@ -259,9 +188,8 @@ def create_app() -> FastAPI:
                 await _warmup_task
             except asyncio.CancelledError:
                 pass
-            logger.info("向量存储后台预热任务已取消")
+            logger.info("意图缓存预热任务已取消")
 
-        # 取消后台任务（知识飞轮定期清理）
         global _cleanup_task
         if _cleanup_task:
             _cleanup_task.cancel()
@@ -269,36 +197,23 @@ def create_app() -> FastAPI:
                 await _cleanup_task
             except asyncio.CancelledError:
                 pass
-            logger.info("知识飞轮后台任务已取消")
+            logger.info("意图缓存清理任务已取消")
 
-        # 关闭 HTTP 客户端连接
         await http_client.close()
-
         logger.info("Python AI Talk Service 关闭完成")
 
     return app
 
 
-# 创建 FastAPI 应用实例
 app = create_app()
 
 
 if __name__ == "__main__":
-    """
-    应用入口
-
-    业务逻辑：
-    1. 使用 uvicorn 启动 FastAPI 应用
-    2. 配置监听地址和端口
-    3. 配置工作进程数
-    """
-    # 使用 uvicorn 启动应用
-    # uvicorn 是一个高性能的 ASGI 服务器，专门用于运行 FastAPI 等异步 Web 框架
     uvicorn.run(
-        "app.main:app",  # 应用模块路径
-        host="0.0.0.0",  # 监听所有网络接口
-        port=settings.server_port,  # 服务端口
-        workers=4,  # 工作进程数（生产环境可根据 CPU 核心数调整）
-        reload=False,  # 开发环境自动重载（生产环境应关闭）
-        log_level=settings.log_level.lower(),  # 日志级别
+        "app.main:app",
+        host="0.0.0.0",
+        port=settings.server_port,
+        workers=4,
+        reload=False,
+        log_level=settings.log_level.lower(),
     )

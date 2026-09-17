@@ -3,6 +3,7 @@
 
 业务说明：
 Pydantic State；原 model_config 字段改名为 llm_model。
+已去掉 Q&A 捷径与通识检索相关字段义务（knowledge 可空置兼容旧调用）。
 """
 
 from __future__ import annotations
@@ -24,21 +25,15 @@ class ClinicState(BaseModel):
     llm_model: Dict[str, Any] = Field(default_factory=dict)
     event_dictionary: List[Dict[str, Any]] = Field(default_factory=list)
     chat_context: str = ""
+    # 历史兼容旗标；图路径已不再做通识检索
     skip_knowledge: bool = False
     force_needs_history: bool = False
-    block_fast_path: bool = False
 
     needs_history: bool = False
     data_requirement: Optional[DataRequirement] = None
     history_events: List[Dict[str, Any]] = Field(default_factory=list)
+    # 兼容旧字段名；本变更后不再填充通识检索结果
     knowledge: List[Dict[str, Any]] = Field(default_factory=list)
     baby_profile: Dict[str, Any] = Field(default_factory=dict)
     baby_age_months: Optional[int] = None
     age_band: Optional[str] = None
-    standalone_question: Optional[str] = None
-    qa_rewrite_miss_reason: str = ""
-    qa_hit: bool = False
-    qa_answer: str = ""
-    qa_miss_reason: str = ""
-    qa_match_id: str = ""
-    qa_match_score: float = 0.0

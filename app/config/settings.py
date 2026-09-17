@@ -61,43 +61,16 @@ class Settings(BaseSettings):
     # Redis 配置
     redis_url: str = "redis://localhost:6379/0"  # Redis 连接地址
 
-    # 向量数据库配置
+    # 向量数据库配置（意图缓存 feeding_intents 使用）
     chroma_persist_dir: str = "data/chroma_db"  # Chroma 数据持久化目录
     embedding_model: str = "BAAI/bge-small-zh-v1.5"  # Embedding 模型名称
 
     # 缓存配置
     event_cache_ttl_hours: int = 24  # 事件字典缓存 TTL（小时）
 
-    # 陪伴会话（tip/clinic 共享）：按 device_no，近 N 轮，TTL 天（滑动续期）
+    # 陪伴会话（clinic 续聊）：按 device_no，近 N 轮，TTL 天（滑动续期）
     companion_session_ttl_days: int = 7
     companion_session_max_turns: int = 3  # 进 prompt / Redis 截断一致，默认 3 轮省 token
-
-    # 护理留意飞轮：suggestionId → 建议快照映射 TTL（天）
-    care_alert_flywheel_ttl_days: int = 7
-    # 全局 prompt / ledger 目录（Docker 挂载卷；本地默认相对项目 data/）
-    care_alert_prompt_dir: str = "data/care_alert"
-    # 对比样例块硬顶字符数（防 prompt 无限增长）
-    care_alert_examples_max_chars: int = 1200
-    # 每累计多少条新反馈触发一次样例重写
-    care_alert_flywheel_rewrite_every: int = 20
-    # 距上次重写最少间隔（秒）；与条数阈值任一满足即可重写
-    care_alert_flywheel_rewrite_min_interval_s: int = 3600
-    # 对比样例槽位最低证据条数（单侧）
-    care_alert_flywheel_min_evidence: int = 2
-    # ledger 滚动保留最近行数
-    care_alert_ledger_max_lines: int = 500
-
-    # 知识注入预算：检索后按 score 过滤，默认 K=1 且 score>=0.6，否则不注入
-    knowledge_min_score: float = 0.6
-    knowledge_prompt_top_k: int = 1
-    # 通识知识 quality_score 硬过滤下限（缺省元数据按 store 默认 0.8）
-    knowledge_quality_min: float = 0.7
-
-    # Q&A 捷径：改写超时、相似度/质量阈值、总开关
-    qa_fast_path_enabled: bool = True
-    qa_sim_threshold: float = 0.8
-    qa_quality_min: float = 0.7
-    rewrite_timeout_s: float = 5.0
 
     # 启动一次性清空意图缓存 feeding_intents（默认关；清完务必改回 false）
     clear_feeding_intents_on_startup: bool = False

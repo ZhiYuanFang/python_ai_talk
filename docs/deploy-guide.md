@@ -54,8 +54,8 @@ PYTHON_AI_TALK_DEEPSEEK_API_KEY   → DEEPSEEK_API_KEY
 Python AI Talk 是一个基于 FastAPI + LangGraph 的母婴喂养意图识别微服务，提供以下能力：
 
 - **意图分析**：识别用户自然语言中的喂养记录、历史查询、成长建议等意图
-- **智能陪伴（tip/clinic）**：懂娃闺蜜口语陪伴；添加事件走 tip 开场，可用 clinic 续聊；Python 按 `device_no` Redis 会话共享近轮（TTL 7 天）；续聊时隐式判定上一条建议是否采纳以驱动知识飞轮与全局 Q&A 捷径。显式 `/v1/clinic/feedback`、`/v1/tip/feedback` 已下线（Go/Flutter 旧调用将 404，需跨仓停调）
-- **向量数据库**：基于 Chroma + BGE 的中文母婴知识库
+- **智能陪伴（clinic）**：懂娃闺蜜口语续聊；Python 按 `device_no` Redis 会话近轮（TTL 7 天）。tip 开场、通识/Q&A 飞轮、显式 clinic|tip feedback 均已下线
+- **向量数据库**：基于 Chroma + BGE 的意图缓存（通识知识库已退役）
 
 ### 1.2 部署架构
 
@@ -135,7 +135,6 @@ python_ai_talk/
 │   │       ├── intent.py           # 意图分析路由（含确认接口）
 │   │       ├── clinic.py           # 诊疗问答路由
 │   │       ├── health.py           # 健康检查路由
-│   │       └── tip.py              # 小贴士路由
 │   ├── feeding/                    # 喂养动作相关代码
 │   │   ├── graphs/                 # LangGraph 状态图和节点
 │   │   ├── schemas/                # 数据模型
@@ -221,19 +220,13 @@ python_ai_talk/
 | 测试环境 | `/app/data/chroma_db` | Docker Volume |
 | 生产环境 | `/app/data/chroma_db` | Docker Volume |
 
-> **注意**：`feeding_events` 和 `mother_baby_knowledge` 共用同一个 ChromaDB 持久化目录（`CHROMA_PERSIST_DIR`），通过 Collection 名称隔离。数据备份和恢复时需同时包含两个 Collection。
+> **注意**：Chroma 持久化目录主要用于意图缓存集合 `feeding_intents`（通识 `mother_baby_knowledge` / Q&A 已退役）。
 
-### 2.1.5 护理留意 Prompt Volume 挂载路径
+### 2.1.5 护理留意提示词
 
-护理留意全局 prompt 飞轮将 `prompt.json` / `ledger.jsonl` 写在独立目录（与 chroma 卷并列），**必须挂载**，否则容器重建后飞轮优化会丢失。
+护理留意 system 提示词已内联代码（`app/care_alert/graphs/nodes/prompts/system.py`），无需挂载 `data/care_alert` 卷。
 
-| 环境 | 容器内路径 | 宿主机挂载 |
-|------|-----------|-----------|
-| 本地开发 | `/app/data/care_alert` | 项目 `data/care_alert/` 目录 |
-| 测试环境 | `/app/data/care_alert` | 同基线 bind 或独立 Volume |
-| 生产环境 | `/app/data/care_alert` | 同基线 bind 或独立 Volume |
-
-> **注意**：多副本部署时各实例须共享同一 care_alert 卷，飞轮写依赖文件锁；未共享则会分叉。
+> **注意**：已删除 `POST /v1/care-alert/feedback` 与 `/v1/knowledge/*`；Go 须停调。不再写入 ledger / 对比样例飞轮。
 
 ---
 
@@ -300,7 +293,6 @@ app/
 ├── clinic/                     # 喂养建议相关代码
 │   ├── graphs/                 # LangGraph 状态图
 │   │   ├── clinic_graph.py     # 诊疗问答图
-│   │   ├── tip_graph.py        # 小贴士图
 │   │   ├── nodes/              # 图节点
 │   │   └── states/             # 图状态定义
 │   ├── schemas/                # 数据模型
@@ -310,7 +302,6 @@ app/
 ├── api/routes/                 # API 路由
 │   ├── knowledge.py            # **新增**：知识库管理接口（上传、列表、详情、更新、删除、统计）
 │   ├── clinic.py               # 陪伴续聊路由（隐式飞轮 + Q&A 捷径）
-│   ├── tip.py                  # 事件开场路由（共享会话）
 │   └── ...                     # 其他路由
 │
 └── shared/                     # 共享服务
@@ -344,12 +335,11 @@ app/
 | 知识库删除 | DELETE | `/v1/knowledge/{doc_id}` | 删除文档 |
 | 知识库统计 | GET | `/v1/knowledge/stats` | 获取知识库统计信息 |
 | 知识库分类 | GET | `/v1/knowledge/categories` | 获取所有知识分类 |
-| 陪伴续聊（流式） | POST | `/v1/clinic/stream` | 与 tip 共享 `device_no` 会话；隐式采纳飞轮 + Q&A 捷径 |
-| 事件开场（流式） | POST | `/v1/tip/stream` | 添加事件后闺蜜开场，写入共享会话 |
+| 陪伴续聊（流式） | POST | `/v1/clinic/stream` | 按 `device_no` 会话续聊（真流式 LLM） |
 
 **流式响应说明**：
 
-诊疗和小贴士流式接口含 `done` 事件与 `answer_id`（会话/排障用）。质量分更新走隐式采纳，不再提供显式 feedback 接口。
+clinic 流式接口含 `done` 事件与 `answer_id`（会话/排障用）。tip / 显式 feedback 已下线。
 
 ```
 data: {"type": "done", "content": "回答完成", "answer_id": "clinic_abc123"}
@@ -885,13 +875,6 @@ docker compose --env-file env/.env.prod \
 | `GLM_API_KEY` | 智谱 GLM API 密钥 | 是 | `xxx` | `xxx` | `xxx` |
 | `CHROMA_PERSIST_DIR` | 向量库存储路径 | 否 | `/app/data/chroma_db` | `/app/data/chroma_db` | `/app/data/chroma_db` |
 | `EMBEDDING_MODEL` | Embedding 模型 | 否 | `BAAI/bge-small-zh-v1.5` | `BAAI/bge-small-zh-v1.5` | `BAAI/bge-small-zh-v1.5` |
-| `CARE_ALERT_PROMPT_DIR` | 护理留意全局 prompt/ledger 目录 | 否 | `data/care_alert` | `/app/data/care_alert` | `/app/data/care_alert` |
-| `CARE_ALERT_EXAMPLES_MAX_CHARS` | 对比样例块最大字符数 | 否 | `1200` | `1200` | `1200` |
-| `CARE_ALERT_FLYWHEEL_REWRITE_EVERY` | 累计多少条反馈触发重写 | 否 | `20` | `20` | `20` |
-| `CARE_ALERT_FLYWHEEL_REWRITE_MIN_INTERVAL_S` | 重写最小间隔（秒） | 否 | `3600` | `3600` | `3600` |
-| `CARE_ALERT_FLYWHEEL_MIN_EVIDENCE` | 样例槽位单侧最低证据条数 | 否 | `2` | `2` | `2` |
-| `CARE_ALERT_LEDGER_MAX_LINES` | ledger 滚动保留行数 | 否 | `500` | `500` | `500` |
-| `CARE_ALERT_FLYWHEEL_TTL_DAYS` | suggestion 快照 Redis TTL（天） | 否 | `7` | `7` | `7` |
 | `CLEAR_FEEDING_INTENTS_ON_STARTUP` | 启动一次性清空意图缓存 `feeding_intents` | 否 | `false` | `false` | `false` |
 
 ### 7.2 变量获取途径

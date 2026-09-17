@@ -11,6 +11,9 @@
 """
 
 
+from app.shared.graphs.nodes.prompts.system import NEEDS_HISTORY_SYSTEM_PROMPT
+
+
 def build_needs_history_system_prompt() -> str:
     """
     构建「是否需要喂养历史」的系统提示词。
@@ -18,21 +21,7 @@ def build_needs_history_system_prompt() -> str:
     业务逻辑：
     引导模型宽松判断；要求严格 JSON，便于解析失败时走默认 true。
     """
-    return """
-你是家长喂养陪伴场景的数据助手。
-请判断：回答用户这句话时，是否可能需要参考该宝宝的喂养历史记录（吃奶、睡觉、尿布等）。
-
-输出格式（只返回 JSON）：
-{"needs_history": true}
-
-判定（宽松，宁可多拉）：
-- true：查记录/上次/什么时候；总结/趋势/最近几天；抱怨近期模式（总醒、吃得少）；喂养相关建议有近况记录会答得更好
-- false：纯闲聊、情绪倾诉且无喂养语境、与该宝宝近期记录无关的通用知识
-
-注意事项：
-1. 拿不准就 true
-2. 只返回 JSON，不要解释文字
-"""
+    return NEEDS_HISTORY_SYSTEM_PROMPT
 
 
 def build_needs_history_user_message(user_text: str) -> str:

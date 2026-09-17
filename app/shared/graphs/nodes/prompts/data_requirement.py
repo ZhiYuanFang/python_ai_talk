@@ -15,6 +15,8 @@
 import json
 from typing import Any, Dict, List
 
+from app.shared.graphs.nodes.prompts.system import DATA_REQUIREMENT_SYSTEM_PROMPT
+
 
 def build_data_requirement_system_prompt() -> str:
     """
@@ -27,43 +29,7 @@ def build_data_requirement_system_prompt() -> str:
     Returns:
         系统提示词字符串
     """
-    return f"""
-你是一个专业的数据分析助手。
-请分析用户的问题，判断需要查询哪些类型的历史记录以及时间范围。
-
-输出格式：
-{{
-    "event_ids": ["1", "2"],
-    "time_range": "today",
-    "limit": 20
-}}
-
-time_range 可选值：
-- "today": 今天（00:00 ~ 现在）
-- "yesterday": 昨天
-- "last_7_days": 最近7天
-- "last_30_days": 最近30天
-- "custom": 自定义时间范围（需同时提供 start_time 和 end_time）
-
-查「上次 / 上一次 / 什么时候 / 分别」时：
-- 从可用事件中选出提到的类型填入 event_ids（如拉屎、睡觉）
-- 「X 和 Y 分别」→ 放入多个 event_ids
-- time_range 优先 last_7_days，若不确定用 last_30_days
-- limit 至少 20，保证每种事件能取到最近一条
-
-查「总结 / 变化 / 趋势 / 最近N天 / 这几天怎么样」时：
-- 「吃奶 / 喝奶」→ 放入所有奶相关事件ID（母乳直喂、瓶喂、配方奶等，按可用事件选全）
-- 「最近7天 / 最近一周」→ time_range 用 last_7_days；「最近30天 / 这个月」→ last_30_days
-- limit 建议 80～100，便于看趋势（不要只取几条）
-
-注意事项：
-1. event_ids 使用事件的字符串ID（如 "1"、"2"），从可用事件中选择
-2. 如果用户问题涉及所有喂养事件，返回所有相关事件的ID
-3. 如果无法确定具体事件，返回空列表（表示拉取所有类型）
-4. limit 字段表示需要返回的记录数量上限；点查默认20，汇总题用更大值
-5. 返回结果必须是合法的 JSON 格式
-6. 只返回 JSON，不要有任何额外的解释文字
-"""
+    return DATA_REQUIREMENT_SYSTEM_PROMPT
 
 
 def build_data_requirement_user_message(user_text: str, event_dictionary: List[Dict[str, Any]]) -> str:

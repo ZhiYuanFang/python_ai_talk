@@ -4,7 +4,7 @@
 
 编写或修改代码、OpenSpec 产物前，**必须**阅读：
 
-1. **[openspec/project.md](openspec/project.md)** — 工程约束全文（代码注释、模块分离、OpenSpec 基线、归档等）。
+1. **[openspec/project.md](openspec/project.md)** — 工程约束全文（代码注释、模块分离、OpenSpec 基线、归档、LLM Agent 约定等）。
 2. **[openspec/specs/v0.0.1.md](openspec/specs/v0.0.1.md)** — 当前合并行为基线（Requirement / Scenario 验收）。
 
 OpenSpec CLI 制品生成时亦须对照 `openspec/project.md`；细则以 project.md 为准，本文仅摘要高频 MUST。
@@ -13,7 +13,16 @@ OpenSpec CLI 制品生成时亦须对照 `openspec/project.md`；细则以 proje
 
 - **禁止**生成或修改任何测试文件；**仅当用户明确要求写测试时**例外。不得在 OpenSpec tasks 中安排测试相关任务。
 - 业务代码须有详细**中文**注释（文件/类/方法/关键行）。
-- 按业务模块分离（`feeding` / `clinic` / `tip` / `shared` / `config`）；禁止 feeding↔clinic 直接互引。
+- 按业务模块分离（`feeding` / `clinic` / `care_alert` / `growth_trajectory` / `shared` / `config`）；禁止 feeding↔clinic 直接互引。**已下线 tip**，禁止新建 tip 产品线。
+
+## LLM Agent 提示词与流式（摘要）
+
+权威全文见 `openspec/project.md`「1.0 LLM Agent 提示词与流式约定」。高频 MUST：
+
+- 每存活模块 system 文案落在 `prompts/system.py` 常量；禁止外置 `prompt.json` 飞轮。
+- 主回答与内部思考（reasoning）须使用**中文**。
+- 对外 SSE 主 LLM 必须 `llm_client.stream`；禁止 invoke 全文再假 SSE。内部判定节点可用 invoke。
+- 禁止恢复 tip / care-alert 外置 prompt 飞轮；意图缓存飞轮除外。
 
 ## OpenSpec 工作流
 

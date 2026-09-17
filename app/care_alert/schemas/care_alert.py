@@ -192,7 +192,7 @@ class CareAlertAnalyzeRequest(BaseModel):
 
     业务说明：
     Go 传入设备、逻辑日、模型标识；可选透传月龄/历史摘要/KG 上下文。
-    未透传时由本仓按 tip 同源节点拉取历史、画像与向量知识。
+    未透传时由本仓按 tip 同源节点拉取历史与画像（不通识检索）。
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -233,7 +233,7 @@ class CareAlertAnalyzeRequest(BaseModel):
     kg_context: Optional[Any] = Field(
         None,
         validation_alias=AliasChoices("kg_context", "kgContext"),
-        description="可选预拼知识；空则本仓向量检索",
+        description="可选透传字段（本仓不注入 prompt，忽略）",
     )
 
     @field_validator("device_no")
@@ -244,66 +244,3 @@ class CareAlertAnalyzeRequest(BaseModel):
         if not s:
             raise ValueError("device_no 不能为空")
         return s
-
-
-class CareAlertFeedbackRequest(BaseModel):
-    """
-    Go → Python 固定意图 prompt 飞轮（无 NLP）
-
-    业务说明：
-    仅接受 ignore|follow_up；按 suggestion_id 取建议快照写入本地 ledger，
-    驱动全局对比样例 prompt 优化（不通识质量分）。
-    Go 在本接口失败时仍对客户端返回成功（best-effort）。
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    device_no: Annotated[
-        str,
-        Field(
-            validation_alias=AliasChoices("device_no", "deviceNo"),
-            description="设备编号（宝宝维度）",
-        ),
-    ]
-    suggestion_id: Annotated[
-        str,
-        Field(
-            validation_alias=AliasChoices("suggestion_id", "suggestionId"),
-            description="当日缓存项 UUID",
-        ),
-    ]
-    intent: Annotated[
-        str,
-        Field(..., description="固定意图：ignore|follow_up"),
-    ]
-    day: Annotated[
-        Optional[str],
-        BeforeValidator(_coerce_optional_str),
-        Field(default=None, description="逻辑日 YYYY-MM-DD（Asia/Shanghai）"),
-    ] = None
-
-    @field_validator("device_no", "suggestion_id")
-    @classmethod
-    def _non_empty_id(cls, v: str) -> str:
-        """device_no / suggestion_id 去空白后不得为空。"""
-        s = (v or "").strip()
-        if not s:
-            raise ValueError("字段不能为空")
-        return s
-
-    @field_validator("intent")
-    @classmethod
-    def _intent_fixed(cls, v: str) -> str:
-        """仅允许固定意图枚举。"""
-        s = (v or "").strip()
-        if s not in ("ignore", "follow_up"):
-            raise ValueError("intent 必须为 ignore 或 follow_up")
-        return s
-
-
-class CareAlertFeedbackResponse(BaseModel):
-    """飞轮 ACK（HTTP 200 + ok=true；prompt 飞轮副作用 best-effort）。"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    ok: bool = True

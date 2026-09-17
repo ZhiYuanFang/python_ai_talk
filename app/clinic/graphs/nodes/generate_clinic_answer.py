@@ -6,8 +6,8 @@
 供 POST /v1/clinic 非流式同步生成；clinic HTTP 流式仍走 stream_response。
 
 设计思路：
-1. 从 state 读取 question、chat_context、history、knowledge、baby_profile、llm_model
-2. 拼装 system/user 消息
+1. 从 state 读取 question、chat_context、history、baby_profile、llm_model
+2. 拼装 system/user 消息（无通识知识注入）
 3. invoke 返回 {"response": "..."}
 """
 
@@ -37,7 +37,6 @@ async def generate_clinic_answer(state: Any) -> Dict[str, Any]:
     """
     question = state_get(state, "question") or state_get(state, "user_input") or ""
     history_events = state_get(state, "history_events", [])
-    knowledge = state_get(state, "knowledge", [])
     baby_profile = state_get(state, "baby_profile", {})
     chat_context = state_get(state, "chat_context") or ""
     baby_age_months = state_get(state, "baby_age_months")
@@ -50,7 +49,6 @@ async def generate_clinic_answer(state: Any) -> Dict[str, Any]:
     user_message = build_clinic_answer_user_message(
         question=question,
         history_events=history_events,
-        knowledge_results=knowledge,
         baby_profile=baby_profile,
         chat_context=chat_context,
         baby_age_months=baby_age_months,

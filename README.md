@@ -5,10 +5,9 @@
 ## 功能特性
 
 - **意图分析**：识别用户自然语言中的喂养记录、历史查询、成长建议等意图
-- **胖宝诊疗**：结合向量数据库和 LLM 提供母婴健康诊疗建议
-- **向量数据库**：基于 Chroma + BGE 的中文母婴知识库
-- **向量匹配**：喂养事件向量库支持语义匹配，优先于 LLM 分类，降低延迟和成本
-- **数据飞轮**：用户确认后自动学习表达，持续优化匹配准确率；用户否定后自动删除错误向量
+- **意图缓存飞轮**：确认落库成功后缓存整句 CRUD 意图，重复表述可加速识别
+- **智能陪伴**：clinic 续聊（画像/喂养史 + LLM；不通识检索；tip 已下线）
+- **护理留意**：日分析内联 system 提示词 + 近期史（无 feedback / 外置 prompt 飞轮）
 - **确认流程**：支持用户确认/否定反馈，结合 LangGraph MemorySaver 实现中断恢复
 
 ## 项目结构
@@ -19,9 +18,10 @@ python_ai_talk/
 │   ├── main.py                     # FastAPI 入口
 │   ├── api/routes/                 # API 路由
 │   │   ├── intent.py               # 意图分析路由（含确认接口）
-│   │   ├── clinic.py               # 诊疗问答路由
-│   │   ├── health.py               # 健康检查路由
-│   │   └── tip.py                  # 小贴士路由
+│   │   ├── clinic.py               # 陪伴续聊路由
+│   │   ├── care_alert.py           # 护理留意路由
+│   │   ├── growth_trajectory.py    # 成长轨迹路由
+│   │   └── health.py               # 健康检查路由
 │   ├── feeding/                    # 喂养动作相关代码
 │   │   ├── graphs/                 # LangGraph 状态图
 │   │   │   ├── intent_graph.py     # 意图分析图（向量匹配→分类→确认→后处理）
@@ -30,23 +30,23 @@ python_ai_talk/
 │   │   │   │   ├── match_event_by_vector.py # 向量匹配
 │   │   │   │   ├── prepare_confirm.py       # 准备确认
 │   │   │   │   ├── handle_feedback.py       # 处理用户反馈
-│   │   │   │   └── prompts/                 # LLM 提示词
+│   │   │   │   └── prompts/                 # LLM 提示词（含 system.py）
 │   │   │   └── states/             # 图状态定义
 │   │   │       └── intent_state.py          # 意图分析状态
 │   │   ├── schemas/                # 数据模型
 │   │   │   └── intent.py           # 意图分析请求/响应模型
 │   │   └── services/               # 业务服务
 │   │       ├── event_cache.py      # 事件字典缓存（24h TTL）
-│   │       └── event_vector_store.py # 喂养事件向量存储（数据飞轮）
+│   │       └── event_vector_store.py # 喂养事件向量存储（意图缓存飞轮）
 │   ├── clinic/                     # 喂养建议相关代码
 │   │   ├── graphs/                 # LangGraph 状态图
-│   │   │   ├── clinic_graph.py     # 诊疗问答图
-│   │   │   ├── tip_graph.py        # 小贴士图
-│   │   │   ├── nodes/              # 图节点
+│   │   │   ├── clinic_graph.py     # 陪伴续聊图
+│   │   │   ├── nodes/              # 图节点（prompts/system.py）
 │   │   │   └── states/             # 图状态定义
 │   │   ├── schemas/                # 数据模型
 │   │   └── services/               # 业务服务
-│   │       └── knowledge_vector_store.py # 知识向量存储
+│   ├── care_alert/                 # 护理留意
+│   ├── growth_trajectory/          # 成长轨迹
 │   ├── shared/                     # 共享服务
 │   │   ├── http_client.py          # HTTP 客户端（调用兄弟仓 API）
 │   │   ├── llm_client.py           # LLM 客户端（DeepSeek/GLM）
@@ -56,10 +56,8 @@ python_ai_talk/
 │       └── settings.py             # 环境变量配置
 ├── data/                           # 数据目录（不提交到 Git）
 │   ├── chroma_db/                  # Chroma 向量库存储
-│   ├── knowledge/                  # 知识库文档
 │   └── models/                     # Embedding 模型缓存
 ├── scripts/                        # 工具脚本
-│   └── build_vector_db.py          # 知识向量库构建脚本
 ├── docs/                           # 文档
 │   ├── deploy-guide.md             # 部署指南
 │   └── vector_db_guide.md          # 向量数据库指南
@@ -111,16 +109,19 @@ POST /v1/analyze/intent/confirm
 
 **响应参数**：与意图分析接口相同。
 
-### 胖宝诊疗
+### 陪伴续聊
 
 ```
-POST /v1/analyze/clinic
+POST /v1/clinic
+POST /v1/clinic/stream
 ```
 
-### 小贴士
+### 护理留意 / 成长轨迹
 
 ```
-POST /v1/analyze/tip
+POST /v1/care-alert/analyze
+POST /v1/care-alert/analyze/stream
+POST /v1/growth-trajectory/turn
 ```
 
 ### 健康检查
