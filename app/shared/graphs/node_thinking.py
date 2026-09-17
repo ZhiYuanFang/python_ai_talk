@@ -75,6 +75,32 @@ def emit_thinking(node_name: str, content: str) -> None:
         logger.debug(f"emit_thinking 忽略: node={node_name}, err={e}")
 
 
+def emit_llm_thinking_delta(node_name: str, content: str) -> None:
+    """
+    透出 LLM reasoning 增量；**不加** \\r（避免一字一泡）。
+    无 writer / 空内容时静默跳过。
+    """
+    text = content if content is not None else ""
+    if not text:
+        return
+    try:
+        writer = get_stream_writer()
+    except Exception:
+        return
+    if writer is None:
+        return
+    try:
+        writer(
+            {
+                "type": "thinking",
+                "node": node_name,
+                "content": text,
+            }
+        )
+    except Exception as e:
+        logger.debug(f"emit_llm_thinking_delta 忽略: node={node_name}, err={e}")
+
+
 def with_node_thinking(
     node_name: str,
     node_fn: NodeFn,

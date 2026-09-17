@@ -13,6 +13,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from app.shared.graphs.state_patch import state_get
+from app.shared.graphs.node_thinking import emit_llm_thinking_delta
 from app.shared.llm_client import llm_client, llm_model_config_from_mapping
 from app.shared.llm_json import loads_llm_json
 
@@ -109,30 +110,58 @@ def interrupt_value_to_answer(resume_value: Any, question: Dict[str, Any]) -> Di
     }
 
 
+async def _stream_llm_collect(
+    state: Any,
+    *,
+    system_prompt: str,
+    user_message: str,
+    node_name: str = "growth_llm",
+) -> str:
+    """
+    流式调用 LLM：thinking 增量经 custom 透出；聚合 answer content 返回。
+    无 model 或失败时返回空串。
+    """
+    model_config = llm_model_config_from_mapping(
+        state_get(state, "llm_model") or state_get(state, "model_config")
+    )
+    if model_config is None:
+        logger.warning("成长轨迹缺 model，跳过 LLM")
+        return ""
+    parts: List[str] = []
+    try:
+        async for chunk in llm_client.stream(
+            messages=[{"role": "user", "content": user_message}],
+            model_config=model_config,
+            system_prompt=system_prompt,
+            thinking_enabled=True,
+        ):
+            # reasoning 增量：不加 \\r，客户端追加展示
+            if chunk.thinking:
+                emit_llm_thinking_delta(node_name, chunk.thinking)
+            if chunk.content:
+                parts.append(chunk.content)
+    except Exception as e:
+        logger.warning("成长轨迹 LLM 流式调用失败: %s", e, exc_info=True)
+        return ""
+    return "".join(parts).strip()
+
+
 async def invoke_llm_json(
     state: Any,
     *,
     system_prompt: str,
     user_message: str,
 ) -> Optional[Dict[str, Any]]:
-    """调用 LLM 并解析 JSON；失败返回 None。"""
-    model_config = llm_model_config_from_mapping(
-        state_get(state, "llm_model") or state_get(state, "model_config")
+    """流式调用 LLM 并解析 JSON；失败返回 None。思考增量经 SSE thinking 透出。"""
+    raw = await _stream_llm_collect(
+        state,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        node_name="growth_llm_json",
     )
-    if model_config is None:
-        logger.warning("成长轨迹缺 model，跳过 LLM")
+    if not raw:
         return None
-    try:
-        resp = await llm_client.invoke(
-            messages=[{"role": "user", "content": user_message}],
-            model_config=model_config,
-            system_prompt=system_prompt,
-        )
-        raw = (resp.content or "").strip()
-        return extract_json_object(raw)
-    except Exception as e:
-        logger.warning("成长轨迹 LLM 调用失败: %s", e, exc_info=True)
-        return None
+    return extract_json_object(raw)
 
 
 async def invoke_llm_text(
@@ -141,20 +170,10 @@ async def invoke_llm_text(
     system_prompt: str,
     user_message: str,
 ) -> str:
-    """调用 LLM 取纯文本；失败返回空串。"""
-    model_config = llm_model_config_from_mapping(
-        state_get(state, "llm_model") or state_get(state, "model_config")
+    """流式调用 LLM 取纯文本；失败返回空串。思考增量经 SSE thinking 透出。"""
+    return await _stream_llm_collect(
+        state,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        node_name="growth_llm_text",
     )
-    if model_config is None:
-        logger.warning("成长轨迹缺 model，跳过 LLM 文本生成")
-        return ""
-    try:
-        resp = await llm_client.invoke(
-            messages=[{"role": "user", "content": user_message}],
-            model_config=model_config,
-            system_prompt=system_prompt,
-        )
-        return (resp.content or "").strip()
-    except Exception as e:
-        logger.warning("成长轨迹 LLM 文本失败: %s", e, exc_info=True)
-        return ""

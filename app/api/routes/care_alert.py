@@ -16,6 +16,7 @@ import logging
 import time
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.care_alert.schemas.care_alert import (
     CareAlertAnalyzeRequest,
@@ -24,7 +25,10 @@ from app.care_alert.schemas.care_alert import (
     CareAlertFeedbackResponse,
     CareAlertItemDto,
 )
-from app.care_alert.services.analyze import run_care_alert_analyze
+from app.care_alert.services.analyze import (
+    iter_care_alert_analyze_sse,
+    run_care_alert_analyze,
+)
 from app.care_alert.services.flywheel_store import care_alert_flywheel_store
 from app.care_alert.services.prompt_flywheel import record_feedback_and_maybe_rewrite
 
@@ -88,6 +92,33 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
     # dict → DTO，保证响应别名序列化为 Flutter/Go 契约字段
     items = [CareAlertItemDto.model_validate(x) for x in raw_items]
     return CareAlertAnalyzeResponse(items=items)
+
+
+@router.post("/analyze/stream", summary="护理留意日分析（SSE thinking + result）")
+async def care_alert_analyze_stream(request: CareAlertAnalyzeRequest):
+    """
+    流式分析：推送 thinking 增量，终态 result 含 items。
+    供 Go 代理至设备侧 /device/api/care-alert/daily/stream。
+    """
+    logger.info(
+        "护理留意 SSE 分析请求: device_no=%s day=%s model=%s",
+        request.device_no,
+        request.day,
+        (
+            request.model
+            if isinstance(request.model, str)
+            else getattr(request.model, "name", request.model)
+        ),
+    )
+    return StreamingResponse(
+        iter_care_alert_analyze_sse(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(
