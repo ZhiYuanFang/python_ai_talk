@@ -3,7 +3,8 @@ plan_next 节点
 
 业务说明：
 在 confirm 之后或每轮问答后决定 enough|ask|reconfirm|final_ask。
-禁止仅凭 confirm_prior 直接 generate；满 6 轮仍不足则 final_ask。
+禁止仅凭 confirm_prior 直接 generate；enough 或满轮在未做末问时均走 final_ask；
+末问（final_free_text）完成后方可 generate。
 """
 
 from __future__ import annotations
@@ -24,15 +25,35 @@ from app.shared.graphs.state_patch import state_get
 
 logger = logging.getLogger(__name__)
 
+# 末轮自由补充：引导与 7 日阶梯相关的自述
 _FINAL_PROMPT = (
-    "这是最后一次提问，请用一两句话补充你认为最重要、"
-    "但前面没提到的近期情况（作息、情绪、饮食、活动等均可）。"
+    "这是最后一次提问，请用自己的话补充：宝宝当前最拿手/刚学会的是什么、"
+    "最近想尝试但还不稳的是什么，以及你最想知道未来几天可能出现的变化"
+    "（前面没提到的细节也可一并写上）。"
 )
+
+
+def _final_ask_payload() -> Dict[str, Any]:
+    """构造强制 free_text 末问题。"""
+    question = normalize_question_payload(
+        {
+            "id": "final_free_text",
+            "prompt": _FINAL_PROMPT,
+            "format": "free_text",
+            "choices": [],
+        },
+        prefer_choice=False,
+    )
+    if "这是最后一次提问" not in str(question.get("prompt") or ""):
+        question["prompt"] = _FINAL_PROMPT
+    question["format"] = "free_text"
+    question["choices"] = []
+    return question
 
 
 async def plan_next(state: Any) -> Dict[str, Any]:
     """
-    规划下一步：enough → generate；ask/reconfirm → 待问；满轮 → final_ask。
+    规划下一步：enough/满轮 → final_ask（若未做）；已末问 → generate；否则 ask/reconfirm。
 
     Returns:
         plan_decision + 可选 pending_question
@@ -44,18 +65,6 @@ async def plan_next(state: Any) -> Dict[str, Any]:
 
     # 已满 6 轮且未做过末问 → 强制 final_free_text（一次）
     if structured_round >= max_rounds and not final_ask_done:
-        question = normalize_question_payload(
-            {
-                "id": "final_free_text",
-                "prompt": _FINAL_PROMPT,
-                "format": "free_text",
-                "choices": [],
-            },
-            prefer_choice=False,
-        )
-        # 确保文案含「这是最后一次提问」
-        if "这是最后一次提问" not in str(question.get("prompt") or ""):
-            question["prompt"] = _FINAL_PROMPT
         logger.info(
             "plan_next → final_ask (round=%s/%s)",
             structured_round,
@@ -63,7 +72,7 @@ async def plan_next(state: Any) -> Dict[str, Any]:
         )
         return {
             "plan_decision": "final_ask",
-            "pending_question": question,
+            "pending_question": _final_ask_payload(),
             "phase": "plan",
         }
 
@@ -112,8 +121,16 @@ async def plan_next(state: Any) -> Dict[str, Any]:
         decision = "ask"
         reason = reason or "首轮仍建议补问关键信息"
 
+    # enough：未做末问 → final_ask；已做末问 → generate
     if decision == "enough":
-        logger.info("plan_next → generate (enough): %s", reason)
+        if not final_ask_done:
+            logger.info("plan_next → final_ask (enough): %s", reason)
+            return {
+                "plan_decision": "final_ask",
+                "pending_question": _final_ask_payload(),
+                "phase": "plan",
+            }
+        logger.info("plan_next → generate (enough, final done): %s", reason)
         return {
             "plan_decision": "generate",
             "pending_question": None,
@@ -137,11 +154,21 @@ async def plan_next(state: Any) -> Dict[str, Any]:
         )
         question_raw = ask_data
 
+    # 细挖默认不强行 choice；由模型 format 决定
+    prefer_choice = True
+    if isinstance(question_raw, dict):
+        fmt = str(question_raw.get("format") or "").strip().lower()
+        if fmt == "free_text":
+            prefer_choice = False
+
     question = normalize_question_payload(
         question_raw,
         default_id=f"ask_{structured_round + 1}",
-        default_prompt="宝宝最近睡眠和白天精神状态整体怎么样？",
-        prefer_choice=True,
+        default_prompt=(
+            "请具体说说宝宝现在已经会什么、还不会什么"
+            "（例如会不会扶站、有没有想迈步），以及最近最明显的变化。"
+        ),
+        prefer_choice=prefer_choice,
     )
     logger.info(
         "plan_next → %s id=%s round=%s",

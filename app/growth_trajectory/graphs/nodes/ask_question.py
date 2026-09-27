@@ -92,8 +92,9 @@ async def final_free_text(state: Any) -> Dict[str, Any]:
     prompt = str(question.get("prompt") or "")
     if "这是最后一次提问" not in prompt:
         question["prompt"] = (
-            "这是最后一次提问，请用一两句话补充你认为最重要、"
-            "但前面没提到的近期情况。"
+            "这是最后一次提问，请用自己的话补充：宝宝当前最拿手/刚学会的是什么、"
+            "最近想尝试但还不稳的是什么，以及你最想知道未来几天可能出现的变化"
+            "（前面没提到的细节也可一并写上）。"
         )
     question["format"] = "free_text"
     question["choices"] = []

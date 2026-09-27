@@ -4,11 +4,10 @@
 业务说明：
 构建 clinic 场景回答生成节点使用的系统提示词。
 人设为育儿专家（非医生）。按 needs_history 分叉：
-- 需要史：有喂养记录则必点 1 条相关事实；chat_context 可参考、不强制点名
+- 需要史：注入共享紧凑喂养聚合；有记录则必点 1 条相关事实；chat_context 可参考、不强制点名
 - 不需要史：不注入记录/对话块，禁止编造本机记忆；不征求肯定
 """
 
-import json
 from typing import Any, Dict, List, Optional
 
 from app.clinic.graphs.nodes.prompts.system import (
@@ -16,12 +15,9 @@ from app.clinic.graphs.nodes.prompts.system import (
     CLINIC_ANSWER_SYSTEM_PROMPT_WITHOUT_HISTORY,
 )
 from app.shared.baby_age import format_age_months_text
+from app.shared.feeding_history_compact import build_feeding_history_prompt_blocks
 from app.shared.graphs.state_patch import state_get
-from app.shared.history_prompt_fields import (
-    build_daily_history_summary,
-    looks_like_summary_query,
-    slim_history_events_for_prompt,
-)
+from app.shared.history_prompt_fields import looks_like_summary_query
 
 
 def resolve_clinic_needs_history(state: Any) -> bool:
@@ -115,30 +111,20 @@ def build_clinic_answer_user_message(
 - 性别：{gender}
 """
 
-    summary_block = ""
     history_info = ""
     chat_block = ""
     has_chat = False
-    slim: List[Dict[str, Any]] = []
+    has_history = False
 
     if needs_history:
         is_summary = looks_like_summary_query(question or "")
-        time_style = "calendar" if is_summary else "relative"
-        # 汇总多给一些；点查 20 条足够
-        limit = 80 if is_summary else 20
-        slim = slim_history_events_for_prompt(
-            history_events, limit=limit, time_style=time_style
-        )
-
-        if is_summary:
-            daily = build_daily_history_summary(history_events)
-            if daily:
-                summary_block = f"\n{daily}\n"
-
-        if slim:
+        # 与留意/轨迹同一套按日紧凑聚合；不注入 legend
+        history_text, _legend = build_feeding_history_prompt_blocks(history_events)
+        has_history = bool(history_text) and history_text.strip() != "（无）"
+        if has_history:
             history_info = f"""
-喂养记录明细（答题依据；时间为已转换的可读文案；回应时须点名其中 1 条相关事实）：
-{json.dumps(slim, ensure_ascii=False, indent=2)}
+喂养记录（按日聚合；答题依据；回应时须点名其中 1 条相关事实）：
+{history_text}
 """
 
         has_chat = bool(chat_context and chat_context.strip())
@@ -152,7 +138,7 @@ def build_clinic_answer_user_message(
 
     closing = _clinic_closing_instruction(
         needs_history=needs_history,
-        has_history=bool(slim),
+        has_history=has_history,
         has_chat=has_chat,
         is_summary=is_summary,
         question=question,
@@ -161,7 +147,6 @@ def build_clinic_answer_user_message(
 
     return f"""
 {baby_info}
-{summary_block}
 {history_info}
 {chat_block}
 {closing}

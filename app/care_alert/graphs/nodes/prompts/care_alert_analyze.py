@@ -11,11 +11,9 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from app.care_alert.graphs.nodes.prompts.history_compact import (
-    build_care_alert_history_prompt_blocks,
-)
 from app.care_alert.graphs.nodes.prompts.system import CARE_ALERT_SYSTEM_PROMPT
 from app.shared.baby_age import shanghai_now
+from app.shared.feeding_history_compact import build_feeding_history_prompt_blocks
 
 
 def build_care_alert_system_prompt() -> str:
@@ -57,7 +55,7 @@ def build_care_alert_user_message(
         用户消息字符串
     """
     now = shanghai_now()
-    history_text, legend = build_care_alert_history_prompt_blocks(
+    history_text, legend = build_feeding_history_prompt_blocks(
         history_events, now=now, day=day
     )
 

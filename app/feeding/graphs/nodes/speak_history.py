@@ -4,7 +4,7 @@
 业务说明：
 按已定 event_ids + unix 窗 + 可选 remark 拉史，用模板填 content。
 父 id 递归展开为叶子再拉史；来自父则塌成最近一条并点出父名与叶子名。
-点查按 one/time/number 模板；日汇总先压缩。不调用历史答题 LLM。
+点查按 one/time/number 模板；日汇总走共享紧凑聚合。不调用历史答题 LLM。
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ from app.shared.constants import IntentOp, TargetType
 from app.shared.graphs.state_patch import state_get
 from app.shared.history_prompt_fields import (
     _parse_epoch,
-    build_daily_history_summary,
     format_history_time,
 )
+from app.shared.feeding_history_compact import build_feeding_history_prompt_blocks
 from app.shared.history_window import resolve_window
 from app.shared.http_client import http_client
 
@@ -327,7 +327,12 @@ async def speak_history(state: Any) -> Dict[str, Any]:
             is_parent_event(x, full_events) for x in original_ids
         )
         if mode == "daily":
-            chunk = build_daily_history_summary(rows) or f"{name or '这段时间'}没有相关记录。"
+            # 日汇总：共享紧凑聚合；不向家长念 legend
+            history_text, _legend = build_feeding_history_prompt_blocks(rows)
+            if history_text and history_text.strip() != "（无）":
+                chunk = history_text
+            else:
+                chunk = f"{name or '这段时间'}没有相关记录。"
         elif collapse_parent:
             parent_name = name or id_to_name.get(parent_ids[0], "") or "该分类"
             chunk = _template_parent_latest(rows or [], str(parent_name), full_events)

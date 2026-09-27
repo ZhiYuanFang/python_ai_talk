@@ -17,9 +17,7 @@ from app.care_alert.graphs.nodes.prompts.care_alert_analyze import (
     build_care_alert_system_prompt,
     build_care_alert_user_message,
 )
-from app.care_alert.graphs.nodes.prompts.history_compact import (
-    build_care_alert_history_prompt_blocks,
-)
+from app.shared.feeding_history_compact import build_feeding_history_prompt_blocks
 from app.care_alert.schemas.care_alert import CareAlertItemDto, CareAlertReasonDto
 from app.shared.graphs.node_thinking import emit_llm_thinking_delta
 from app.shared.graphs.state_patch import state_get
@@ -206,7 +204,7 @@ def synthesize_soft_care_alert_item(
     """
     from app.shared.baby_age import shanghai_now
 
-    history_text, legend = build_care_alert_history_prompt_blocks(
+    history_text, legend = build_feeding_history_prompt_blocks(
         history_events, now=shanghai_now()
     )
     if not history_text or history_text.strip() == "（无）":
