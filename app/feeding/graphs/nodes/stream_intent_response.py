@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 NODE_THINKING_MESSAGES: Dict[str, str] = {
     # 意图缓存：重复独立句直接采用整份 CRUD
     "match_intent_cache": "正在回忆你常说的话...",
+    "overlay_slots": "正在核对时间和数量...",
     # 进行中探针：分类前注入进行中计时
     "in_progress_probe": "正在查看当前记录...",
     # 意图分类节点：缓存未命中后的 LLM 分类

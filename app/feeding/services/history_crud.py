@@ -126,6 +126,7 @@ def collect_event_items(
             number = int(qty) if qty is not None else 0
         except (TypeError, ValueError):
             number = 0
+        # 业务说明：同 event_id 可出现多次（同叶多时刻 create），各自 start_time/quantity
         start_time = int(ev.get("start_time") or now)
         if item_op == "end":
             hid_int = 0

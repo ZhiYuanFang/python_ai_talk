@@ -4,7 +4,7 @@
 业务说明：
 按已定 event_ids + unix 窗 + 可选 remark 拉史，用模板填 content。
 父 id 递归展开为叶子再拉史；来自父则塌成最近一条并点出父名与叶子名。
-点查按 one/time/number 模板；日汇总走共享紧凑聚合。不调用历史答题 LLM。
+点查优先已完成记录；仅有进行中时用固定话术。日汇总走共享紧凑聚合。不调用历史答题 LLM。
 """
 
 from __future__ import annotations
@@ -55,6 +55,21 @@ def _row_start_ts(row: Dict[str, Any]) -> float:
     return dt.timestamp() if dt is not None else 0.0
 
 
+def _is_in_progress_row(row: Dict[str, Any]) -> bool:
+    """
+    进行中：无有效结束时间（空 / 0 / 不可解析）。
+
+    业务说明：
+    点查「上次」须跳过此类行，优先答已完成记录。
+    """
+    end = row.get("endTime")
+    if end in (None, ""):
+        end = row.get("end_time")
+    if end in (None, "", 0, "0"):
+        return True
+    return _parse_epoch(end) is None
+
+
 def _duration_seconds(row: Dict[str, Any]) -> Optional[int]:
     """计时：end-start 秒数；无效或未结束则 None。"""
     dt_s = _parse_epoch(row.get("startTime") or row.get("start_time"))
@@ -65,6 +80,52 @@ def _duration_seconds(row: Dict[str, Any]) -> Optional[int]:
     if secs < 0:
         return None
     return secs
+
+
+def _format_only_in_progress(
+    row: Dict[str, Any],
+    *,
+    parent_name: str = "",
+    leaf_name: str = "",
+) -> str:
+    """
+    仅有进行中、无已完成时的固定话术。
+
+    例：目前仅找到一条记录，是今天 14:11发生，正在进行中
+    """
+    when = (
+        format_history_time(
+            row.get("startTime") or row.get("start_time"),
+            style="relative",
+        )
+        or "未知时间"
+    )
+    if parent_name and leaf_name:
+        return (
+            f"目前仅找到一条记录，是{when}发生的{leaf_name}"
+            f"（{parent_name}），正在进行中"
+        )
+    return f"目前仅找到一条记录，是{when}发生，正在进行中"
+
+
+def _pick_completed_or_only_open(
+    rows: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """
+    在候选行中取最近已完成；若无已完成则取最近进行中。
+
+    Returns:
+        (选中行, 是否「仅有进行中」)
+    """
+    if not rows:
+        return None, False
+    completed = [r for r in rows if not _is_in_progress_row(r)]
+    if completed:
+        return max(completed, key=_row_start_ts), False
+    opens = [r for r in rows if _is_in_progress_row(r)]
+    if opens:
+        return max(opens, key=_row_start_ts), True
+    return None, False
 
 
 def _format_duration_hm(secs: int) -> str:
@@ -175,18 +236,28 @@ def _template_point(
     event_names: List[str],
     full_events: List[Dict[str, Any]],
 ) -> str:
-    """多叶子分别点查：每事件最近一条，按类型模板。"""
-    by_name: Dict[str, Dict[str, Any]] = {}
+    """
+    多叶子分别点查：每事件优先最近已完成；仅进行中用固定话术。
+
+    业务说明：
+    不再把进行中行的开始时间答成「上一次」。
+    """
+    by_name: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
         name = _row_name(row)
-        if name and name not in by_name:
-            by_name[name] = row
+        if not name:
+            continue
+        by_name.setdefault(name, []).append(row)
     parts: List[str] = []
     wanted = event_names or list(by_name.keys())
     for name in wanted:
-        row = by_name.get(name)
+        candidates = by_name.get(name) or []
+        row, only_open = _pick_completed_or_only_open(candidates)
         if not row:
             parts.append(f"没有记到{name}")
+            continue
+        if only_open:
+            parts.append(_format_only_in_progress(row))
             continue
         when = format_history_time(
             row.get("startTime") or row.get("start_time"),
@@ -202,11 +273,22 @@ def _template_parent_latest(
     parent_name: str,
     full_events: List[Dict[str, Any]],
 ) -> str:
-    """父点查：子孙叶子里取 startTime 最近一条，点出父名与叶子名。"""
+    """
+    父点查：子孙叶子优先最近已完成；仅进行中用固定话术并点出父/叶名。
+    """
     if not rows:
         return f"没有记到{parent_name}相关记录。"
-    latest = max(rows, key=_row_start_ts)
+    latest, only_open = _pick_completed_or_only_open(rows)
+    if not latest:
+        return f"没有记到{parent_name}相关记录。"
     leaf_name = _row_name(latest) or "该记录"
+    if only_open:
+        return (
+            _format_only_in_progress(
+                latest, parent_name=parent_name, leaf_name=leaf_name
+            )
+            + "。"
+        )
     when = format_history_time(
         latest.get("startTime") or latest.get("start_time"),
         style="relative",

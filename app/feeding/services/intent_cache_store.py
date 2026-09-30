@@ -234,7 +234,7 @@ class IntentCacheStore:
         if not doc or _is_confirm_only(doc):
             logger.info("跳过意图缓存写入：空句或确认词")
             return None
-        clean = _strip_history_ids(payload)
+        clean = _strip_create_absolute_times(_strip_history_ids(payload))
         embedding = self._embed([doc])[0]
         meta = {
             "payload": json.dumps(clean, ensure_ascii=False),
@@ -261,6 +261,106 @@ class IntentCacheStore:
         )
         logger.info(f"写入意图缓存: id={vector_id}, doc={doc[:40]}...")
         return vector_id
+
+    def list_entries(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """
+        分页列出意图缓存（管理端）。
+
+        Returns:
+            {total, offset, limit, items:[{id, document, quality_score, payload, created_at}]}
+        """
+        self._ensure_initialized()
+        data = self._collection.get(include=["documents", "metadatas"])
+        ids = data.get("ids") or []
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+        total = len(ids)
+        start = max(0, int(offset))
+        end = start + max(1, min(int(limit), 500))
+        items: List[Dict[str, Any]] = []
+        for i in range(start, min(end, total)):
+            meta = metas[i] or {}
+            payload_raw = meta.get("payload") or "{}"
+            try:
+                payload = json.loads(payload_raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            try:
+                quality = float(meta.get("quality_score", INTENT_CACHE_QUALITY_DEFAULT))
+            except (TypeError, ValueError):
+                quality = INTENT_CACHE_QUALITY_DEFAULT
+            items.append(
+                {
+                    "id": ids[i],
+                    "document": docs[i] if i < len(docs) else "",
+                    "quality_score": quality,
+                    "payload": payload,
+                    "created_at": meta.get("created_at") or "",
+                }
+            )
+        return {
+            "total": total,
+            "offset": start,
+            "limit": max(1, min(int(limit), 500)),
+            "items": items,
+        }
+
+    def delete_by_id(self, vector_id: str) -> bool:
+        """按向量 id 删除一条；不存在则 False。"""
+        self._ensure_initialized()
+        vid = (vector_id or "").strip()
+        if not vid:
+            return False
+        try:
+            existing = self._collection.get(ids=[vid], include=[])
+            found = existing.get("ids") or []
+            if not found:
+                logger.warning("意图缓存删除跳过：找不到 id=%s", vid)
+                return False
+            self._collection.delete(ids=[vid])
+            logger.info("已删除意图缓存: id=%s", vid)
+            return True
+        except Exception as exc:
+            logger.error("意图缓存删除失败: %s", exc, exc_info=True)
+            return False
+
+    def bulk_upsert(
+        self, entries: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        批量写入种子：每项 {document, payload}。
+
+        Returns:
+            {ok: n, failed: [{index, reason}], ids: [...]}
+        """
+        self._ensure_initialized()
+        ok = 0
+        ids: List[str] = []
+        failed: List[Dict[str, Any]] = []
+        for i, entry in enumerate(entries or []):
+            if not isinstance(entry, dict):
+                failed.append({"index": i, "reason": "条目不是对象"})
+                continue
+            doc = str(entry.get("document") or "").strip()
+            payload = entry.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+            try:
+                vid = self.add(doc, payload)
+                if not vid:
+                    failed.append({"index": i, "reason": "空句或确认词，未写入"})
+                    continue
+                ok += 1
+                ids.append(vid)
+            except Exception as exc:
+                logger.error("bulk_upsert 第 %s 条失败: %s", i, exc, exc_info=True)
+                failed.append({"index": i, "reason": str(exc)})
+        return {"ok": ok, "failed": failed, "ids": ids}
 
     def penalize(
         self,
@@ -351,6 +451,27 @@ def _strip_history_ids(payload: Dict[str, Any]) -> Dict[str, Any]:
             continue
         item = dict(ev)
         item.pop("history_id", None)
+        events.append(item)
+    out["events"] = events
+    return out
+
+
+def _strip_create_absolute_times(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    剥离 create 骨架上的绝对 start/end，避免冻死某次确认时刻。
+
+    业务说明：数量可保留；读窗字段保留。
+    """
+    out = dict(payload or {})
+    events = []
+    for ev in out.get("events") or []:
+        if not isinstance(ev, dict):
+            continue
+        item = dict(ev)
+        op = str(item.get("op") or "").strip().lower()
+        if op == "create":
+            item["start_time"] = None
+            item["end_time"] = None
         events.append(item)
     out["events"] = events
     return out

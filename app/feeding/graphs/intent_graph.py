@@ -2,7 +2,8 @@
 意图分析图定义
 
 业务说明：
-缓存 → 进行中探针 → 分类 →（有未定名称才）备注反查 → 确认 END / 批量落库 / 模板查记录。
+缓存 → 槽位覆盖 → 进行中探针 → 分类 →（有未定名称才）备注反查 → 确认 END / 批量落库 / 模板查记录。
+缓存命中后先 overlay_slots；多钟点降级则视为未命中再走分类。
 路由按 events[].op 与 target_type，不读顶层 op/action。
 """
 
@@ -14,6 +15,7 @@ from langgraph.graph import StateGraph, START, END
 from app.feeding.graphs.nodes.classify_intent import classify_intent
 from app.feeding.graphs.nodes.execute_history_crud import execute_history_crud
 from app.feeding.graphs.nodes.match_intent_cache import match_intent_cache
+from app.feeding.graphs.nodes.overlay_slots import overlay_slots
 from app.feeding.graphs.nodes.remark_probe import in_progress_probe
 from app.feeding.graphs.nodes.resolve_remark_event import (
     has_unresolved_event_slots,
@@ -35,7 +37,16 @@ State = IntentState
 
 
 def route_after_cache(state: Any) -> str:
-    """缓存命中 CRUD 则执行或查记录；否则进行中探针。"""
+    """缓存命中 → 槽位覆盖；未命中 → 进行中探针。"""
+    if state_get(state, "intent_cache_hit"):
+        return "overlay_slots"
+    return "in_progress_probe"
+
+
+def route_after_overlay(state: Any) -> str:
+    """
+    槽位覆盖后：仍命中则执行/查记录；降级则走进行中探针+分类。
+    """
     if not state_get(state, "intent_cache_hit"):
         return "in_progress_probe"
     intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
@@ -84,10 +95,11 @@ def _wrap(name: str, fn):
 
 
 def build_intent_graph():
-    """构建意图分析图（无事件名向量、无 clinic）。"""
+    """构建意图分析图（缓存命中后槽位覆盖，无事件名向量、无 clinic）。"""
     graph = StateGraph(State)
 
     graph.add_node("match_intent_cache", _wrap("match_intent_cache", match_intent_cache))
+    graph.add_node("overlay_slots", _wrap("overlay_slots", overlay_slots))
     graph.add_node("in_progress_probe", _wrap("in_progress_probe", in_progress_probe))
     graph.add_node("classify_intent", _wrap("classify_intent", classify_intent))
     graph.add_node(
@@ -103,6 +115,14 @@ def build_intent_graph():
     graph.add_conditional_edges(
         "match_intent_cache",
         route_after_cache,
+        {
+            "overlay_slots": "overlay_slots",
+            "in_progress_probe": "in_progress_probe",
+        },
+    )
+    graph.add_conditional_edges(
+        "overlay_slots",
+        route_after_overlay,
         {
             "in_progress_probe": "in_progress_probe",
             "speak_history": "speak_history",
@@ -134,7 +154,7 @@ def build_intent_graph():
     graph.add_edge("speak_history", END)
 
     logger.info(
-        "意图分析图构建完成（缓存/进行中/分类/条件备注反查/落库/模板查记录）"
+        "意图分析图构建完成（缓存/槽位覆盖/进行中/分类/条件备注反查/落库/模板查记录）"
     )
     return graph.compile()
 

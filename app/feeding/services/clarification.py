@@ -247,10 +247,35 @@ def _confirm_verb_for_event(ev: Dict[str, Any]) -> str:
 
 def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
     """
-    多事件确认问句：逐项点出动作与字典名。
+    多事件确认问句：逐项点出动作、字典名，以及数量/钟点（若有）。
 
-    例：您是要结束「爬练习」并开始「坐练习」吗？
+    例：您是要记录「配方奶」120毫升（今天 05:00）、记录「配方奶」150毫升（今天 07:00）并记录「母乳」60毫升（今天 08:00）吗？
     """
+    from datetime import datetime
+
+    from app.shared.history_window import shanghai_tz
+
+    _tz = shanghai_tz()
+
+    def _slot_extra(ev: Dict[str, Any]) -> str:
+        bits: List[str] = []
+        qty = ev.get("quantity")
+        if qty not in (None, "", 0, "0"):
+            try:
+                bits.append(f"{int(qty)}毫升")
+            except (TypeError, ValueError):
+                bits.append(str(qty))
+        st = ev.get("start_time")
+        if st not in (None, "", 0, "0"):
+            try:
+                dt = datetime.fromtimestamp(int(st), tz=_tz)
+                bits.append(dt.strftime("%H:%M"))
+            except (TypeError, ValueError, OSError, OverflowError):
+                pass
+        if not bits:
+            return ""
+        return "（" + "，".join(bits) + "）"
+
     parts: List[str] = []
     for ev in events or []:
         if not isinstance(ev, dict):
@@ -259,7 +284,7 @@ def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
         if not name:
             continue
         verb = _confirm_verb_for_event(ev)
-        parts.append(f"{verb}「{name}」")
+        parts.append(f"{verb}「{name}」{_slot_extra(ev)}")
     if not parts:
         return ""
     if len(parts) == 1:

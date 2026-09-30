@@ -26,10 +26,11 @@ INTENT_CLASSIFICATION_SYSTEM_TEMPLATE = """
 - events：涉事件时必填数组；每项自带 op 与叶子 id/name。单事件也是长度为 1 的数组。闲聊与退出 events 必须为 []。
 - events[].op：create=留下新记录或开始计时；end=结束进行中计时（不是 update）；update=修改已有记录内容；delete=去掉已有记录；read=查看已有记录
 - events[].action：可选；create 时 start|one；end 时可为 end；update/delete/read 可空
-- events[].start_time / end_time：op=read 时填写该子项自己的时间窗（Unix 秒）；可与 ignore_time_range 同时存在
+- events[].start_time / end_time：Unix 秒（Asia/Shanghai 语义）。op=read 时填该子项时间窗；用户说出具体钟点的 create 也必须填 start_time（瞬时喂养 end_time 可与 start_time 相同）；可与 ignore_time_range 同时存在
 - events[].ignore_time_range：仅 op=read 有意义。语义为「上一次/上次/最近一次」等不依赖具体日历区间的点查时必须为 true（拉史将忽略时间窗，避免猜错区间漏查）；用户明确说今天/昨天/本周等区间或汇总时必须为 false，并填写对应 unix 窗。create/update/delete/end 填 false 或不写
 - events[].remark_keyword：该子项查记录备注专名，没有则空或不写
 - events[].quantity：数量，没有则 null
+- 一句多次喂养：用户一句话说了多次吃奶/换尿布等，必须拆成多条 events（允许同一 event_id 出现多次），每条各自 quantity 与 start_time；禁止合并成一条并用当前时间
 - content：闲聊短句；feeding/history 可空
 - 不要输出顶层 op、不要输出顶层 action
 
