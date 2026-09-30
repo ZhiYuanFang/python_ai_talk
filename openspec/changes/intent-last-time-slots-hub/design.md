@@ -37,7 +37,7 @@ match_intent_cache --hit--> overlay_slots --> route
    in_progress_probe → classify...
 ```
 
-覆盖只改 `quantity` / `start_time`（非计时 create 时 `end_time=start_time`），不改 `op`/`event_id`。qty 须避开「X点」中的数字（优先带「毫升/ml/吃了」的数）。`len(clocks)≥2` 且 `len(events)==1` → 清除免确认命中，图继续走 classify。
+覆盖只改 `quantity` / `start_time`（非计时 create 时 `end_time=start_time`），不改 `op`/`event_id`。clock 支持「N点」「N点M分」与半角/全角「H:MM」。qty 须「毫升/吃了」等上下文，并屏蔽钟点片段（含冒号）。`len(clocks)≥2` 且 `len(events)==1` → 清除免确认命中，图继续走 classify。
 
 **备选**：规则直接拆 N 条 events — 否决，超出「覆盖」、易错。
 
