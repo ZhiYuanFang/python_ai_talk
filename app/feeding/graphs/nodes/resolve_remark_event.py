@@ -135,11 +135,17 @@ def _apply_leaf_to_slot(
 
 
 def _unrecognized_response(names: List[str]) -> Dict[str, Any]:
-    """零命中：无法识别，禁止建档与落库确认。"""
-    shown = "、".join(names) if names else "该名称"
+    """
+    零命中：无法识别，禁止建档与落库确认。
+
+    顶层 event_name 常与 events[] 首项镜像，fail_names 可能重复同一专名；
+    此处保序去重，使文案与 missing_events 一致（如「AD」而非「AD、AD」）。
+    """
+    # 保序去重：同一专名双槽只保留一次；不同专名仍全部保留
+    unique_names = list(dict.fromkeys(names or []))
+    shown = "、".join(unique_names) if unique_names else "该名称"
     content = (
         f"无法识别对应的事件「{shown}」。"
-        "请使用事件表中的名称，或确认该专名曾作为备注出现在历史记录中。"
     )
     return {
         "intent_result": IntentResult(
@@ -149,7 +155,7 @@ def _unrecognized_response(names: List[str]) -> Dict[str, Any]:
             event_ids=[],
             events=[],
             remark_keyword="",
-            missing_events=names,
+            missing_events=unique_names,
             is_new_event=False,
             content=content,
             need_confirm=False,

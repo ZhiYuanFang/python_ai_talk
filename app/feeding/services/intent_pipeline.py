@@ -25,6 +25,7 @@ from app.feeding.services.clarification import (
     resolve_free_text,
     try_parent_hit_from_event_id,
 )
+from app.shared.graphs.stream_llm_collect import ThinkingCallback
 from app.feeding.services.event_hierarchy import (
     find_parent_by_exact_name,
     get_children,
@@ -177,9 +178,14 @@ async def try_handle_pending(
     text: str,
     conversation_id: str,
     full_events: List[Dict[str, Any]],
+    *,
+    on_thinking: Optional[ThinkingCallback] = None,
 ) -> Tuple[Optional[IntentResponse], bool]:
     """
     处理 pending 续聊。
+
+    Args:
+        on_thinking: 流式路径可选；澄清 LLM reasoning 增量回调
 
     Returns:
         (response, continue_as_new_intent)
@@ -190,7 +196,9 @@ async def try_handle_pending(
     if not pending:
         return None, False
 
-    result = await resolve_free_text(text, pending, full_events=full_events)
+    result = await resolve_free_text(
+        text, pending, full_events=full_events, on_thinking=on_thinking
+    )
 
     if result.status == ResolveStatus.RESOLVED and result.event:
         # quantity：LLM/解析结果非 None 时覆盖 pending

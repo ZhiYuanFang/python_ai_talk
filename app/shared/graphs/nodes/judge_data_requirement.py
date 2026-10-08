@@ -23,7 +23,8 @@ from app.shared.graphs.nodes.prompts.data_requirement import (
     build_data_requirement_user_message,
 )
 from app.shared.graphs.state_patch import state_get
-from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.graphs.stream_llm_collect import stream_llm_collect
+from app.shared.llm_client import llm_model_config_from_mapping
 from app.shared.llm_json import loads_llm_json
 from app.shared.schemas.data_requirement import DataRequirement
 
@@ -66,13 +67,15 @@ async def judge_data_requirement(state: Any) -> Dict[str, Any]:
     user_message = build_data_requirement_user_message(user_text, event_dictionary)
 
     try:
-        response = await llm_client.invoke(
+        # 流式 + 透 reasoning；聚合 content 后再解析 JSON
+        content = await stream_llm_collect(
             messages=[{"role": "user", "content": user_message}],
             model_config=model_config,
             system_prompt=system_prompt,
+            node_name="judge_data_requirement",
         )
 
-        requirement = _parse_data_requirement(response.content)
+        requirement = _parse_data_requirement(content)
 
         valid_event_ids = _extract_valid_event_ids(event_dictionary)
         requirement["event_ids"] = [

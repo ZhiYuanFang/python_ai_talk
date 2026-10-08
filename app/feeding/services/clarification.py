@@ -36,7 +36,8 @@ from app.shared.constants import (
     TargetType,
     VALID_RESOLVE_OPS,
 )
-from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.graphs.stream_llm_collect import ThinkingCallback, stream_llm_collect
+from app.shared.llm_client import llm_model_config_from_mapping
 from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
@@ -787,9 +788,10 @@ async def llm_resolve_pending_reply(
     pending: PendingClarification,
     *,
     full_events: List[Dict[str, Any]],
+    on_thinking: Optional[ThinkingCallback] = None,
 ) -> ResolveResult:
     """
-    调用 LLM 解析 pending 回复。
+    流式调用 LLM 解析 pending 回复；可选透出 reasoning。
     超时 / 异常 / 坏 JSON / 缺动作 → ask_again。
     """
     model_cfg = pending.model_config or {}
@@ -805,16 +807,19 @@ async def llm_resolve_pending_reply(
             parent_name=pending.parent_name,
             options=pending.options,
         )
-        response = await llm_client.invoke(
+        # 流式：有 on_thinking 时由路由 yield SSE；无回调则 emit（图外通常无 writer）
+        content = await stream_llm_collect(
             messages=[{"role": "user", "content": user_message}],
             model_config=llm_model_config,
             system_prompt=build_pending_reply_system_prompt(),
+            node_name="pending_clarify",
+            on_thinking=on_thinking,
         )
-        data = _parse_llm_clarify_json(response.content)
+        data = _parse_llm_clarify_json(content)
         if not data:
             logger.warning(
                 "澄清 LLM 返回无法解析为 JSON，ask_again: content=%s",
-                (response.content or "")[:200],
+                (content or "")[:200],
             )
             return _ask_again_result(pending)
         return map_llm_clarify_payload(data, pending, full_events)
@@ -828,6 +833,7 @@ async def resolve_free_text(
     pending: PendingClarification,
     *,
     full_events: Optional[List[Dict[str, Any]]] = None,
+    on_thinking: Optional[ThinkingCallback] = None,
 ) -> ResolveResult:
     """
     在 pending 选项语境下解析自由文本。
@@ -838,7 +844,10 @@ async def resolve_free_text(
     if hard is not None:
         return hard
     return await llm_resolve_pending_reply(
-        text, pending, full_events=full_events or []
+        text,
+        pending,
+        full_events=full_events or [],
+        on_thinking=on_thinking,
     )
 
 

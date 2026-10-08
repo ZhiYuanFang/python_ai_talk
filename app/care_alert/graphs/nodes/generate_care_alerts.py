@@ -19,9 +19,9 @@ from app.care_alert.graphs.nodes.prompts.care_alert_analyze import (
 )
 from app.shared.feeding_history_compact import build_feeding_history_prompt_blocks
 from app.care_alert.schemas.care_alert import CareAlertItemDto, CareAlertReasonDto
-from app.shared.graphs.node_thinking import emit_llm_thinking_delta
 from app.shared.graphs.state_patch import state_get
-from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.graphs.stream_llm_collect import stream_llm_collect
+from app.shared.llm_client import llm_model_config_from_mapping
 from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
@@ -383,23 +383,12 @@ async def generate_care_alerts(state: Any) -> Dict[str, Any]:
     )
 
     # 流式：thinking 增量透出；聚合 content 再解析 JSON
-    parts: List[str] = []
-    try:
-        async for chunk in llm_client.stream(
-            messages=[{"role": "user", "content": user_message}],
-            model_config=model_config,
-            system_prompt=system_prompt,
-            thinking_enabled=True,
-        ):
-            if chunk.thinking:
-                emit_llm_thinking_delta("generate_care_alerts", chunk.thinking)
-            if chunk.content:
-                parts.append(chunk.content)
-    except Exception as e:
-        logger.warning("护理留意 LLM 流式失败: %s", e, exc_info=True)
-        parts = []
-
-    raw_text = "".join(parts).strip()
+    raw_text = await stream_llm_collect(
+        messages=[{"role": "user", "content": user_message}],
+        model_config=model_config,
+        system_prompt=system_prompt,
+        node_name="generate_care_alerts",
+    )
     data = _extract_json_object(raw_text)
     if data is None:
         logger.warning("护理留意 LLM 输出无法解析为 JSON，尝试软兜底")

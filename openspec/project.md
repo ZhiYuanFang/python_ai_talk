@@ -8,7 +8,7 @@
 
 - **每模块 system 提示词**：存活业务模块（`feeding` / `clinic` / `care_alert` / `growth_trajectory` / `shared` 判定节点等）的 system 文案 MUST 落在各自 `graphs/nodes/prompts/system.py`（或等价 `prompts/system.py`）常量中，禁止依赖运行时外置 `prompt.json` 飞轮读写。
 - **中文思考与输出**：面向用户的主回答与内部思考（reasoning / thinking）MUST 使用中文；system 中须显式约束「内部思考（reasoning）须使用中文」。
-- **对外 SSE 真流式**：对外 SSE 接口（如 clinic stream、care-alert analyze/stream、growth-trajectory turn、intent stream）的主 LLM 调用 MUST 使用 `llm_client.stream`，禁止「先 `invoke` 拿全文再伪造成 SSE」。图内部判定节点（意图分类、needs_history、data_requirement 等）允许 `invoke`。同步非 SSE 接口（如 `/v1/clinic`）可继续 `invoke`。
+- **对外 SSE 真流式**：对外 SSE 接口（如 clinic stream、care-alert analyze/stream、growth-trajectory turn、intent stream）处理链上的每一次 LLM 调用（含主回答、意图分类、needs_history / data_requirement 等判定、pending 澄清）MUST 使用 `llm_client.stream(thinking_enabled=True)`，并将 reasoning 增量以 SSE `type=thinking` 透出；禁止「先 `invoke` 拿全文再伪造成 SSE」。同步非 SSE 接口（如 `/v1/clinic`、`/v1/analyze/intent`）可继续 `invoke`。
 - **禁止恢复 tip / 外置 prompt 飞轮**：禁止新建 tip 产品线或 care-alert/其它模块的外置 prompt 飞轮与对应反馈写回路；意图缓存飞轮（`feeding_intents`）除外。
 
 ### 1.1 不生成、不改动测试文件

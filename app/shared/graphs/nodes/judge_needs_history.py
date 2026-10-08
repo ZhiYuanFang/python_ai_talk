@@ -21,7 +21,8 @@ from app.shared.graphs.nodes.prompts.needs_history import (
     build_needs_history_user_message,
 )
 from app.shared.graphs.state_patch import state_get
-from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.graphs.stream_llm_collect import stream_llm_collect
+from app.shared.llm_client import llm_model_config_from_mapping
 from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
@@ -43,12 +44,14 @@ async def judge_needs_history(state: Any) -> Dict[str, Any]:
     user_message = build_needs_history_user_message(str(user_text))
 
     try:
-        response = await llm_client.invoke(
+        # 流式 + 透 reasoning（ainvoke 时 emit 无消费者，静默跳过）
+        content = await stream_llm_collect(
             messages=[{"role": "user", "content": user_message}],
             model_config=model_config,
             system_prompt=system_prompt,
+            node_name="judge_needs_history",
         )
-        needs = _parse_needs_history(response.content)
+        needs = _parse_needs_history(content)
     except Exception as e:
         logger.error(f"喂养历史门禁 LLM 调用失败，默认需要历史: {e}")
         needs = False

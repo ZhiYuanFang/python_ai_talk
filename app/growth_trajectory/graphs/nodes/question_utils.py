@@ -13,8 +13,8 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from app.shared.graphs.state_patch import state_get
-from app.shared.graphs.node_thinking import emit_llm_thinking_delta
-from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.graphs.stream_llm_collect import stream_llm_collect
+from app.shared.llm_client import llm_model_config_from_mapping
 from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,7 @@ async def _stream_llm_collect(
 ) -> str:
     """
     流式调用 LLM：thinking 增量经 custom 透出；聚合 answer content 返回。
-    无 model 或失败时返回空串。
+    无 model 或失败时返回空串。薄封装 shared.stream_llm_collect。
     """
     model_config = llm_model_config_from_mapping(
         state_get(state, "llm_model") or state_get(state, "model_config")
@@ -127,23 +127,12 @@ async def _stream_llm_collect(
     if model_config is None:
         logger.warning("成长轨迹缺 model，跳过 LLM")
         return ""
-    parts: List[str] = []
-    try:
-        async for chunk in llm_client.stream(
-            messages=[{"role": "user", "content": user_message}],
-            model_config=model_config,
-            system_prompt=system_prompt,
-            thinking_enabled=True,
-        ):
-            # reasoning 增量：不加 \\r，客户端追加展示
-            if chunk.thinking:
-                emit_llm_thinking_delta(node_name, chunk.thinking)
-            if chunk.content:
-                parts.append(chunk.content)
-    except Exception as e:
-        logger.warning("成长轨迹 LLM 流式调用失败: %s", e, exc_info=True)
-        return ""
-    return "".join(parts).strip()
+    return await stream_llm_collect(
+        messages=[{"role": "user", "content": user_message}],
+        model_config=model_config,
+        system_prompt=system_prompt,
+        node_name=node_name,
+    )
 
 
 async def invoke_llm_json(

@@ -31,7 +31,8 @@ from app.shared.constants import (
 )
 from app.shared.graphs.node_thinking import emit_thinking
 from app.shared.graphs.state_patch import state_get
-from app.shared.llm_client import llm_client, llm_model_config_from_mapping
+from app.shared.graphs.stream_llm_collect import stream_llm_collect
+from app.shared.llm_client import llm_model_config_from_mapping
 from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
@@ -92,13 +93,18 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
         )
         user_message = build_intent_classification_user_message(text)
 
-        response = await llm_client.invoke(
+        # 流式分类：reasoning 经 custom 透出；聚合 content 再解析，不推半截 JSON answer
+        content = await stream_llm_collect(
             messages=[{"role": "user", "content": user_message}],
             model_config=llm_model_config,
             system_prompt=system_prompt,
+            node_name="classify_intent",
         )
+        if not content:
+            # 与旧 invoke 失败路径对齐：走下方 except 的 overload 提示
+            raise RuntimeError("意图分类 LLM 流式无正文")
 
-        intent_result = _parse_intent_result(response.content)
+        intent_result = _parse_intent_result(content)
 
         # 数量：优先沿用 state 已有，否则本地提取
         vector_quantity = None

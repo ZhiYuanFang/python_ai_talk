@@ -6,9 +6,10 @@
 非流式不再伪装 clinic。陪伴走 /v1/clinic。
 """
 
+import asyncio
 import json
 import logging
-from typing import Any, AsyncGenerator, Dict
+from typing import Any, AsyncGenerator, Dict, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter
@@ -18,6 +19,7 @@ from app.feeding.graphs.intent_graph import intent_graph
 from app.feeding.graphs.states.intent_state import IntentState
 from app.feeding.schemas.intent import IntentRequest, IntentResponse, IntentStreamResponse
 from app.feeding.schemas.intent_result import coerce_intent_result
+from app.feeding.services.clarification import clarification_store
 from app.feeding.services.event_cache import event_cache
 from app.feeding.services.intent_pipeline import (
     build_intent_response_from_fields,
@@ -28,6 +30,7 @@ from app.feeding.services.intent_pipeline import (
     try_handle_pending,
 )
 from app.shared.constants import TargetType
+from app.shared.graphs.node_thinking import ensure_orchestration_thinking_content
 from app.shared.graphs.state_patch import ensure_model
 from app.shared.graphs.stream_graph import iter_graph_custom_thinking
 
@@ -217,53 +220,18 @@ async def analyze_intent_stream(request: IntentRequest):
     )
 
     full_events, leaf_events = await _prepare_dictionaries()
-    
+
     model_config = _model_config_dict(request)
 
-    # pending 续聊：无图节点，直接返回 answer
-    if request.conversation_id:
-        pending_resp, as_new = await try_handle_pending(
-            request.text, request.conversation_id, full_events
-        )
-        if pending_resp is not None:
-
-            async def _pending_sse() -> AsyncGenerator[str, None]:
-                answer_event = IntentStreamResponse(
-                    type="answer",
-                    content=json.dumps(pending_resp.model_dump(), ensure_ascii=False),
-                )
-                yield f"data: {json.dumps(answer_event.model_dump(), ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
-
-            return StreamingResponse(
-                _pending_sse(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
-
-    # 精确父名：直接消歧，无图
-    parent_resp = try_exact_parent_disambiguation(
-        request.text,
-        full_events,
-        device_no=request.device_no,
-        model_config=model_config,
-    )
-    if parent_resp is not None:
-
-        async def _parent_sse() -> AsyncGenerator[str, None]:
-            answer_event = IntentStreamResponse(
-                type="answer",
-                content=json.dumps(parent_resp.model_dump(), ensure_ascii=False),
-            )
-            yield f"data: {json.dumps(answer_event.model_dump(), ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-
+    # pending 续聊：有 pending 时走可透 reasoning 的 SSE（答非所问则同流继续冷启动）
+    if request.conversation_id and clarification_store.get(request.conversation_id):
         return StreamingResponse(
-            _parent_sse(),
+            _stream_pending_then_cold(
+                request=request,
+                full_events=full_events,
+                leaf_events=leaf_events,
+                model_config=model_config,
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -272,18 +240,14 @@ async def analyze_intent_stream(request: IntentRequest):
             },
         )
 
-    thread_id = str(uuid4())
-    initial_state = IntentState(
-        user_input=request.text,
-        device_no=request.device_no,
-        llm_model=model_config,
-        event_dictionary=leaf_events,
-        event_dictionary_full=full_events,
-        conversation_id=thread_id,
-    )
-
     return StreamingResponse(
-        _stream_intent_response(initial_state, thread_id, full_events, model_config),
+        _stream_cold_intent_path(
+            text=request.text,
+            device_no=request.device_no,
+            full_events=full_events,
+            leaf_events=leaf_events,
+            model_config=model_config,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -291,6 +255,131 @@ async def analyze_intent_stream(request: IntentRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+async def _stream_answer_done(response: IntentResponse) -> AsyncGenerator[str, None]:
+    """推送一条 answer 与 [DONE]。"""
+    answer_event = IntentStreamResponse(
+        type="answer",
+        content=json.dumps(response.model_dump(), ensure_ascii=False),
+    )
+    yield f"data: {json.dumps(answer_event.model_dump(), ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+async def _stream_cold_intent_path(
+    *,
+    text: str,
+    device_no: str,
+    full_events: list,
+    leaf_events: list,
+    model_config: Dict[str, Any],
+) -> AsyncGenerator[str, None]:
+    """
+    冷启动流式：精确父名短路，或 intent_graph custom thinking → answer。
+    """
+    parent_resp = try_exact_parent_disambiguation(
+        text,
+        full_events,
+        device_no=device_no,
+        model_config=model_config,
+    )
+    if parent_resp is not None:
+        async for chunk in _stream_answer_done(parent_resp):
+            yield chunk
+        return
+
+    thread_id = str(uuid4())
+    initial_state = IntentState(
+        user_input=text,
+        device_no=device_no,
+        llm_model=model_config,
+        event_dictionary=leaf_events,
+        event_dictionary_full=full_events,
+        conversation_id=thread_id,
+    )
+    async for chunk in _stream_intent_response(
+        initial_state, thread_id, full_events, model_config
+    ):
+        yield chunk
+
+
+async def _stream_pending_then_cold(
+    *,
+    request: IntentRequest,
+    full_events: list,
+    leaf_events: list,
+    model_config: Dict[str, Any],
+) -> AsyncGenerator[str, None]:
+    """
+    pending 流式：澄清 LLM reasoning 经队列边产边推，再 answer；
+    答非所问（as_new）时同连接继续冷启动图。
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    first_llm_thinking = True
+
+    async def on_thinking(delta: str) -> None:
+        nonlocal first_llm_thinking
+        text = delta if delta is not None else ""
+        if not text:
+            return
+        # 本段首次 LLM thinking 段首 \\r 开泡
+        if first_llm_thinking:
+            text = ensure_orchestration_thinking_content(text)
+            first_llm_thinking = False
+        await queue.put(("thinking", text))
+
+    async def _run_pending() -> None:
+        try:
+            resp, as_new = await try_handle_pending(
+                request.text,
+                request.conversation_id or "",
+                full_events,
+                on_thinking=on_thinking,
+            )
+            await queue.put(("result", (resp, as_new)))
+        except Exception as e:
+            await queue.put(("error", e))
+
+    task = asyncio.create_task(_run_pending())
+    pending_resp: Optional[IntentResponse] = None
+    as_new = False
+    try:
+        while True:
+            kind, payload = await queue.get()
+            if kind == "thinking":
+                event = IntentStreamResponse(
+                    type="thinking",
+                    content=str(payload),
+                    node="pending_clarify",
+                )
+                yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
+            elif kind == "result":
+                pending_resp, as_new = payload
+                break
+            elif kind == "error":
+                raise payload
+    finally:
+        await task
+
+    if pending_resp is not None:
+        async for chunk in _stream_answer_done(pending_resp):
+            yield chunk
+        return
+
+    # 清 pending 当新意图：继续冷启动
+    if as_new:
+        async for chunk in _stream_cold_intent_path(
+            text=request.text,
+            device_no=request.device_no,
+            full_events=full_events,
+            leaf_events=leaf_events,
+            model_config=model_config,
+        ):
+            yield chunk
+        return
+
+    yield "data: [DONE]\n\n"
 
 
 async def _stream_intent_response(
@@ -327,9 +416,5 @@ async def _stream_intent_response(
         model_config=model_config,
     )
 
-    answer_event = IntentStreamResponse(
-        type="answer",
-        content=json.dumps(response.model_dump(), ensure_ascii=False),
-    )
-    yield f"data: {json.dumps(answer_event.model_dump(), ensure_ascii=False)}\n\n"
-    yield "data: [DONE]\n\n"
+    async for chunk in _stream_answer_done(response):
+        yield chunk

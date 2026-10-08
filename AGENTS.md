@@ -21,7 +21,7 @@ OpenSpec CLI 制品生成时亦须对照 `openspec/project.md`；细则以 proje
 
 - 每存活模块 system 文案落在 `prompts/system.py` 常量；禁止外置 `prompt.json` 飞轮。
 - 主回答与内部思考（reasoning）须使用**中文**。
-- 对外 SSE 主 LLM 必须 `llm_client.stream`；禁止 invoke 全文再假 SSE。内部判定节点可用 invoke。
+- 对外 SSE 路径上每一次 LLM（含判定/分类）必须 `llm_client.stream(thinking_enabled=True)` 并透出 reasoning；禁止 invoke 全文再假 SSE。同步非 SSE 可 invoke。
 - 禁止恢复 tip / care-alert 外置 prompt 飞轮；意图缓存飞轮除外。
 
 ## OpenSpec 工作流
