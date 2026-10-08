@@ -3,7 +3,8 @@
 
 业务说明：
 从本轮原文抽取 clock / duration / quantity，盖到缓存 events[]。
-计时闭合补记（时长或双钟点起止）写 start+end；≥3 钟点且单条降级 LLM。
+计时闭合补记（时长或双钟点起止）写 start+end；
+≥3 钟点单条、或半命中（有 clock 仍有日/段残留）则降级 LLM。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
 from app.feeding.services.closed_interval import (
     apply_time_slots_to_events,
     should_degrade_multi_clock,
+    should_degrade_partial_clock,
 )
 from app.feeding.services.intent_events import normalize_intent_events
 from app.feeding.utils.time_slot_extractor import extract_clocks_from_text
@@ -40,10 +42,15 @@ def overlay_slots(state: Any) -> Dict[str, Any]:
         return {}
 
     clocks = extract_clocks_from_text(text)
-    if should_degrade_multi_clock(text, clocks, events):
+    # 多钟点 OR 半命中 → 取消免确认，走分类
+    multi = should_degrade_multi_clock(text, clocks, events)
+    partial = should_degrade_partial_clock(text, clocks)
+    if multi or partial:
         logger.info(
-            "槽位覆盖降级: clocks=%s events=1，取消缓存免确认",
+            "槽位覆盖降级: clocks=%s multi=%s partial=%s，取消缓存免确认",
             len(clocks),
+            multi,
+            partial,
         )
         return {
             "intent_cache_hit": False,

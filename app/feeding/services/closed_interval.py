@@ -15,7 +15,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.feeding.utils.duration_extractor import extract_duration_seconds
 from app.feeding.utils.quantity_extractor import extract_quantities_from_text
-from app.feeding.utils.time_slot_extractor import ClockHint, extract_clocks_from_text
+from app.feeding.utils.time_slot_extractor import (
+    ClockHint,
+    extract_clocks_from_text,
+    has_unconsumed_temporal_residual,
+)
 from app.shared.constants import IntentAction, IntentOp
 
 logger = logging.getLogger(__name__)
@@ -36,6 +40,26 @@ def should_degrade_multi_clock(text: str, clocks: List[ClockHint], events: List[
     return len(clocks) >= 3
 
 
+def should_degrade_partial_clock(text: str, clocks: List[ClockHint]) -> bool:
+    """
+    是否因半命中（有 clock 仍有未消费日/段词）强制降级 LLM。
+
+    业务说明：
+    仅当已抽到 ≥1 个钟点，且挖空匹配 span 后仍有时间残留时为真。
+    无钟点即使含「昨晚」也不因本函数降级。
+
+    Args:
+        text: 用户原文
+        clocks: 已抽取钟点
+
+    Returns:
+        True 表示应取消免确认 / 跳过残缺 clock 覆盖
+    """
+    if len(clocks) < 1:
+        return False
+    return has_unconsumed_temporal_residual(text, clocks)
+
+
 def apply_time_slots_to_events(
     text: str,
     events: List[Dict[str, Any]],
@@ -43,12 +67,22 @@ def apply_time_slots_to_events(
     """
     将钟点/时长/数量盖到 events 副本上。
 
+    半命中时跳过 clock 时间写入，避免残缺「6点」踩掉 LLM 正确时间；数量仍可覆盖。
+
     Returns:
         (新 events, 是否有变更)
     """
     if not events:
         return events, False
     clocks = extract_clocks_from_text(text)
+    # 半命中：不用残缺 clock 写 start/end
+    if should_degrade_partial_clock(text, clocks):
+        logger.info(
+            "半命中跳过钟点覆盖: clocks=%s text=%s...",
+            len(clocks),
+            (text or "")[:40],
+        )
+        clocks = []
     duration = extract_duration_seconds(text)
     qtys = extract_quantities_from_text(text)
     out = [dict(e) for e in events if isinstance(e, dict)]

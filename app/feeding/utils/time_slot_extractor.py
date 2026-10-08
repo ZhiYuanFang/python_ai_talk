@@ -4,6 +4,7 @@
 业务说明：
 从用户原文抽取钟点（含「5点」「5:46」「5点46分」等），转为 Asia/Shanghai Unix 秒，
 供意图缓存命中后的槽位覆盖使用。不调用 LLM。
+支持分立前缀（昨天+晚上）与复合日段（昨晚/昨夜/今早/今晚）。
 """
 
 from __future__ import annotations
@@ -36,9 +37,12 @@ _CN_HOUR = {
     "十二": 12,
 }
 
+# 复合日段优先：昨晚=昨天+晚上；今早/今晚=今天+早/晚
+# 与分立「昨天」「晚上」二选一，避免 group 错位
 _DAY_PERIOD_PREFIX = (
-    r"(?:(今天|今日|昨天|昨日|前天))?"
-    r"(?:(凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|晚间))?"
+    r"(?:(?P<compound>昨晚|昨夜|今早|今晚)|"
+    r"(?:(?P<day>今天|今日|昨天|昨日|前天))?"
+    r"(?:(?P<period>凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|晚间))?)"
 )
 
 # 「5点」「五点半」「5点46分」——数字分钟必须带「分」，避免「5点7点」被吃成 5:07
@@ -57,6 +61,16 @@ _CLOCK_COLON_RE = re.compile(
     + r"(?P<m>\d{1,2})"
 )
 
+# 挖空 clock span 后仍出现则视为「未消费时间词」（半命中兜底）
+# 含合法前缀词 + 尚未入库口语（前晚、昨儿）
+_TEMPORAL_RESIDUAL_RE = re.compile(
+    r"昨天|昨日|前天|今天|今日|"
+    r"昨晚|昨夜|前晚|"
+    r"今早|今晚|"
+    r"昨儿|"
+    r"凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|晚间"
+)
+
 
 @dataclass
 class ClockHint:
@@ -67,6 +81,8 @@ class ClockHint:
     minute: int
     day_offset: int  # 0=今天, -1=昨天, -2=前天
     raw: str
+    span_start: int = 0  # 原文匹配起点（含日段前缀）
+    span_end: int = 0  # 原文匹配终点（开区间）
 
 
 def _cn_to_hour(token: str) -> Optional[int]:
@@ -130,6 +146,23 @@ def _day_offset_from_word(day_word: str) -> int:
     return 0
 
 
+def _resolve_day_period(gd: dict) -> Tuple[str, str]:
+    """
+    从正则 named groups 解析日词与时段。
+
+    业务说明：
+    复合词昨晚/昨夜 → 昨天+晚上；今早/今晚 → 今天+早上/晚上。
+    """
+    compound = (gd.get("compound") or "").strip()
+    if compound in ("昨晚", "昨夜"):
+        return "昨天", "晚上"
+    if compound == "今早":
+        return "今天", "早上"
+    if compound == "今晚":
+        return "今天", "晚上"
+    return (gd.get("day") or "").strip(), (gd.get("period") or "").strip()
+
+
 def _match_to_hint(
     m: re.Match[str],
     *,
@@ -141,10 +174,9 @@ def _match_to_hint(
     Returns:
         (start, end, hint) 供去重；失败则 None
     """
-    day_word = m.group(1) or ""
-    period = m.group(2) or ""
-    h_tok = m.group("h") or ""
     gd = m.groupdict()
+    day_word, period = _resolve_day_period(gd)
+    h_tok = m.group("h") or ""
     hour = _cn_to_hour(h_tok)
     if hour is None or hour < 0 or hour > 23:
         return None
@@ -167,6 +199,8 @@ def _match_to_hint(
         minute=minute,
         day_offset=day_offset,
         raw=m.group(0),
+        span_start=m.start(),
+        span_end=m.end(),
     )
     return m.start(), m.end(), hint
 
@@ -179,7 +213,8 @@ def extract_clocks_from_text(
     """
     从原文抽取钟点列表（按出现顺序）。
 
-    支持：5点 / 5点46分 / 5:46 / 17：30，以及今天/昨天、上午/下午等前缀。
+    支持：5点 / 5点46分 / 5:46 / 17：30，以及今天/昨天、上午/下午、
+    昨晚/昨夜/今早/今晚等前缀。
 
     Args:
         text: 用户输入
@@ -198,7 +233,7 @@ def extract_clocks_from_text(
             item = _match_to_hint(m, base=base)
             if item:
                 candidates.append(item)
-    # 按起点排序；重叠时保留更长匹配（优先完整「5:46」）
+    # 按起点排序；重叠时保留更长匹配（优先完整「昨晚6点」盖过裸「6点」）
     candidates.sort(key=lambda x: (x[0], -(x[1] - x[0])))
     hints: List[ClockHint] = []
     last_end = -1
@@ -214,3 +249,29 @@ def extract_clocks_from_text(
             len(hints),
         )
     return hints
+
+
+def has_unconsumed_temporal_residual(text: str, clocks: List[ClockHint]) -> bool:
+    """
+    挖空已匹配钟点 span 后，残留是否仍含日/段时间词。
+
+    业务说明：
+    用于半命中判定——规则只吃到「6点」却留下「前晚」等，说明时间语义不完整。
+
+    Args:
+        text: 用户原文
+        clocks: 已抽取的钟点（须带 span_start/span_end）
+
+    Returns:
+        True 表示仍有未消费时间词
+    """
+    if not clocks:
+        return False
+    chars = list(text or "")
+    # 从后往前挖空，避免下标错位
+    for c in sorted(clocks, key=lambda x: -int(x.span_start)):
+        s, e = int(c.span_start), int(c.span_end)
+        for i in range(max(0, s), min(len(chars), e)):
+            chars[i] = " "
+    residual = "".join(chars)
+    return bool(_TEMPORAL_RESIDUAL_RE.search(residual))
