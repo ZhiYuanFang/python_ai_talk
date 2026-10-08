@@ -13,6 +13,7 @@ import logging
 from typing import Any, Dict
 
 from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
+from app.feeding.services.closed_interval import apply_time_slots_to_events
 from app.feeding.services.history_crud import (
     collect_event_items,
     execute_batch,
@@ -37,6 +38,7 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
     执行批量 CRUD 并回执。
 
     未确认不进本节点（由图路由保证）。
+    落库前再跑一轮钟点/时长覆盖，保证分类路径也能闭合补记。
     """
     intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
     intent = normalize_intent_events(intent)
@@ -50,6 +52,13 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
         or state_get(state, "event_dictionary")
         or []
     )
+    # 分类路径未走 overlay 时，仍用原文补全闭合起止
+    text = state_get(state, "user_input") or state_get(state, "text") or ""
+    events = [e for e in (intent.get("events") or []) if isinstance(e, dict)]
+    new_events, slot_changed = apply_time_slots_to_events(text, events)
+    if slot_changed:
+        intent["events"] = new_events
+        logger.info("落库前闭合槽位已覆盖: events=%s", len(new_events))
     items, missing = collect_event_items(intent, full_events)
     items = sort_end_items_first(items)
     intent["missing_events"] = missing

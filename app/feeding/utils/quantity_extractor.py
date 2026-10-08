@@ -42,6 +42,8 @@ _CLOCK_SPAN_RE = re.compile(
     r"|"
     r"\d{1,2}\s*[:：]\s*\d{1,2}"
 )
+# 时长「N分钟」不当数量
+_DURATION_SPAN_RE = re.compile(r"\d+\s*(?:分钟|分(?!钟))")
 
 
 def _replace_chinese_numerals(text: str) -> str:
@@ -54,8 +56,9 @@ def _replace_chinese_numerals(text: str) -> str:
 
 
 def _mask_clock_spans(text: str) -> str:
-    """抹掉钟点片段，避免小时/分钟进入数量候选。"""
-    return _CLOCK_SPAN_RE.sub(" ", text)
+    """抹掉钟点与时长片段，避免小时/分钟进入数量候选。"""
+    t = _CLOCK_SPAN_RE.sub(" ", text)
+    return _DURATION_SPAN_RE.sub(" ", t)
 
 
 def extract_quantities_from_text(text: str) -> List[int]:

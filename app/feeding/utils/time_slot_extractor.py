@@ -41,13 +41,12 @@ _DAY_PERIOD_PREFIX = (
     r"(?:(凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|晚间))?"
 )
 
-# 「5点」「五点半」「5点46」「5点46分」
+# 「5点」「五点半」「5点46分」——数字分钟必须带「分」，避免「5点7点」被吃成 5:07
 _CLOCK_DIAN_RE = re.compile(
     _DAY_PERIOD_PREFIX
     + r"(?P<h>\d{1,2}|[零一二两三四五六七八九十]{1,3})"
     + r"(?:点|时)"
-    + r"(?P<m>\d{1,2}|半)?"
-    + r"分?"
+    + r"(?:(?P<m>\d{1,2})分|(?P<half>半))?"
 )
 
 # 「5:46」「17：30」（半角/全角冒号）
@@ -145,12 +144,15 @@ def _match_to_hint(
     day_word = m.group(1) or ""
     period = m.group(2) or ""
     h_tok = m.group("h") or ""
-    min_tok = m.group("m")
+    gd = m.groupdict()
     hour = _cn_to_hour(h_tok)
     if hour is None or hour < 0 or hour > 23:
         return None
     hour = _apply_period(hour, period)
-    minute = _parse_minute(min_tok)
+    if gd.get("half"):
+        minute = 30
+    else:
+        minute = _parse_minute(gd.get("m"))
     day_offset = _day_offset_from_word(day_word)
     day = (base + timedelta(days=day_offset)).date()
     try:

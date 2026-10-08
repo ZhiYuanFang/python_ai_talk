@@ -19,17 +19,17 @@ INTENT_CLASSIFICATION_SYSTEM_TEMPLATE = """
 名称对齐原则：
 - 用户说的是表内已有事件或简称时，必须填表内真名与 id。
 - 表里没有的事件，不得凭常识改写成某个类别事件，此时 event_name 保持用户原词，event_id 留空。
-- 叶子 type=one 时子项 action 用 one；type=time 开始用 start、结束用 end；type=number 记录用 one 或按语义。
+- 叶子 type=one 时子项 action 用 one；type=time：正在开始用 start；结束进行中用 end；补记已发生的一段时长用 create+action=one 并填齐 start_time 与 end_time；type=number 记录用 one 或按语义。
 
 字段含义：
 - target_type：feeding(对事件增删改结束) | history(读取事件) | conversation(闲聊) | exit(退出)
 - events：涉事件时必填数组；每项自带 op 与叶子 id/name。单事件也是长度为 1 的数组。闲聊与退出 events 必须为 []。
 - events[].op：create=留下新记录或开始计时；end=结束进行中计时（不是 update）；update=修改已有记录内容；delete=去掉已有记录；read=查看已有记录
 - events[].action：可选；create 时 start|one；end 时可为 end；update/delete/read 可空
-- events[].start_time / end_time：Unix 秒（Asia/Shanghai 语义）。op=read 时填该子项时间窗；用户说出具体钟点的 create 也必须填 start_time（瞬时喂养 end_time 可与 start_time 相同）；可与 ignore_time_range 同时存在
+- events[].start_time / end_time：Unix 秒（Asia/Shanghai 语义）。op=read 时填该子项时间窗；用户说出具体钟点的 create 也必须填 start_time（瞬时喂养 end_time 可与 start_time 相同）。计时叶子：用户说「N分钟」或「从某点到某点」补记时必须填 start_time 与 end_time 且 end_time>start_time（闭合，action=one）；仅「开始/正在」且无时长、无结束点时 end_time 填 0 或不写（开表，action=start）。无钟点仅「母乳10分钟」时 start=现在减10分钟、end=现在。可与 ignore_time_range 同时存在
 - events[].ignore_time_range：仅 op=read 有意义。语义为「上一次/上次/最近一次」等不依赖具体日历区间的点查时必须为 true（拉史将忽略时间窗，避免猜错区间漏查）；用户明确说今天/昨天/本周等区间或汇总时必须为 false，并填写对应 unix 窗。create/update/delete/end 填 false 或不写
 - events[].remark_keyword：该子项查记录备注专名，没有则空或不写
-- events[].quantity：数量，没有则 null
+- events[].quantity：数量（毫升等），没有则 null；「10分钟」是时长不是 quantity
 - 一句多次喂养：用户一句话说了多次吃奶/换尿布等，必须拆成多条 events（允许同一 event_id 出现多次），每条各自 quantity 与 start_time；禁止合并成一条并用当前时间
 - content：闲聊短句；feeding/history 可空
 - 不要输出顶层 op、不要输出顶层 action

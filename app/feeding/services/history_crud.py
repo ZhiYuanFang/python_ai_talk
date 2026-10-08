@@ -106,16 +106,31 @@ def collect_event_items(
         if item_op not in CUD_OPS:
             continue
         action = str(ev.get("action") or "").strip().lower()
+        is_timer = _is_timer_leaf(leaf)
+        # 显式闭合结束时间（补记）；计时开表则为 0/缺省
+        try:
+            explicit_end = int(ev.get("end_time") or 0)
+        except (TypeError, ValueError):
+            explicit_end = 0
         if not action:
             if item_op == "end":
                 action = IntentAction.END.value
             elif item_op == IntentOp.CREATE.value:
-                action = (
-                    IntentAction.START.value
-                    if _is_timer_leaf(leaf)
-                    else IntentAction.ONE.value
-                )
-        is_timer = _is_timer_leaf(leaf)
+                # 有闭合 end → one；计时无 end → start 开表
+                if is_timer and explicit_end > 0:
+                    action = IntentAction.ONE.value
+                elif is_timer:
+                    action = IntentAction.START.value
+                else:
+                    action = IntentAction.ONE.value
+        # 计时已闭合却仍标 start：改为 one，避免语义像开表
+        if (
+            item_op == IntentOp.CREATE.value
+            and is_timer
+            and explicit_end > 0
+            and action == IntentAction.START.value
+        ):
+            action = IntentAction.ONE.value
         if item_op == "end" and not is_timer:
             item_op = IntentOp.CREATE.value
             action = IntentAction.ONE.value
@@ -133,7 +148,11 @@ def collect_event_items(
             end_time = 0
         elif item_op == IntentOp.CREATE.value:
             hid_int = 0
-            end_time = 0 if is_timer else start_time
+            if is_timer:
+                # 尊重显式闭合 end；否则开表 end=0
+                end_time = explicit_end if explicit_end > 0 else 0
+            else:
+                end_time = explicit_end if explicit_end > 0 else start_time
         else:
             hid = ev.get("history_id")
             try:
