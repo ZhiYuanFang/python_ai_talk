@@ -13,6 +13,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -37,10 +38,14 @@ from app.shared.constants import (
     VALID_RESOLVE_OPS,
 )
 from app.shared.graphs.stream_llm_collect import ThinkingCallback, stream_llm_collect
+from app.shared.history_window import shanghai_tz
 from app.shared.llm_client import llm_model_config_from_mapping
 from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
+
+# 与「现在」等价：|start-now| 小于该秒数时念「现在」而非精确钟点
+_CONFIRM_NOW_THRESHOLD_SEC = 120
 
 # 兼容：历史 import ResolveStatus from clarification
 __all__ = [
@@ -205,16 +210,204 @@ def build_parent_disambiguation_message(
     return "\n".join(lines)
 
 
-def build_leaf_confirm_message(
-    event_name: str, action: str = IntentAction.ONE.value
+def _parse_confirm_epoch(value: Any) -> Optional[datetime]:
+    """将落库用 Unix 秒/毫秒解析为上海时区 datetime；空/0/非法 → None。"""
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if n > 1e12:
+        n = n / 1000.0
+    if n <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(n, tz=shanghai_tz())
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _day_period(hour: int) -> str:
+    """由小时反推日段（贴合落库钟点，不回放用户原话）。"""
+    if hour < 5:
+        return "凌晨"
+    if hour < 9:
+        return "早上"
+    if hour < 12:
+        return "上午"
+    if hour < 14:
+        return "中午"
+    if hour < 18:
+        return "下午"
+    return "晚上"
+
+
+def _display_hour(hour: int, period: str) -> int:
+    """
+    口语钟点：下午/晚上用 1–11（18→6），其余用 0–12 原小时。
+    """
+    if period in ("下午", "晚上") and hour > 12:
+        return hour - 12
+    return hour
+
+
+def _clock_phrase(dt: datetime, *, period: str = "") -> str:
+    """整点「6点」；有分「6点30分」。下午/晚上按 12 小时口语。"""
+    p = period or _day_period(dt.hour)
+    h = _display_hour(dt.hour, p)
+    if dt.minute == 0:
+        return f"{h}点"
+    return f"{h}点{dt.minute}分"
+
+
+def _format_point_phrase(dt: datetime, now: datetime) -> str:
+    """
+    单点口语：早上8点 / 昨晚6点 / 昨天上午10点 / 3月5日下午2点。
+    """
+    period = _day_period(dt.hour)
+    clock = _clock_phrase(dt, period=period)
+    delta_days = (now.date() - dt.date()).days
+    if delta_days == 0:
+        return f"{period}{clock}"
+    if delta_days == 1:
+        # 晚间用「昨晚」更贴嘴
+        if period == "晚上":
+            return f"昨晚{clock}"
+        return f"昨天{period}{clock}"
+    if delta_days == 2:
+        return f"前天{period}{clock}"
+    if dt.year == now.year:
+        return f"{dt.month}月{dt.day}日{period}{clock}"
+    return f"{dt.year}年{dt.month}月{dt.day}日{period}{clock}"
+
+
+def _is_nowish(dt: Optional[datetime], now: datetime) -> bool:
+    """无时间或与现在相差不足阈值 → 念「现在」。"""
+    if dt is None:
+        return True
+    return abs((dt - now).total_seconds()) < _CONFIRM_NOW_THRESHOLD_SEC
+
+
+def _coerce_confirm_quantity(raw: Any) -> Optional[int]:
+    """确认话术用数量；无效则 None（0 也视为未带量）。"""
+    if raw in (None, "", 0, "0"):
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _prefer_eat_verb(event_name: str) -> bool:
+    """带数量时是否用「吃了」：奶/配方等喂养名。"""
+    name = event_name or ""
+    return any(k in name for k in ("奶", "配方", "母乳", "辅食", "营养"))
+
+
+def format_confirm_slot(
+    ev: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
 ) -> str:
-    """生成叶子事件确认问句（自由文本回应）。单事件用开始/结束/记录。"""
-    action_desc = {
-        IntentAction.START.value: "开始记录",
-        IntentAction.END.value: "结束记录",
-        IntentAction.ONE.value: "记录",
-    }.get(action, "记录")
-    return f"您是要{action_desc}「{event_name}」吗？"
+    """
+    将单条子项格式化为确认用动词短语（不含「您是要…吗？」）。
+
+    业务逻辑：
+    时间与日段从将落库的 unix 反推；无有效时间或距现在 <120s 用「现在」。
+    优先级：闭合区间 → 结束 → 开始 → 瞬时记录（可带毫升）。
+    """
+    now = now or datetime.now(tz=shanghai_tz())
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=shanghai_tz())
+
+    name = str(ev.get("event_name") or "").strip() or "该事件"
+    quoted = f"「{name}」"
+    op = str(ev.get("op") or "").strip().lower()
+    action = str(ev.get("action") or "").strip().lower()
+    st = _parse_confirm_epoch(ev.get("start_time"))
+    et = _parse_confirm_epoch(ev.get("end_time"))
+    qty = _coerce_confirm_quantity(ev.get("quantity"))
+
+    # 查/改/删：保持短句，不套记录时间模板
+    if op == IntentOp.READ.value:
+        return f"查询{quoted}"
+    if op == IntentOp.DELETE.value:
+        return f"删除{quoted}"
+    if op == IntentOp.UPDATE.value:
+        if st is None or _is_nowish(st, now):
+            return f"现在修改{quoted}"
+        return f"修改{_format_point_phrase(st, now)}的{quoted}"
+
+    # 1) 闭合区间
+    if st is not None and et is not None and et > st:
+        left = _format_point_phrase(st, now)
+        if st.date() == et.date():
+            ep = _day_period(et.hour)
+            if _day_period(st.hour) == ep:
+                right = _clock_phrase(et, period=ep)
+            else:
+                right = f"{ep}{_clock_phrase(et, period=ep)}"
+        else:
+            right = _format_point_phrase(et, now)
+        return f"记录{left}到{right}的{quoted}"
+
+    # 2) 结束进行中
+    if op == "end" or action == IntentAction.END.value:
+        t = et or st
+        if _is_nowish(t, now):
+            return f"现在结束{quoted}"
+        assert t is not None
+        return f"{_format_point_phrase(t, now)}结束{quoted}"
+
+    # 3) 开表开始（无有效 end；end=0 已在 parse 中视为无）
+    if action == IntentAction.START.value or op == IntentAction.START.value:
+        if _is_nowish(st, now):
+            return f"现在开始{quoted}"
+        assert st is not None
+        return f"{_format_point_phrase(st, now)}开始{quoted}"
+
+    # 4) 瞬时记录
+    if _is_nowish(st, now):
+        if qty is not None:
+            return f"现在记录{qty}毫升{quoted}"
+        return f"现在记录{quoted}"
+
+    assert st is not None
+    time_phrase = _format_point_phrase(st, now)
+    if qty is not None:
+        if _prefer_eat_verb(name):
+            return f"记录{time_phrase}吃了{qty}毫升{quoted}"
+        return f"记录{time_phrase}{qty}毫升的{quoted}"
+    return f"记录{time_phrase}的{quoted}"
+
+
+def build_leaf_confirm_message(
+    event_name: str,
+    action: str = IntentAction.ONE.value,
+    *,
+    op: str = "",
+    quantity: Any = None,
+    start_time: Any = None,
+    end_time: Any = None,
+) -> str:
+    """
+    生成叶子事件确认问句（自由文本回应）。
+
+    记录类带落库时间/数量口语；无时间则「现在」。
+    """
+    slot = format_confirm_slot(
+        {
+            "event_name": event_name,
+            "action": action,
+            "op": op or IntentOp.CREATE.value,
+            "quantity": quantity,
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+    )
+    return f"您是要{slot}吗？"
 
 
 def build_delete_confirm_message(event_name: str) -> str:
@@ -223,60 +416,12 @@ def build_delete_confirm_message(event_name: str) -> str:
     return f"您是要删除「{name}」的记录吗？"
 
 
-def _confirm_verb_for_event(ev: Dict[str, Any]) -> str:
-    """
-    多事件确认用的短动作词（优先子项 op）。
-
-    end→结束；create+start→开始；update→修改；delete→删除；read→查询；其余→记录。
-    """
-    op = str(ev.get("op") or "").strip().lower()
-    if op == "end":
-        return "结束"
-    if op == IntentOp.UPDATE.value:
-        return "修改"
-    if op == IntentOp.DELETE.value:
-        return "删除"
-    if op == IntentOp.READ.value:
-        return "查询"
-    a = str(ev.get("action") or "").strip().lower()
-    if a == IntentAction.END.value:
-        return "结束"
-    if a == IntentAction.START.value:
-        return "开始"
-    return "记录"
-
-
 def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
     """
-    多事件确认问句：逐项点出动作、字典名，以及数量/钟点（若有）。
+    多事件确认问句：逐项 format_confirm_slot，再用「并」拼接。
 
-    例：您是要记录「配方奶」120毫升（今天 05:00）、记录「配方奶」150毫升（今天 07:00）并记录「母乳」60毫升（今天 08:00）吗？
+    例：您是要记录早上5点吃了120毫升「配方奶」并记录早上7点吃了150毫升「配方奶」吗？
     """
-    from datetime import datetime
-
-    from app.shared.history_window import shanghai_tz
-
-    _tz = shanghai_tz()
-
-    def _slot_extra(ev: Dict[str, Any]) -> str:
-        bits: List[str] = []
-        qty = ev.get("quantity")
-        if qty not in (None, "", 0, "0"):
-            try:
-                bits.append(f"{int(qty)}毫升")
-            except (TypeError, ValueError):
-                bits.append(str(qty))
-        st = ev.get("start_time")
-        if st not in (None, "", 0, "0"):
-            try:
-                dt = datetime.fromtimestamp(int(st), tz=_tz)
-                bits.append(dt.strftime("%H:%M"))
-            except (TypeError, ValueError, OSError, OverflowError):
-                pass
-        if not bits:
-            return ""
-        return "（" + "，".join(bits) + "）"
-
     parts: List[str] = []
     for ev in events or []:
         if not isinstance(ev, dict):
@@ -284,8 +429,7 @@ def build_multi_event_confirm_message(events: List[Dict[str, Any]]) -> str:
         name = str(ev.get("event_name") or "").strip()
         if not name:
             continue
-        verb = _confirm_verb_for_event(ev)
-        parts.append(f"{verb}「{name}」{_slot_extra(ev)}")
+        parts.append(format_confirm_slot(ev))
     if not parts:
         return ""
     if len(parts) == 1:
@@ -501,7 +645,15 @@ def create_leaf_confirm_pending(
     elif resolved_op == "delete":
         message = build_delete_confirm_message(event_name)
     else:
-        message = confirm_message or build_leaf_confirm_message(event_name, action)
+        # 记录类：带落库时间/数量；显式 confirm_message 仍优先覆盖
+        message = confirm_message or build_leaf_confirm_message(
+            event_name,
+            action,
+            op=resolved_op or IntentOp.CREATE.value,
+            quantity=quantity,
+            start_time=start_time,
+            end_time=end_time,
+        )
     pending = PendingClarification(
         kind=ConfirmType.LEAF_CONFIRM.value,
         conversation_id=cid,

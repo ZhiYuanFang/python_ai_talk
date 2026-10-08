@@ -501,11 +501,15 @@ def postprocess_feeding_result(
 
     if need_confirm or match_source == MatchSource.LLM.value:
         if event_id:
+            # 槽位优先子项，便于确认话术反推日段/数量（贴合落库）
+            slot_qty = head.get("quantity")
+            if slot_qty is None:
+                slot_qty = quantity
             pending = create_leaf_confirm_pending(
                 leaf=leaf,
                 original_utterance=user_input,
                 action=action,
-                quantity=quantity,
+                quantity=slot_qty,
                 match_source=match_source,
                 matched_vector_id=matched_vector_id,
                 device_no=device_no,
@@ -516,6 +520,12 @@ def postprocess_feeding_result(
                 or head.get("remark_keyword")
                 or "",
                 confirm_message=fields.get("confirm_message"),
+                start_time=head.get("start_time")
+                or fields.get("start_time")
+                or fields.get("startTime"),
+                end_time=head.get("end_time")
+                or fields.get("end_time")
+                or fields.get("endTime"),
             )
             return response_from_pending(pending)
 
