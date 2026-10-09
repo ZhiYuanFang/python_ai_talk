@@ -135,6 +135,10 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
         intent_result.setdefault("keywords", [])
         intent_result.setdefault("content", "")
         intent_result.setdefault("events", [])
+        # 冲突改选等场景依赖非空 confirm_message 传到 leaf_confirm
+        intent_result.setdefault("confirm_message", "")
+        if isinstance(intent_result.get("confirm_message"), str):
+            intent_result["confirm_message"] = intent_result["confirm_message"].strip()
 
         # 子项字典匹配
         if intent_result.get("events"):

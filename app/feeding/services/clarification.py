@@ -645,8 +645,10 @@ def create_leaf_confirm_pending(
     elif resolved_op == "delete":
         message = build_delete_confirm_message(event_name)
     else:
-        # 记录类：带落库时间/数量；显式 confirm_message 仍优先覆盖
-        message = confirm_message or build_leaf_confirm_message(
+        # 记录类：分类产出的确认问句优先（含「quantity+time→近义 number」冲突改选短句）；
+        # 仅空/空白时回退模板，避免盖掉 LLM 简洁问句
+        explicit_confirm = (confirm_message or "").strip()
+        message = explicit_confirm or build_leaf_confirm_message(
             event_name,
             action,
             op=resolved_op or IntentOp.CREATE.value,

@@ -21,6 +21,13 @@ INTENT_CLASSIFICATION_SYSTEM_TEMPLATE = """
 - 表里没有的事件，不得凭常识改写成某个类别事件，此时 event_name 保持用户原词，event_id 留空。
 - 叶子 type=one 时子项 action 用 one；type=time：正在开始用 start；结束进行中用 end；补记已发生的一段时长用 create+action=one 并填齐 start_time 与 end_time；type=number 记录用 one 或按语义。
 
+计量与计时冲突（通用，须在 reasoning 中先核 type）：
+- 子项带 quantity（毫升等）时，禁止把该 create 目标定为 type=time 的叶子（不得把计量语义直接记到计时事件上）。
+- 若口语更像某 type=time 叶，但表内另有语义近义的 type=number 叶：event_id/event_name 必须改填该 number 叶（近义由你根据表内名称与 type 判断，禁止编造表外 id）。
+- 例：表有「母乳」(time) 与「瓶喂母乳」(number)，用户说「记录60毫升母乳」→ 填瓶喂母乳、quantity=60；confirm_message 用简洁一句，如「您是要记录瓶喂母乳60毫升嘛？」；禁止冗长解释，禁止列多选项。
+- 「N分钟」是时长不是 quantity：计时补记仍用 type=time（如「母乳10分钟」），不因本条改选 number 叶。
+- 表内找不到近义 number 叶时：不编造事件，可保持原 time 叶并按普通确认问句处理。
+
 字段含义：
 - target_type：feeding(对事件增删改结束) | history(读取事件) | conversation(闲聊) | exit(退出)
 - events：涉事件时必填数组；每项自带 op 与叶子 id/name。单事件也是长度为 1 的数组。闲聊与退出 events 必须为 []。
@@ -44,7 +51,8 @@ INTENT_CLASSIFICATION_SYSTEM_TEMPLATE = """
 - 只输出纯 JSON，不包含任何其他文字、解释、问候语
 - JSON 内部不得包含任何注释（//、/* */、# 等均不允许）
 - 时间的使用不需要解释来源，避免json格式错误
-- 内部思考（reasoning）须使用中文。
+- 内部思考（reasoning）须使用中文；遇 quantity 时须先核对候选叶 type，再决定是否改选近义 number。
+- confirm_message：需要确认时的短句；冲突改选计量叶时必须简洁点名该叶与数量（若有），勿写长说明。
 
 JSON 格式：
 {{
@@ -63,7 +71,7 @@ JSON 格式：
     }}
   ],
   "need_confirm": true,
-  "confirm_message": "需要确认时的问句",
+  "confirm_message": "需要确认时的简洁问句",
   "content": "闲聊短句，CRUD 可空"
 }}
 """
