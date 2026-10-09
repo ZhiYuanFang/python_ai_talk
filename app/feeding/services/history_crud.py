@@ -253,6 +253,12 @@ def rewrite_standalone_document(intent: Dict[str, Any], original: str) -> str:
                 break
     joined = "、".join(names) if names else (original or "").strip()
     if IntentOp.READ.value in ops:
+        # daily 与 point 分文档，避免几次类写入后近邻撞上「上一次…」
+        hm = str(data.get("history_mode") or "").strip().lower()
+        if hm == "daily":
+            if remark:
+                return f"查询{joined}备注{remark}今天或区间汇总几次"
+            return f"查询{joined}今天或区间汇总几次"
         if remark:
             return f"上一次{joined}备注{remark}是什么时候"
         return f"上一次{joined}是什么时候"

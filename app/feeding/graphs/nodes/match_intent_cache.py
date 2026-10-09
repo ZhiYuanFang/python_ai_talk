@@ -4,6 +4,7 @@
 业务说明：
 相似度与质量分双门槛命中则采用缓存的 events（含 op），跳过分类 LLM。
 旧载荷仅有顶层 op 时投影为 events；无法投影则当未命中。
+查史载荷另过 history_mode 门闩，冲突则未命中以保飞轮不串台。
 """
 
 from __future__ import annotations
@@ -12,6 +13,11 @@ import logging
 from typing import Any, Dict
 
 from app.feeding.schemas.intent_result import IntentResult
+from app.feeding.services.history_mode_cues import (
+    history_mode_cache_conflict,
+    infer_expected_history_mode,
+    payload_history_mode,
+)
 from app.feeding.services.intent_cache_store import (
     INTENT_CACHE_HIGH_THRESHOLD,
     INTENT_CACHE_QUALITY_MIN,
@@ -58,6 +64,16 @@ def match_intent_cache(state: Any) -> Dict[str, Any]:
     normalized = normalize_intent_events(dict(payload))
     if not event_ops(normalized):
         logger.info("意图缓存载荷无可用 events[].op，当未命中")
+        return {"intent_cache_hit": False, "match_confidence": score}
+
+    # 查史：原文几次 vs 载荷上一次等 mode 冲突 → 拒命中，走分类
+    if history_mode_cache_conflict(text, normalized):
+        logger.info(
+            "意图缓存查史 mode 门闩拒命中: expected=%s, payload_mode=%s, text=%s",
+            infer_expected_history_mode(text),
+            payload_history_mode(normalized),
+            (text or "")[:40],
+        )
         return {"intent_cache_hit": False, "match_confidence": score}
 
     repeat_id = last_cache_turn_store.repeat_vector_id(device_no, text)

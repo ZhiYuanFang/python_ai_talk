@@ -9,7 +9,6 @@
 
 import json
 import logging
-import re
 from typing import Any, Dict
 
 from app.feeding.graphs.nodes.prompts.intent_classification import (
@@ -39,20 +38,19 @@ from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
 
-# 区段汇总启发：原文含这些且已有时间窗、未写 mode 时纠偏为 daily
-_DAILY_HINT_RE = re.compile(
-    r"几次|多少次|一共|总共|吃了什么|喝了多少|和昨天比|比昨天"
-)
-
-
 def _maybe_coerce_history_mode(intent_result: Dict[str, Any], text: str) -> None:
     """
     轻量纠偏：history + read 漏写 mode 时，按原文启发补 daily/point。
 
     业务说明：
     已有合法 point|daily 则不动；含次数/合计等且子项带窗 → daily；
-    含上次/上一次且无汇总词 → point。
+    含上次/上一次且无汇总词 → point。词表与缓存门闩共用 history_mode_cues。
     """
+    from app.feeding.services.history_mode_cues import (
+        DAILY_HINT_RE,
+        infer_expected_history_mode,
+    )
+
     target = str(intent_result.get("target_type") or "").strip().lower()
     if target != TargetType.HISTORY.value:
         return
@@ -67,11 +65,13 @@ def _maybe_coerce_history_mode(intent_result: Dict[str, Any], text: str) -> None
         int(e.get("start_time") or 0) > 0 or int(e.get("end_time") or 0) > 0
         for e in events
     )
-    if _DAILY_HINT_RE.search(raw) and has_window:
+    # daily 仍要求带窗，与门闩「仅推断」略严，避免无窗误标 daily
+    if DAILY_HINT_RE.search(raw) and has_window:
         intent_result["history_mode"] = "daily"
         logger.info("history_mode 启发纠偏为 daily")
         return
-    if any(k in raw for k in ("上一次", "上次", "最近一次")):
+    expected = infer_expected_history_mode(raw)
+    if expected == "point":
         intent_result["history_mode"] = "point"
         logger.info("history_mode 启发纠偏为 point")
 

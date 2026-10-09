@@ -487,14 +487,12 @@ def build_history_confirm_message(
     """
     name = (event_name or "").strip()
     remark = (remark_keyword or "").strip()
+    # 与叶子确认一致：只发问句，不附加「请回复确认或取消」
     if not name:
-        return "请确认是否查询这条历史记录？请回复确认或取消。"
+        return "请确认是否查询这条历史记录？"
     if remark:
-        return (
-            f"请确认是否查询「{name}」（按备注 {remark}）的历史？"
-            "请回复确认或取消。"
-        )
-    return f"请确认是否查询「{name}」的历史？请回复确认或取消。"
+        return f"请确认是否查询「{name}」（按备注 {remark}）的历史？"
+    return f"请确认是否查询「{name}」的历史？"
 
 
 def build_remark_disambiguation_message(
