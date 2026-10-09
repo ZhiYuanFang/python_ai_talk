@@ -274,6 +274,8 @@ async def resolve_remark_event(state: Any) -> Dict[str, Any]:
                 op=op,
                 start_time=intent.get("start_time") or intent.get("startTime"),
                 end_time=intent.get("end_time") or intent.get("endTime"),
+                history_mode=str(intent.get("history_mode") or ""),
+                limit=intent.get("limit"),
             )
             fields = pending_to_response_fields(pending)
             logger.info(

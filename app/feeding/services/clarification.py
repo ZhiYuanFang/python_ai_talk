@@ -530,6 +530,9 @@ def create_parent_disambiguation_pending(
     end_time: Any = None,
     event_ids: Optional[List[str]] = None,
     clarify_message: Optional[str] = None,
+    # 查史消歧确认后 speak_history 依赖；feeding 可空
+    history_mode: str = "",
+    limit: Optional[int] = None,
 ) -> PendingClarification:
     """创建父事件（或备注多命中）消歧 pending。"""
     cid = conversation_id or str(uuid4())
@@ -565,6 +568,8 @@ def create_parent_disambiguation_pending(
         start_time=start_time,
         end_time=end_time,
         event_ids=[str(x) for x in (event_ids or []) if x not in (None, "")],
+        history_mode=(history_mode or "").strip().lower(),
+        limit=limit,
     )
     clarification_store.set(pending)
     return pending
@@ -585,6 +590,8 @@ def create_remark_disambiguation_pending(
     op: str = "",
     start_time: Any = None,
     end_time: Any = None,
+    history_mode: str = "",
+    limit: Optional[int] = None,
 ) -> PendingClarification:
     """
     备注反查命中多个叶子时的消歧。
@@ -608,6 +615,8 @@ def create_remark_disambiguation_pending(
         start_time=start_time,
         end_time=end_time,
         clarify_message=build_remark_disambiguation_message(kw, leaves),
+        history_mode=history_mode,
+        limit=limit,
     )
 
 def create_leaf_confirm_pending(
@@ -1023,6 +1032,13 @@ def try_parent_hit_from_event_id(
     matched_vector_id: str = "",
     device_no: str = "",
     model_config: Optional[Dict[str, Any]] = None,
+    op: str = "",
+    events: Optional[List[Dict[str, Any]]] = None,
+    start_time: Any = None,
+    end_time: Any = None,
+    event_ids: Optional[List[str]] = None,
+    history_mode: str = "",
+    limit: Optional[int] = None,
 ) -> Optional[PendingClarification]:
     """若 event_id 为父事件，创建消歧 pending 并返回；否则 None。"""
     if not is_parent_event(event_id, full_events):
@@ -1043,6 +1059,13 @@ def try_parent_hit_from_event_id(
         matched_vector_id=matched_vector_id,
         device_no=device_no,
         model_config=model_config,
+        op=op,
+        events=events,
+        start_time=start_time,
+        end_time=end_time,
+        event_ids=event_ids,
+        history_mode=history_mode,
+        limit=limit,
     )
 
 

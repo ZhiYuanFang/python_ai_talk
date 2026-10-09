@@ -154,6 +154,7 @@ def create_history_confirm_response(
         events=full_events,
         event_ids=event_ids,
     )
+    # 查史确认后 speak_history 依赖 history_mode/limit，须写入 pending
     pending = create_leaf_confirm_pending(
         leaf={
             "event_id": event_id or (event_ids[0] if event_ids else ""),
@@ -171,6 +172,8 @@ def create_history_confirm_response(
         start_time=fields.get("start_time") or fields.get("startTime"),
         end_time=fields.get("end_time") or fields.get("endTime"),
         event_ids=event_ids,
+        history_mode=str(fields.get("history_mode") or ""),
+        limit=fields.get("limit"),
     )
     return response_from_pending(pending)
 
@@ -240,6 +243,12 @@ async def try_handle_pending(
                 "match_source": pending.match_source,
                 "match_confidence": 1.0,
             }
+            # 查父确认同样回填 mode/limit，避免 daily 回落 point
+            hm = str(getattr(pending, "history_mode", None) or "").strip().lower()
+            if hm in ("point", "daily"):
+                fields["history_mode"] = hm
+            if getattr(pending, "limit", None) not in (None, ""):
+                fields["limit"] = pending.limit
             executed = await _execute_after_confirm(
                 fields,
                 device_no=pending.device_no,
@@ -268,6 +277,13 @@ async def try_handle_pending(
                     device_no=pending.device_no,
                     model_config=pending.model_config,
                     conversation_id=conversation_id,
+                    op=getattr(pending, "op", None) or "",
+                    events=getattr(pending, "events", None) or [],
+                    start_time=getattr(pending, "start_time", None),
+                    end_time=getattr(pending, "end_time", None),
+                    event_ids=getattr(pending, "event_ids", None) or [],
+                    history_mode=str(getattr(pending, "history_mode", None) or ""),
+                    limit=getattr(pending, "limit", None),
                 )
                 return response_from_pending(new_pending), False
             return (
@@ -456,6 +472,12 @@ def postprocess_feeding_result(
                     matched_vector_id=matched_vector_id,
                     device_no=device_no,
                     model_config=model_config,
+                    op=str(ev.get("op") or fields.get("op") or ""),
+                    events=events,
+                    start_time=fields.get("start_time") or fields.get("startTime"),
+                    end_time=fields.get("end_time") or fields.get("endTime"),
+                    history_mode=str(fields.get("history_mode") or ""),
+                    limit=fields.get("limit"),
                 )
                 if pending:
                     return response_from_pending(pending)
@@ -497,6 +519,16 @@ def postprocess_feeding_result(
             matched_vector_id=matched_vector_id,
             device_no=device_no,
             model_config=model_config,
+            op=str(head.get("op") or ""),
+            events=fields.get("events") or [],
+            start_time=head.get("start_time")
+            or fields.get("start_time")
+            or fields.get("startTime"),
+            end_time=head.get("end_time")
+            or fields.get("end_time")
+            or fields.get("endTime"),
+            history_mode=str(fields.get("history_mode") or ""),
+            limit=fields.get("limit"),
         )
         if pending:
             logger.info(f"匹配结果为父事件，强制消歧: event_id={event_id}")
