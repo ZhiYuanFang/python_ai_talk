@@ -389,13 +389,23 @@ async def speak_history(state: Any) -> Dict[str, Any]:
         fetch_ids = query_ids or original_ids
         # LLM 判定「上一次」时为 true → 透传 Go ignoreTimeRange，避免猜测窗踩空
         ignore_time = coerce_ignore_time_range(item.get("ignore_time_range"))
+        mode = (intent.get("history_mode") or "point").strip().lower()
+        # daily 区段默认提高 limit，降低一周/多日被 20 条截断
+        _DAILY_DEFAULT_LIMIT = 50
+        if intent.get("limit") not in (None, "", 0, "0"):
+            try:
+                fetch_limit = int(intent.get("limit"))
+            except (TypeError, ValueError):
+                fetch_limit = _DAILY_DEFAULT_LIMIT if mode == "daily" else 20
+        else:
+            fetch_limit = _DAILY_DEFAULT_LIMIT if mode == "daily" else 20
         try:
             rows = await http_client.get_filtered_history_events(
                 device_no=device_no,
                 event_ids=fetch_ids,
                 start_time=start_time,
                 end_time=end_time,
-                limit=int(intent.get("limit") or 20),
+                limit=fetch_limit,
                 remark=remark or None,
                 ignore_time_range=ignore_time,
             )
@@ -404,7 +414,6 @@ async def speak_history(state: Any) -> Dict[str, Any]:
             parts.append(f"{name or '该事件'}暂时没查到，请稍后再试。")
             continue
         all_rows.extend(rows or [])
-        mode = (intent.get("history_mode") or "point").strip()
         collapse_parent = bool(parent_ids) and all(
             is_parent_event(x, full_events) for x in original_ids
         )
@@ -441,13 +450,18 @@ async def speak_history(state: Any) -> Dict[str, Any]:
         content = "没有查到相关记录。"
     intent["content"] = content
     intent["events"] = cache_events or intent.get("events") or []
+    # 缓存带上 history_mode，命中后区段汇总行为一致
+    cache_payload: Dict[str, Any] = {
+        "target_type": TargetType.HISTORY.value,
+        "events": intent["events"],
+        "remark_keyword": intent.get("remark_keyword") or "",
+        "history_mode": (intent.get("history_mode") or "point"),
+    }
+    if intent.get("limit") not in (None, ""):
+        cache_payload["limit"] = intent.get("limit")
     intent_cache_store.add(
         rewrite_standalone_document(intent, state_get(state, "user_input") or ""),
-        {
-            "target_type": TargetType.HISTORY.value,
-            "events": intent["events"],
-            "remark_keyword": intent.get("remark_keyword") or "",
-        },
+        cache_payload,
     )
     if state_get(state, "intent_cache_hit"):
         last_cache_turn_store.remember(

@@ -26,6 +26,7 @@ from app.feeding.services.clarification import (
     try_parent_hit_from_event_id,
 )
 from app.shared.graphs.stream_llm_collect import ThinkingCallback
+from app.feeding.services.closed_interval import apply_time_slots_to_events
 from app.feeding.services.event_hierarchy import (
     find_parent_by_exact_name,
     get_children,
@@ -323,6 +324,12 @@ async def try_handle_pending(
             fields["start_time"] = pending.start_time
         if getattr(pending, "end_time", None) is not None:
             fields["end_time"] = pending.end_time
+        # 查史确认后保留分类 mode/limit，供 speak_history daily 播报
+        hm = str(getattr(pending, "history_mode", None) or "").strip().lower()
+        if hm in ("point", "daily"):
+            fields["history_mode"] = hm
+        if getattr(pending, "limit", None) not in (None, ""):
+            fields["limit"] = pending.limit
         executed = await _execute_after_confirm(
             fields,
             device_no=pending.device_no,
@@ -416,6 +423,15 @@ def postprocess_feeding_result(
     )
 
     fields = normalize_intent_events(fields, full_events)
+    # 确认前规则盖时间（与落库前同套），确认话术贴合落库；半命中跳过残缺 clock
+    events = [e for e in (fields.get("events") or []) if isinstance(e, dict)]
+    if events and (user_input or "").strip():
+        new_events, slot_changed = apply_time_slots_to_events(user_input, events)
+        if slot_changed:
+            fields["events"] = new_events
+            events = new_events
+            logger.info("确认前规则时间已覆盖: events=%s", len(new_events))
+
     head = first_display_event(fields)
     event_id = str(fields.get("event_id") or head.get("event_id") or "")
     action = str(head.get("action") or IntentAction.ONE.value)
@@ -426,7 +442,6 @@ def postprocess_feeding_result(
     match_confidence = fields.get("match_confidence")
 
     # 多事件：逐个校验，若含父则整体改消歧（取第一个父）
-    events = fields.get("events") or []
     if len(events) > 1:
         for ev in events:
             eid = ev.get("event_id") or ""
@@ -460,6 +475,8 @@ def postprocess_feeding_result(
             model_config=model_config,
             events=events,
             op="",
+            history_mode=str(fields.get("history_mode") or ""),
+            limit=fields.get("limit"),
         )
         multi_msg = build_multi_event_confirm_message(events)
         if multi_msg:
@@ -526,6 +543,8 @@ def postprocess_feeding_result(
                 end_time=head.get("end_time")
                 or fields.get("end_time")
                 or fields.get("endTime"),
+                history_mode=str(fields.get("history_mode") or ""),
+                limit=fields.get("limit"),
             )
             return response_from_pending(pending)
 

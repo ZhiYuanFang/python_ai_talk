@@ -9,11 +9,13 @@
 
 import json
 import logging
+import re
 from typing import Any, Dict
 
 from app.feeding.graphs.nodes.prompts.intent_classification import (
     build_intent_classification_system_prompt,
     build_intent_classification_user_message,
+    build_time_preparse_hint,
 )
 from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
 from app.feeding.services.event_name_match import match_feeding_event
@@ -36,6 +38,42 @@ from app.shared.llm_client import llm_model_config_from_mapping
 from app.shared.llm_json import loads_llm_json
 
 logger = logging.getLogger(__name__)
+
+# 区段汇总启发：原文含这些且已有时间窗、未写 mode 时纠偏为 daily
+_DAILY_HINT_RE = re.compile(
+    r"几次|多少次|一共|总共|吃了什么|喝了多少|和昨天比|比昨天"
+)
+
+
+def _maybe_coerce_history_mode(intent_result: Dict[str, Any], text: str) -> None:
+    """
+    轻量纠偏：history + read 漏写 mode 时，按原文启发补 daily/point。
+
+    业务说明：
+    已有合法 point|daily 则不动；含次数/合计等且子项带窗 → daily；
+    含上次/上一次且无汇总词 → point。
+    """
+    target = str(intent_result.get("target_type") or "").strip().lower()
+    if target != TargetType.HISTORY.value:
+        return
+    if not has_read_events(intent_result):
+        return
+    mode = str(intent_result.get("history_mode") or "").strip().lower()
+    if mode in ("point", "daily"):
+        return
+    raw = text or ""
+    events = [e for e in (intent_result.get("events") or []) if isinstance(e, dict)]
+    has_window = any(
+        int(e.get("start_time") or 0) > 0 or int(e.get("end_time") or 0) > 0
+        for e in events
+    )
+    if _DAILY_HINT_RE.search(raw) and has_window:
+        intent_result["history_mode"] = "daily"
+        logger.info("history_mode 启发纠偏为 daily")
+        return
+    if any(k in raw for k in ("上一次", "上次", "最近一次")):
+        intent_result["history_mode"] = "point"
+        logger.info("history_mode 启发纠偏为 point")
 
 
 def _parse_intent_result(content: str) -> Dict[str, Any]:
@@ -87,9 +125,12 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
     )
 
     try:
+        # 规则预解析时间注入提示，减少 LLM 手算 Unix
+        time_hint = build_time_preparse_hint(text)
         system_prompt = build_intent_classification_system_prompt(
             event_dictionary,
             in_progress_hint=str(state_get(state, "in_progress_hint") or ""),
+            time_preparse_hint=time_hint,
         )
         user_message = build_intent_classification_user_message(text)
 
@@ -139,6 +180,15 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
         intent_result.setdefault("confirm_message", "")
         if isinstance(intent_result.get("confirm_message"), str):
             intent_result["confirm_message"] = intent_result["confirm_message"].strip()
+        # 查史模式与拉史条数（透传 speak_history）
+        if intent_result.get("history_mode") is not None:
+            hm = str(intent_result.get("history_mode") or "").strip().lower()
+            intent_result["history_mode"] = hm if hm in ("point", "daily") else None
+        if intent_result.get("limit") is not None:
+            try:
+                intent_result["limit"] = int(intent_result["limit"])
+            except (TypeError, ValueError):
+                intent_result["limit"] = None
 
         # 子项字典匹配
         if intent_result.get("events"):
@@ -201,6 +251,12 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
             intent_result["content"] = intent_result.get("content") or "请说明要查询的事件。"
             intent_result["events"] = []
             target = TargetType.CONVERSATION.value
+
+        if target == TargetType.HISTORY.value:
+            _maybe_coerce_history_mode(intent_result, text)
+            if not str(intent_result.get("history_mode") or "").strip():
+                # 有 read 仍无 mode：默认点查，避免误走 daily
+                intent_result["history_mode"] = "point"
 
         if target in (TargetType.CONVERSATION.value, TargetType.EXIT.value):
             need_confirm = False

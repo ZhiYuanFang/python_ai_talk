@@ -143,6 +143,9 @@ class PendingClarification:
     start_time: Any = None
     end_time: Any = None
     event_ids: List[str] = field(default_factory=list)
+    # 查史模式与拉史条数（确认后 speak_history 依赖）
+    history_mode: str = ""
+    limit: Optional[int] = None
 
 
 @dataclass
@@ -625,6 +628,8 @@ def create_leaf_confirm_pending(
     start_time: Any = None,
     end_time: Any = None,
     event_ids: Optional[List[str]] = None,
+    history_mode: str = "",
+    limit: Optional[int] = None,
 ) -> PendingClarification:
     """创建叶子确认 pending（自由文本是/否）。查记录时话术必带事件名。"""
     cid = conversation_id or str(uuid4())
@@ -674,6 +679,8 @@ def create_leaf_confirm_pending(
         start_time=start_time,
         end_time=end_time,
         event_ids=[str(x) for x in (event_ids or []) if x not in (None, "")],
+        history_mode=(history_mode or "").strip().lower(),
+        limit=limit,
     )
     clarification_store.set(pending)
     return pending

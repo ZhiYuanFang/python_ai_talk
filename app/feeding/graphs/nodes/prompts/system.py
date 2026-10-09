@@ -30,33 +30,45 @@ INTENT_CLASSIFICATION_SYSTEM_TEMPLATE = """
 
 字段含义：
 - target_type：feeding(对事件增删改结束) | history(读取事件) | conversation(闲聊) | exit(退出)
+- history_mode：仅 history 必填，取值 point|daily。feeding/conversation/exit 不写或空。
+- limit：拉史条数上限，可选；daily 区段建议 ≥50；point 可省略
 - events：涉事件时必填数组；每项自带 op 与叶子 id/name。单事件也是长度为 1 的数组。闲聊与退出 events 必须为 []。
 - events[].op：create=留下新记录或开始计时；end=结束进行中计时（不是 update）；update=修改已有记录内容；delete=去掉已有记录；read=查看已有记录
 - events[].action：可选；create 时 start|one；end 时可为 end；update/delete/read 可空
-- events[].start_time / end_time：Unix 秒（Asia/Shanghai 语义）。op=read 时填该子项时间窗；用户说出具体钟点的 create 也必须填 start_time（瞬时喂养 end_time 可与 start_time 相同）。计时叶子：用户说「N分钟」或「从某点到某点」补记时必须填 start_time 与 end_time 且 end_time>start_time（闭合，action=one）；仅「开始/正在」且无时长、无结束点时 end_time 填 0 或不写（开表，action=start）。无钟点仅「母乳10分钟」时 start=现在减10分钟、end=现在。可与 ignore_time_range 同时存在
+- events[].start_time / end_time：Unix 秒（Asia/Shanghai）。op=read 填该子项时间窗；create 有钟点须填 start_time（瞬时 end 可与 start 相同）。计时：开表 end=0/不写且 action=start；闭合补记 end>start 且 action=one（含「N分钟」或双钟点起止）。上方「规则预解析时间」非 partial 时优先抄其 unix；可留 0 由服务端规则补。可与 ignore_time_range 同时存在
 - events[].ignore_time_range：仅 op=read 有意义。语义为「上一次/上次/最近一次」等不依赖具体日历区间的点查时必须为 true（拉史将忽略时间窗，避免猜错区间漏查）；用户明确说今天/昨天/本周等区间或汇总时必须为 false，并填写对应 unix 窗。create/update/delete/end 填 false 或不写
 - events[].remark_keyword：该子项查记录备注专名，没有则空或不写
 - events[].quantity：数量（毫升等），没有则 null；「10分钟」是时长不是 quantity
 - 一句多次喂养：用户一句话说了多次吃奶/换尿布等，必须拆成多条 events（允许同一 event_id 出现多次），每条各自 quantity 与 start_time；禁止合并成一条并用当前时间
-- content：闲聊短句；feeding/history 可空
+- content：闲聊短句；feeding/history 可空；conversation 引导 clinic 时写短句
 - 不要输出顶层 op、不要输出顶层 action
+
+查史分流（history）：
+- point：上次/上一次/最近一次等点查 → history_mode=point，read 子项 ignore_time_range=true（仍可填窗）。
+- daily：今天/昨天/本周等区间 + 几次/一共/吃了什么/和昨天比等事实汇总或相邻日对比 → history_mode=daily，ignore_time_range=false 并填 unix 窗；limit 建议 ≥50。
+- 同一次 history 意图只用一个 history_mode。
+
+养育建议归 clinic（intent 不装懂）：
+- 「够不够吃」「正常吗」「怎么办」「最近怎么样」等建议或含糊近况 → target_type=conversation，events=[]，content 简洁引导如「养育建议请使用喂养建议功能」。
+- MUST NOT 用 history 查史冒充建议或编造趋势结论。
 
 表约束：
 - 禁止编造不在表中的 event_id
 - create/update/delete/end 只作用于 kind=leaf
 - read 可作用于 kind=parent 或 leaf
 - feeding 时 events 非空且 op 为 create|update|delete|end
-- history 时 events 非空且含 op=read；明确区间查询自带时间窗且 ignore_time_range=false；「上一次」类点查 ignore_time_range=true（仍可填窗，服务端会忽略）
+- history 时 events 非空且含 op=read；须填 history_mode；明确区间查询自带时间窗且 ignore_time_range=false；「上一次」类点查 ignore_time_range=true（仍可填窗，服务端会忽略）
 - conversation / exit 时 events 为 []
 - 只输出纯 JSON，不包含任何其他文字、解释、问候语
 - JSON 内部不得包含任何注释（//、/* */、# 等均不允许）
-- 时间的使用不需要解释来源，避免json格式错误
-- 内部思考（reasoning）须使用中文；遇 quantity 时须先核对候选叶 type，再决定是否改选近义 number。
+- 内部思考（reasoning）须使用中文；禁止逐步推算 Unix；有非 partial 预解析则采用其 unix。遇 quantity 时须先核对候选叶 type，再决定是否改选近义 number。
 - confirm_message：需要确认时的短句；冲突改选计量叶时必须简洁点名该叶与数量（若有），勿写长说明。
 
 JSON 格式：
 {{
   "target_type": "feeding|history|conversation|exit",
+  "history_mode": "point|daily|",
+  "limit": null,
   "events": [
     {{
       "op": "create|update|delete|end|read",
