@@ -19,6 +19,10 @@ from app.feeding.services.event_hierarchy import (
     is_parent_event,
 )
 from app.feeding.services.history_crud import rewrite_standalone_document
+from app.feeding.services.history_mode_cues import (
+    day_phrase_for_speak,
+    is_count_query,
+)
 from app.feeding.services.intent_cache_store import (
     intent_cache_store,
     last_cache_turn_store,
@@ -31,7 +35,11 @@ from app.shared.history_prompt_fields import (
     format_history_time,
 )
 from app.shared.feeding_history_compact import build_feeding_history_prompt_blocks
-from app.shared.history_window import resolve_window
+from app.shared.history_window import (
+    enum_to_unix,
+    parse_day_word_window,
+    resolve_window,
+)
 from app.shared.http_client import http_client
 
 logger = logging.getLogger(__name__)
@@ -381,15 +389,35 @@ async def speak_history(state: Any) -> Dict[str, Any]:
             "time_range": intent.get("time_range"),
         }
         start_time, end_time = resolve_window(req)
+        # LLM 判定「上一次」时为 true → 透传 Go ignoreTimeRange，避免猜测窗踩空
+        ignore_time = coerce_ignore_time_range(item.get("ignore_time_range"))
+        mode = (intent.get("history_mode") or "point").strip().lower()
+        user_text = state_get(state, "user_input") or ""
+        # daily 且窗无效：按原文日词补窗（和昨天比→两日，勿无界拉史）
+        if (
+            mode == "daily"
+            and not ignore_time
+            and start_time is None
+            and end_time is None
+        ):
+            filled = parse_day_word_window(user_text)
+            if filled is None and is_count_query(user_text):
+                # 几次类无日词：默认今天（注释见 design）
+                filled = enum_to_unix("today")
+            if filled is not None:
+                start_time, end_time = filled
+                logger.info(
+                    "daily 日词补窗: start=%s end=%s text=%s",
+                    start_time,
+                    end_time,
+                    user_text[:40],
+                )
         original_ids = [eid] if eid else []
         if not original_ids:
             parts.append("请先说明要查哪个事件。")
             continue
         query_ids, parent_ids = _expand_query_ids(original_ids, full_events)
         fetch_ids = query_ids or original_ids
-        # LLM 判定「上一次」时为 true → 透传 Go ignoreTimeRange，避免猜测窗踩空
-        ignore_time = coerce_ignore_time_range(item.get("ignore_time_range"))
-        mode = (intent.get("history_mode") or "point").strip().lower()
         # daily 区段默认提高 limit，降低一周/多日被 20 条截断
         _DAILY_DEFAULT_LIMIT = 50
         if intent.get("limit") not in (None, "", 0, "0"):
@@ -418,12 +446,22 @@ async def speak_history(state: Any) -> Dict[str, Any]:
             is_parent_event(x, full_events) for x in original_ids
         )
         if mode == "daily":
-            # 日汇总：共享紧凑聚合；不向家长念 legend
-            history_text, _legend = build_feeding_history_prompt_blocks(rows)
-            if history_text and history_text.strip() != "（无）":
-                chunk = history_text
+            # 次数问：显式 N 次（number 叶不得只报总量）
+            if is_count_query(user_text):
+                n = len(rows or [])
+                day_zh = day_phrase_for_speak(user_text)
+                ev = name or "该事件"
+                if n <= 0:
+                    chunk = f"{day_zh}{ev}没有相关记录"
+                else:
+                    chunk = f"{day_zh}{ev}{n}次"
             else:
-                chunk = f"{name or '这段时间'}没有相关记录。"
+                # 非次数：共享紧凑聚合；不向家长念 legend
+                history_text, _legend = build_feeding_history_prompt_blocks(rows)
+                if history_text and history_text.strip() != "（无）":
+                    chunk = history_text
+                else:
+                    chunk = f"{name or '这段时间'}没有相关记录。"
         elif collapse_parent:
             parent_name = name or id_to_name.get(parent_ids[0], "") or "该分类"
             chunk = _template_parent_latest(rows or [], str(parent_name), full_events)

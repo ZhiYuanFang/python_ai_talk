@@ -19,6 +19,9 @@ DAILY_HINT_RE = re.compile(
     r"几次|多少次|一共|总共|吃了什么|喝了多少|和昨天比|比昨天"
 )
 
+# 次数问（比 daily 更窄）：用于播报显式 N 次，不含「吃了什么」
+COUNT_HINT_RE = re.compile(r"几次|多少次")
+
 _POINT_CUES = ("上一次", "上次", "最近一次")
 
 
@@ -39,6 +42,25 @@ def infer_expected_history_mode(text: str) -> Optional[str]:
     if "什么时候" in raw:
         return "point"
     return None
+
+
+def is_count_query(text: str) -> bool:
+    """是否为次数问（几次/多少次），供 daily 播报突出次数。"""
+    return bool(COUNT_HINT_RE.search(text or ""))
+
+
+def day_phrase_for_speak(text: str) -> str:
+    """次数播报用的日口语前缀。"""
+    raw = text or ""
+    if "前天" in raw:
+        return "前天"
+    if re.search(r"昨天|昨日", raw):
+        return "昨天"
+    if re.search(r"今天|今日", raw):
+        return "今天"
+    if re.search(r"本周|这周", raw):
+        return "本周"
+    return "这段时间"
 
 
 def payload_history_mode(payload: Dict[str, Any]) -> str:
