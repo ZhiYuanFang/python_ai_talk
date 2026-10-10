@@ -37,8 +37,9 @@ services:
       # --- 向量数据库 ---
       CHROMA_PERSIST_DIR: "${CHROMA_PERSIST_DIR:-/app/data/chroma_db}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}"
-      # --- 意图缓存一次性清空（默认关）---
+      # --- 意图缓存一次性清空 / 旧备注键迁移（默认关；用完改回 false）---
       CLEAR_FEEDING_INTENTS_ON_STARTUP: "${CLEAR_FEEDING_INTENTS_ON_STARTUP:-false}"
+      MIGRATE_INTENT_REMARK_KEYWORD_ON_STARTUP: "${MIGRATE_INTENT_REMARK_KEYWORD_ON_STARTUP:-false}"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/v1/health || exit 1"]
       interval: 10s

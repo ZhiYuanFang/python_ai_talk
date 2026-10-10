@@ -31,3 +31,4 @@
 - [x] 5.2 `intent_cache_store`：实现迁移（顶层/`events[]` 旧键→空 `remark`，删旧键；返回计数）
 - [x] 5.3 `main` 预热后：若 clear 开则跳过迁移；否则按迁移开关执行并打告警日志
 - [x] 5.4 `openspec validate unify-intent-remark-field --strict`
+- [x] 5.5 `docker-compose.yml`：注入 `MIGRATE_INTENT_REMARK_KEYWORD_ON_STARTUP`（与 CLEAR 同级）
