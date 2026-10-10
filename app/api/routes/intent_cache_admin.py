@@ -42,6 +42,9 @@ async def list_intent_cache(
     """
     分页列出 feeding_intents。
 
+    业务说明：
+    响应 items 按 created_at（最近写入时间）新→旧；空时间沉底后再分页。
+
     Query:
         offset / limit（limit 上限 500）
     """

@@ -284,6 +284,11 @@ class IntentCacheStore:
         """
         分页列出意图缓存（管理端）。
 
+        业务逻辑：
+        全量取出后按 metadata.created_at **新→旧**排序，再 offset/limit 切片。
+        created_at 为最近写入时间（add/update 都会刷新）；空字符串沉底；
+        同分以 id 字典序升序打破平局（先排 id、再降序 created_at，依赖稳定排序）。
+
         Returns:
             {total, offset, limit, items:[{id, document, quality_score, payload, created_at}]}
         """
@@ -293,10 +298,9 @@ class IntentCacheStore:
         docs = data.get("documents") or []
         metas = data.get("metadatas") or []
         total = len(ids)
-        start = max(0, int(offset))
-        end = start + max(1, min(int(limit), 500))
-        items: List[Dict[str, Any]] = []
-        for i in range(start, min(end, total)):
+        # 先组装全部条目，避免按 Chroma 原序切片导致跨页时间乱序
+        all_items: List[Dict[str, Any]] = []
+        for i in range(total):
             meta = metas[i] or {}
             payload_raw = meta.get("payload") or "{}"
             try:
@@ -307,7 +311,7 @@ class IntentCacheStore:
                 quality = float(meta.get("quality_score", INTENT_CACHE_QUALITY_DEFAULT))
             except (TypeError, ValueError):
                 quality = INTENT_CACHE_QUALITY_DEFAULT
-            items.append(
+            all_items.append(
                 {
                     "id": ids[i],
                     "document": docs[i] if i < len(docs) else "",
@@ -316,10 +320,20 @@ class IntentCacheStore:
                     "created_at": meta.get("created_at") or "",
                 }
             )
+        # 平局：id 升序；再按 created_at 降序（"" 最小，reverse 后沉底）
+        all_items.sort(key=lambda x: str(x.get("id") or ""))
+        all_items.sort(
+            key=lambda x: str(x.get("created_at") or ""),
+            reverse=True,
+        )
+        start = max(0, int(offset))
+        page_limit = max(1, min(int(limit), 500))
+        end = start + page_limit
+        items = all_items[start:end]
         return {
             "total": total,
             "offset": start,
-            "limit": max(1, min(int(limit), 500)),
+            "limit": page_limit,
             "items": items,
         }
 
