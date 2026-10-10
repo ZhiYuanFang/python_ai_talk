@@ -89,10 +89,9 @@ class IntentEvent(BaseModel):
     event_id: str = Field("", description="事件ID")
     quantity: Optional[int] = Field(default=None, description="从用户输入中提取的数量值")
     history_id: Optional[int] = Field(default=None, description="本轮解析或落库的历史行 id，不进飞轮")
-    remark: Optional[str] = Field(default=None, description="备注")
-    remark_keyword: Optional[str] = Field(
+    remark: Optional[str] = Field(
         default=None,
-        description="查记录备注关键词（子项级）",
+        description="备注（查史专名或 create 明细；权威以 events[].remark 为准）",
     )
     start_time: Optional[int] = Field(default=None, description="读窗起始 Unix 秒")
     end_time: Optional[int] = Field(default=None, description="读窗结束 Unix 秒")
@@ -106,9 +105,9 @@ class IntentResponse(BaseModel):
     信封 + events[]；无顶层 op/action。与 Go AnalyzeIntentResponse 对齐。
     """
     target_type: str = Field(..., description="目标类型：feeding, history, suggest, conversation, exit")
-    remark_keyword: Optional[str] = Field(
+    remark: Optional[str] = Field(
         default=None,
-        description="查记录备注关键词（兼容；权威以 events[].remark_keyword 为准）",
+        description="备注（权威以 events[].remark 为准）",
     )
     missing_events: List[str] = Field(
         default_factory=list,

@@ -82,6 +82,12 @@ async def _warmup_intent_cache():
                 "CLEAR_FEEDING_INTENTS_ON_STARTUP=true，已清空 feeding_intents；"
                 "完成后请改回 false，避免每次重启丢掉飞轮"
             )
+            if settings.migrate_intent_remark_keyword_on_startup:
+                logger.warning(
+                    "已清空集合，跳过 MIGRATE_INTENT_REMARK_KEYWORD_ON_STARTUP"
+                )
+        elif settings.migrate_intent_remark_keyword_on_startup:
+            intent_cache_store.migrate_legacy_remark_keys()
     except Exception as e:
         logger.error(f"意图缓存后台预热失败: {str(e)}", exc_info=True)
 

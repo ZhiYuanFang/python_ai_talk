@@ -352,7 +352,7 @@ async def speak_history(state: Any) -> Dict[str, Any]:
                     "event_name": intent.get("event_name") or "",
                     "start_time": intent.get("start_time"),
                     "end_time": intent.get("end_time"),
-                    "remark_keyword": intent.get("remark_keyword") or "",
+                    "remark": intent.get("remark") or "",
                 }
             )
     if not read_items:
@@ -374,9 +374,9 @@ async def speak_history(state: Any) -> Dict[str, Any]:
         eid = str(item.get("event_id") or "").strip()
         name = str(item.get("event_name") or id_to_name.get(eid) or "").strip()
         remark = str(
-            item.get("remark_keyword")
-            or intent.get("remark_keyword")
-            or state_get(state, "remark_keyword")
+            item.get("remark")
+            or intent.get("remark")
+            or state_get(state, "remark")
             or ""
         ).strip()
         req = {
@@ -476,7 +476,7 @@ async def speak_history(state: Any) -> Dict[str, Any]:
                 "op": IntentOp.READ.value,
                 "event_id": eid,
                 "event_name": name,
-                "remark_keyword": remark,
+                "remark": remark,
                 "start_time": start_time,
                 "end_time": end_time,
                 "ignore_time_range": ignore_time,
@@ -492,7 +492,7 @@ async def speak_history(state: Any) -> Dict[str, Any]:
     cache_payload: Dict[str, Any] = {
         "target_type": TargetType.HISTORY.value,
         "events": intent["events"],
-        "remark_keyword": intent.get("remark_keyword") or "",
+        "remark": intent.get("remark") or "",
         "history_mode": (intent.get("history_mode") or "point"),
     }
     if intent.get("limit") not in (None, ""):

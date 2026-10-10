@@ -74,6 +74,8 @@ class Settings(BaseSettings):
 
     # 启动一次性清空意图缓存 feeding_intents（默认关；清完务必改回 false）
     clear_feeding_intents_on_startup: bool = False
+    # 启动一次性：Chroma payload 旧备注键 → remark（默认关；迁完务必改回 false；不碰 MySQL）
+    migrate_intent_remark_keyword_on_startup: bool = False
 
 
 # 创建全局配置实例

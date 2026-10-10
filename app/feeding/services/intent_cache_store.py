@@ -3,7 +3,7 @@
 
 业务说明：
 独立 Collection feeding_intents，document 为改写后的独立问答句，
-顶层 metadata 含 quality_score 与 payload（op + events + 可选 remark_keyword）。
+顶层 metadata 含 quality_score 与 payload（op + events + 可选 remark）。
 确认且至少一条落库/播报成功后写入；同一 document 更新而非新 uuid。
 检索须相似度与质量分双门槛。短窗重复同一问扣分。
 「嗯/是的」等续聊词不得当 document。
@@ -578,6 +578,112 @@ class IntentCacheStore:
             metadata={"description": "喂养意图缓存飞轮"},
         )
         logger.warning("已按开关清空意图缓存 Collection feeding_intents")
+
+    def migrate_legacy_remark_keys(self) -> Dict[str, int]:
+        """
+        启动一次性：把 payload 里旧备注 JSON 键迁到 remark（仅本 Collection）。
+
+        业务逻辑：
+        顶层与 events[]：旧键非空且 remark 空 → 写入 remark；凡有旧键则删除。
+        不覆盖已有非空 remark；不写 MySQL。
+
+        Returns:
+            {scanned, updated, filled} 扫描条数 / 改写 metadata 条数 / 实际回填次数
+        """
+        self._ensure_initialized()
+        data = self._collection.get(include=["metadatas"])
+        ids = data.get("ids") or []
+        metas = data.get("metadatas") or []
+        scanned = len(ids)
+        updated = 0
+        filled = 0
+        for i, vid in enumerate(ids):
+            meta = dict(metas[i] or {})
+            raw = meta.get("payload") or "{}"
+            try:
+                payload = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            new_payload, n_fill, touched = _migrate_payload_legacy_remark(payload)
+            if not touched:
+                continue
+            filled += n_fill
+            meta["payload"] = json.dumps(new_payload, ensure_ascii=False)
+            try:
+                self._collection.update(ids=[vid], metadatas=[meta])
+                updated += 1
+            except Exception as exc:
+                logger.error(
+                    "意图缓存备注键迁移失败: id=%s err=%s", vid, exc, exc_info=True
+                )
+        logger.warning(
+            "意图缓存备注键迁移完成: scanned=%s updated=%s filled=%s；"
+            "请将 MIGRATE_INTENT_REMARK_KEYWORD_ON_STARTUP 改回 false",
+            scanned,
+            updated,
+            filled,
+        )
+        return {"scanned": scanned, "updated": updated, "filled": filled}
+
+
+# 仅启动迁移可读删的旧 JSON 键（运行时意图路径不得再读此键）
+_LEGACY_REMARK_JSON_KEY = "remark_keyword"
+
+
+def _migrate_one_level_legacy_remark(obj: Dict[str, Any]) -> tuple[int, bool]:
+    """
+    单层 dict：旧键→空 remark，并删除旧键。
+
+    Returns:
+        (回填次数 0|1, 是否改动)
+    """
+    if _LEGACY_REMARK_JSON_KEY not in obj:
+        return 0, False
+    legacy = str(obj.get(_LEGACY_REMARK_JSON_KEY) or "").strip()
+    current = str(obj.get("remark") or "").strip()
+    filled = 0
+    if legacy and not current:
+        obj["remark"] = legacy
+        filled = 1
+    obj.pop(_LEGACY_REMARK_JSON_KEY, None)
+    return filled, True
+
+
+def _migrate_payload_legacy_remark(
+    payload: Dict[str, Any],
+) -> tuple[Dict[str, Any], int, bool]:
+    """
+    迁移整份意图缓存 payload。
+
+    Returns:
+        (新 payload, 回填次数, 是否有任何改动)
+    """
+    out = dict(payload)
+    filled = 0
+    touched = False
+    n, ch = _migrate_one_level_legacy_remark(out)
+    filled += n
+    touched = touched or ch
+    events_in = out.get("events") or []
+    if isinstance(events_in, list):
+        new_events: List[Any] = []
+        events_touched = False
+        for ev in events_in:
+            if not isinstance(ev, dict):
+                new_events.append(ev)
+                continue
+            item = dict(ev)
+            n, ch = _migrate_one_level_legacy_remark(item)
+            filled += n
+            if ch:
+                events_touched = True
+            new_events.append(item)
+        if events_touched:
+            out["events"] = new_events
+            touched = True
+    return out, filled, touched
 
 
 def _strip_history_ids(payload: Dict[str, Any]) -> Dict[str, Any]:

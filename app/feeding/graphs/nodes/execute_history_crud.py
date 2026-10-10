@@ -120,7 +120,7 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
             {
                 "target_type": intent.get("target_type"),
                 "events": intent.get("events") or [],
-                "remark_keyword": intent.get("remark_keyword"),
+                "remark": intent.get("remark"),
             },
         )
         if state_get(state, "intent_cache_hit"):

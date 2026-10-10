@@ -29,7 +29,6 @@ class DataRequirement(BaseModel):
     start_time: Optional[int] = None
     end_time: Optional[int] = None
     remark: Optional[str] = None
-    remark_keyword: Optional[str] = None
 
     def as_window_dict(self) -> Dict[str, Any]:
         """供 resolve_window / filter 使用的浅字典。"""

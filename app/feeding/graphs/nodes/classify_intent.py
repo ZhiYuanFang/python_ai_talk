@@ -167,7 +167,7 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
         intent_result.setdefault("event_unit", None)
         intent_result.setdefault("is_new_event", False)
         intent_result.setdefault(
-            "remark_keyword", state_get(state, "remark_keyword") or ""
+            "remark", state_get(state, "remark") or ""
         )
         intent_result.setdefault("event_ids", [])
         intent_result.setdefault("missing_events", [])

@@ -143,9 +143,9 @@ def project_legacy_top_level_to_events(intent: Dict[str, Any]) -> Dict[str, Any]
             item["start_time"] = out.get("start_time")
         if out.get("end_time") is not None:
             item["end_time"] = out.get("end_time")
-        rk = str(out.get("remark_keyword") or "").strip()
+        rk = str(out.get("remark") or "").strip()
         if rk:
-            item["remark_keyword"] = rk
+            item["remark"] = rk
         # 多 id 时拆成多项
         if len(ids) > 1:
             events = []

@@ -45,7 +45,7 @@ class IntentState(BaseModel):
     confirm_message: str = ""
     conversation_id: str = ""
     in_progress_hint: str = ""
-    remark_keyword: str = ""
+    remark: str = ""
 
     should_update_vector: bool = False
     feedback_recorded: bool = False

@@ -138,7 +138,7 @@ class PendingClarification:
     # 多事件确认与查记录备注：确认后整份执行
     events: List[Dict[str, Any]] = field(default_factory=list)
     op: str = ""
-    remark_keyword: str = ""
+    remark: str = ""
     # 查记录确认后仍要用分类给出的 unix 窗与原始 event_ids（可能是父 id）
     start_time: Any = None
     end_time: Any = None
@@ -327,6 +327,10 @@ def format_confirm_slot(
 
     name = str(ev.get("event_name") or "").strip() or "该事件"
     quoted = f"「{name}」"
+    # create 明细备注点进确认话术（如「辅食」（备注菠菜））
+    remark_txt = str(ev.get("remark") or "").strip()
+    if remark_txt:
+        quoted = f"{quoted}（备注{remark_txt}）"
     op = str(ev.get("op") or "").strip().lower()
     action = str(ev.get("action") or "").strip().lower()
     st = _parse_confirm_epoch(ev.get("start_time"))
@@ -394,11 +398,12 @@ def build_leaf_confirm_message(
     quantity: Any = None,
     start_time: Any = None,
     end_time: Any = None,
+    remark: str = "",
 ) -> str:
     """
     生成叶子事件确认问句（自由文本回应）。
 
-    记录类带落库时间/数量口语；无时间则「现在」。
+    记录类带落库时间/数量口语；无时间则「现在」；有备注则点进短语。
     """
     slot = format_confirm_slot(
         {
@@ -408,6 +413,7 @@ def build_leaf_confirm_message(
             "quantity": quantity,
             "start_time": start_time,
             "end_time": end_time,
+            "remark": remark or "",
         }
     )
     return f"您是要{slot}吗？"
@@ -476,7 +482,7 @@ def resolve_event_display_name(
 
 
 def build_history_confirm_message(
-    event_name: str, remark_keyword: str = ""
+    event_name: str, remark: str = ""
 ) -> str:
     """
     生成查记录确认问句，必须点出事件名；有备注专名时一并点出。
@@ -486,7 +492,7 @@ def build_history_confirm_message(
     无名（无 id 可查时）：不使用「该事件」兜底。
     """
     name = (event_name or "").strip()
-    remark = (remark_keyword or "").strip()
+    remark = (remark or "").strip()
     # 与叶子确认一致：只发问句，不附加「请回复确认或取消」
     if not name:
         return "请确认是否查询这条历史记录？"
@@ -522,7 +528,7 @@ def create_parent_disambiguation_pending(
     model_config: Optional[Dict[str, Any]] = None,
     conversation_id: Optional[str] = None,
     op: str = "",
-    remark_keyword: str = "",
+    remark: str = "",
     events: Optional[List[Dict[str, Any]]] = None,
     start_time: Any = None,
     end_time: Any = None,
@@ -562,7 +568,7 @@ def create_parent_disambiguation_pending(
         model_config=model_config or {},
         events=events or [],
         op=op or "",
-        remark_keyword=remark_keyword or "",
+        remark=remark or "",
         start_time=start_time,
         end_time=end_time,
         event_ids=[str(x) for x in (event_ids or []) if x not in (None, "")],
@@ -594,7 +600,7 @@ def create_remark_disambiguation_pending(
     """
     备注反查命中多个叶子时的消歧。
 
-    复用 parent_disambiguation 续聊解析；选中后带上 remark_keyword。
+    复用 parent_disambiguation 续聊解析；选中后带上 remark。
     """
     kw = (keyword or "").strip()
     return create_parent_disambiguation_pending(
@@ -608,7 +614,7 @@ def create_remark_disambiguation_pending(
         model_config=model_config,
         conversation_id=conversation_id,
         op=op,
-        remark_keyword=kw,
+        remark=kw,
         events=events,
         start_time=start_time,
         end_time=end_time,
@@ -630,7 +636,7 @@ def create_leaf_confirm_pending(
     conversation_id: Optional[str] = None,
     events: Optional[List[Dict[str, Any]]] = None,
     op: str = "",
-    remark_keyword: str = "",
+    remark: str = "",
     confirm_message: Optional[str] = None,
     start_time: Any = None,
     end_time: Any = None,
@@ -652,7 +658,7 @@ def create_leaf_confirm_pending(
     # 查记录确认只认 op=read，不因 action=search 把删除说成查询
     if resolved_op == "read":
         message = build_history_confirm_message(
-            event_name, remark_keyword=remark_keyword or ""
+            event_name, remark=remark or ""
         )
     elif resolved_op == "delete":
         message = build_delete_confirm_message(event_name)
@@ -667,6 +673,7 @@ def create_leaf_confirm_pending(
             quantity=quantity,
             start_time=start_time,
             end_time=end_time,
+            remark=remark or "",
         )
     pending = PendingClarification(
         kind=ConfirmType.LEAF_CONFIRM.value,
@@ -682,7 +689,7 @@ def create_leaf_confirm_pending(
         model_config=model_config or {},
         events=events or [],
         op=op or "",
-        remark_keyword=remark_keyword or "",
+        remark=remark or "",
         start_time=start_time,
         end_time=end_time,
         event_ids=[str(x) for x in (event_ids or []) if x not in (None, "")],
@@ -1088,7 +1095,7 @@ def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
         "keywords": [],
         "content": pending.clarify_message,
         "events": events,
-        "remark_keyword": pending.remark_keyword or None,
+        "remark": pending.remark or None,
         "match_confidence": None,
         "match_source": pending.match_source,
         "need_confirm": True,

@@ -37,7 +37,7 @@ INTENT_CLASSIFICATION_SYSTEM_TEMPLATE = """
 - events[].action：可选；create 时 start|one；end 时可为 end；update/delete/read 可空
 - events[].start_time / end_time：Unix 秒（Asia/Shanghai）。op=read 填该子项时间窗；create 有钟点须填 start_time（瞬时 end 可与 start 相同）。计时：开表 end=0/不写且 action=start；闭合补记 end>start 且 action=one（含「N分钟」或双钟点起止）。上方「规则预解析时间」非 partial 时优先抄其 unix；可留 0 由服务端规则补。可与 ignore_time_range 同时存在
 - events[].ignore_time_range：仅 op=read 有意义。语义为「上一次/上次/最近一次」等不依赖具体日历区间的点查时必须为 true（拉史将忽略时间窗，避免猜错区间漏查）；用户明确说今天/昨天/本周等区间或汇总时必须为 false，并填写对应 unix 窗。create/update/delete/end 填 false 或不写
-- events[].remark_keyword：该子项查记录备注专名，没有则空或不写
+- events[].remark：备注专名或明细（查记录按备注筛、create 写入历史备注），没有则空或不写
 - events[].quantity：数量（毫升等），没有则 null；「10分钟」是时长不是 quantity
 - 一句多次喂养：用户一句话说了多次吃奶/换尿布等，必须拆成多条 events（允许同一 event_id 出现多次），每条各自 quantity 与 start_time；禁止合并成一条并用当前时间
 - content：闲聊短句；feeding/history 可空；conversation 建议类写短句如「暂未开通建议功能」
@@ -79,7 +79,7 @@ JSON 格式：
       "start_time": 0,
       "end_time": 0,
       "ignore_time_range": false,
-      "remark_keyword": ""
+      "remark": ""
     }}
   ],
   "need_confirm": true,

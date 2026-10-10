@@ -245,11 +245,11 @@ def rewrite_standalone_document(intent: Dict[str, Any], original: str) -> str:
     if not names and data.get("event_name"):
         names.append(str(data.get("event_name")))
     ops = event_ops(data)
-    remark = (data.get("remark_keyword") or "").strip()
+    remark = (data.get("remark") or "").strip()
     if not remark:
         for ev in data.get("events") or []:
-            if isinstance(ev, dict) and ev.get("remark_keyword"):
-                remark = str(ev.get("remark_keyword")).strip()
+            if isinstance(ev, dict) and ev.get("remark"):
+                remark = str(ev.get("remark")).strip()
                 break
     joined = "、".join(names) if names else (original or "").strip()
     if IntentOp.READ.value in ops:

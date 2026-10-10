@@ -4,7 +4,7 @@
 业务说明：
 由 route_after_classify 在存在「有名无 id」槽位时进入本节点。
 字典匹配仍失败的名称当作备注专名，调 Go filter（空 eventIds、近窗、小 limit）
-按本设备历史聚合命中事件。唯一命中写入 event_id 与 remark_keyword；
+按本设备历史聚合命中事件。唯一命中写入 event_id 与 remark；
 多命中消歧；零命中无法识别。禁止新建事件类型，不把原始行注入 prompt。
 """
 
@@ -96,7 +96,7 @@ def _apply_leaf_to_slot(
     intent: Dict[str, Any],
     slot: Union[str, int],
     leaf: Dict[str, Any],
-    remark_keyword: str,
+    remark: str,
 ) -> None:
     """把反查到的叶子写回顶层或 events 子项，并带上备注专名。"""
     eid = str(leaf.get("event_id") or "")
@@ -104,7 +104,7 @@ def _apply_leaf_to_slot(
     if slot == "top":
         intent["event_id"] = eid
         intent["event_name"] = ename
-        intent["remark_keyword"] = remark_keyword
+        intent["remark"] = remark
         if (intent.get("op") or "").strip().lower() == IntentOp.READ.value:
             ids = [
                 str(x)
@@ -121,14 +121,14 @@ def _apply_leaf_to_slot(
         events[slot]["event_id"] = eid
         events[slot]["event_name"] = ename
         if events[slot].get("op") == IntentOp.READ.value or not events[slot].get(
-            "remark_keyword"
+            "remark"
         ):
-            if remark_keyword:
-                events[slot]["remark_keyword"] = remark_keyword
+            if remark:
+                events[slot]["remark"] = remark
         intent["events"] = events
         # 顶层尚无备注时补上，便于确认与正式拉史
-        if not (intent.get("remark_keyword") or "").strip():
-            intent["remark_keyword"] = remark_keyword
+        if not (intent.get("remark") or "").strip():
+            intent["remark"] = remark
         if not (intent.get("event_id") or "").strip():
             intent["event_id"] = eid
             intent["event_name"] = ename
@@ -154,7 +154,7 @@ def _unrecognized_response(names: List[str]) -> Dict[str, Any]:
             event_id="",
             event_ids=[],
             events=[],
-            remark_keyword="",
+            remark="",
             missing_events=unique_names,
             is_new_event=False,
             content=content,
@@ -163,7 +163,7 @@ def _unrecognized_response(names: List[str]) -> Dict[str, Any]:
         ),
         "need_confirm": False,
         "confirm_message": "",
-        "remark_keyword": "",
+        "remark": "",
     }
 
 
@@ -287,7 +287,7 @@ async def resolve_remark_event(state: Any) -> Dict[str, Any]:
                 "confirm_type": fields.get("confirm_type") or "",
                 "confirm_message": fields.get("confirm_message") or "",
                 "conversation_id": pending.conversation_id,
-                "remark_keyword": name,
+                "remark": name,
             }
 
         # 零命中
@@ -311,6 +311,6 @@ async def resolve_remark_event(state: Any) -> Dict[str, Any]:
     return {
         "intent_result": IntentResult.model_validate(intent),
         "need_confirm": need_confirm,
-        "remark_keyword": intent.get("remark_keyword") or "",
+        "remark": intent.get("remark") or "",
         "confirm_message": intent.get("confirm_message") or "",
     }

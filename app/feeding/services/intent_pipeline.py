@@ -65,7 +65,7 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
                     event_name=opt.get("event_name") or "",
                     event_id=str(opt.get("event_id") or ""),
                     quantity=opt.get("quantity"),
-                    remark_keyword=opt.get("remark_keyword"),
+                    remark=opt.get("remark"),
                     start_time=opt.get("start_time"),
                     end_time=opt.get("end_time"),
                 )
@@ -86,7 +86,6 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
                     quantity=ev.get("quantity"),
                     history_id=ev.get("history_id"),
                     remark=ev.get("remark"),
-                    remark_keyword=ev.get("remark_keyword"),
                     start_time=ev.get("start_time"),
                     end_time=ev.get("end_time"),
                 )
@@ -103,7 +102,7 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
         keywords=fields.get("keywords") or [],
         content=fields.get("content", "") or "",
         events=events,
-        remark_keyword=fields.get("remark_keyword"),
+        remark=fields.get("remark"),
         missing_events=fields.get("missing_events") or [],
         match_confidence=fields.get("match_confidence"),
         match_source=fields.get("match_source"),
@@ -168,7 +167,7 @@ def create_history_confirm_response(
         model_config=model_config,
         events=fields.get("events") or [],
         op="read",
-        remark_keyword=fields.get("remark_keyword") or "",
+        remark=fields.get("remark") or "",
         start_time=fields.get("start_time") or fields.get("startTime"),
         end_time=fields.get("end_time") or fields.get("endTime"),
         event_ids=event_ids,
@@ -225,14 +224,14 @@ async def try_handle_pending(
                 "event_id": parent_id,
                 "event_name": leaf.get("event_name") or "",
                 "event_ids": getattr(pending, "event_ids", None) or [parent_id],
-                "remark_keyword": getattr(pending, "remark_keyword", None) or "",
+                "remark": getattr(pending, "remark", None) or "",
                 "events": getattr(pending, "events", None)
                 or [
                     {
                         "op": IntentOp.READ.value,
                         "event_id": parent_id,
                         "event_name": leaf.get("event_name") or "",
-                        "remark_keyword": getattr(pending, "remark_keyword", None)
+                        "remark": getattr(pending, "remark", None)
                         or "",
                         "start_time": getattr(pending, "start_time", None),
                         "end_time": getattr(pending, "end_time", None),
@@ -313,7 +312,7 @@ async def try_handle_pending(
         # 确认后走批量落库或查记录模板
         if extra_events:
             fields["events"] = extra_events
-        fields["remark_keyword"] = getattr(pending, "remark_keyword", None) or ""
+        fields["remark"] = getattr(pending, "remark", None) or ""
         if getattr(pending, "event_ids", None):
             fields["event_ids"] = pending.event_ids
         elif pending_op == IntentOp.READ.value:
@@ -331,7 +330,7 @@ async def try_handle_pending(
                         "op": IntentOp.READ.value,
                         "event_id": leaf_id,
                         "event_name": leaf.get("event_name") or "",
-                        "remark_keyword": fields.get("remark_keyword") or "",
+                        "remark": fields.get("remark") or "",
                         "start_time": getattr(pending, "start_time", None),
                         "end_time": getattr(pending, "end_time", None),
                     }
@@ -565,8 +564,8 @@ def postprocess_feeding_result(
                 model_config=model_config,
                 events=fields.get("events") or [],
                 op=str(head.get("op") or ""),
-                remark_keyword=fields.get("remark_keyword")
-                or head.get("remark_keyword")
+                remark=fields.get("remark")
+                or head.get("remark")
                 or "",
                 confirm_message=fields.get("confirm_message"),
                 start_time=head.get("start_time")

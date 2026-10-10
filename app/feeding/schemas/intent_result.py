@@ -19,7 +19,7 @@ class IntentEventItem(BaseModel):
 
     业务说明：
     op 为 create|update|delete|end|read；action 可选（start|one|end）。
-    查记录可带自有时间窗与 remark_keyword。
+    查记录与 create 明细备注均用 remark（与 Go batch/filter 一致）。
     ignore_time_range：op=read 时由分类判定「上一次」类点查是否忽略时间窗。
     """
 
@@ -32,7 +32,6 @@ class IntentEventItem(BaseModel):
     quantity: Optional[int] = None
     history_id: Optional[int] = None
     remark: Optional[str] = None
-    remark_keyword: Optional[str] = None
     start_time: Optional[int] = None
     end_time: Optional[int] = None
     # 点查「上一次」为 true → 拉史透传 ignoreTimeRange；缺省 false
@@ -58,7 +57,7 @@ class IntentResult(BaseModel):
     event_type: Optional[str] = None
     event_unit: Optional[Any] = None
     is_new_event: bool = False
-    remark_keyword: str = ""
+    remark: str = ""
     missing_events: List[str] = Field(default_factory=list)
     keywords: List[str] = Field(default_factory=list)
     content: str = ""
@@ -85,7 +84,7 @@ _INTENT_RESULT_EMPTY_STR_FIELDS = (
     "target_type",
     "event_name",
     "event_id",
-    "remark_keyword",
+    "remark",
     "content",
     "confirm_message",
 )

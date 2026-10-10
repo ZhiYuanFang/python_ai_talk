@@ -54,7 +54,7 @@ async def _fetch_with_filter(device_no: str, data_requirement: Any) -> list:
     req = _requirement_mapping(data_requirement)
     event_ids = req.get("event_ids", []) or []
     limit = req.get("limit", 20)
-    remark = req.get("remark") or req.get("remark_keyword")
+    remark = req.get("remark")
 
     from app.shared.history_window import resolve_window
 
