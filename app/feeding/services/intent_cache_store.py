@@ -164,16 +164,29 @@ class IntentCacheStore:
     def _embed(self, texts: List[str]) -> List[List[float]]:
         return self._embedding_model.encode(texts).tolist()
 
+    @staticmethod
+    def _document_key(document: str) -> str:
+        """
+        管理端判重键：去首尾空白后的原文。
+
+        业务说明：
+        与 `_find_id_by_document` / 写入前 strip 一致；不做标点或近义归一化。
+        """
+        return (document or "").strip()
+
     def _find_id_by_document(self, doc: str) -> Optional[str]:
-        """按 document 原文找已有 id，避免 uuid 分身绕开扣分。"""
+        """按 document 原文（strip 后全等）找已有 id，避免 uuid 分身绕开扣分。"""
+        key = self._document_key(doc)
+        if not key:
+            return None
         data = self._collection.get(include=["documents"])
         docs = data.get("documents") or []
         ids = data.get("ids") or []
         for i, existing in enumerate(docs):
-            if existing == doc:
+            # 库内可能存已 strip 的文案；两侧都按 key 比，避免空白分身
+            if self._document_key(existing or "") == key:
                 return ids[i]
         return None
-
     def search(self, query: str, n_results: int = 1) -> List[Dict[str, Any]]:
         """
         检索最相似的已缓存意图。
@@ -329,38 +342,150 @@ class IntentCacheStore:
             logger.error("意图缓存删除失败: %s", exc, exc_info=True)
             return False
 
+    def dedupe_exact_documents(self) -> Dict[str, Any]:
+        """
+        管理端整理：document 全等分组，每组只留一条，删其余。
+
+        业务逻辑：
+        保留规则 — 较高 quality_score；同分较早 created_at；再同分较小 id。
+        不写 MySQL；不改运行时 add 覆盖语义。
+
+        Returns:
+            {kept, deleted:[{id,document,quality_score}], groups}
+        """
+        self._ensure_initialized()
+        data = self._collection.get(include=["documents", "metadatas"])
+        ids = data.get("ids") or []
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+
+        # key -> 候选列表
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for i, vid in enumerate(ids):
+            doc = docs[i] if i < len(docs) else ""
+            key = self._document_key(doc)
+            if not key:
+                continue
+            meta = metas[i] if i < len(metas) else None
+            meta = meta or {}
+            try:
+                quality = float(meta.get("quality_score", INTENT_CACHE_QUALITY_DEFAULT))
+            except (TypeError, ValueError):
+                quality = INTENT_CACHE_QUALITY_DEFAULT
+            created_at = str(meta.get("created_at") or "")
+            groups.setdefault(key, []).append(
+                {
+                    "id": vid,
+                    "document": doc,
+                    "quality_score": quality,
+                    "created_at": created_at,
+                }
+            )
+
+        kept = 0
+        deleted: List[Dict[str, Any]] = []
+        dup_groups = 0
+        for key, members in groups.items():
+            if len(members) <= 1:
+                kept += len(members)
+                continue
+            dup_groups += 1
+            # 质量高优先；同分 created_at 升序（早优先）；再比 id
+            members_sorted = sorted(
+                members,
+                key=lambda m: (
+                    -float(m.get("quality_score") or 0),
+                    str(m.get("created_at") or ""),
+                    str(m.get("id") or ""),
+                ),
+            )
+            winner = members_sorted[0]
+            kept += 1
+            for loser in members_sorted[1:]:
+                vid = str(loser.get("id") or "")
+                if self.delete_by_id(vid):
+                    deleted.append(
+                        {
+                            "id": vid,
+                            "document": loser.get("document") or key,
+                            "quality_score": loser.get("quality_score"),
+                        }
+                    )
+                else:
+                    logger.warning("整理重复删除失败: id=%s key=%s", vid, key[:40])
+
+        logger.info(
+            "意图缓存整理重复: groups=%s deleted=%s kept_unique=%s",
+            dup_groups,
+            len(deleted),
+            kept,
+        )
+        return {
+            "kept": kept,
+            "deleted": deleted,
+            "groups": dup_groups,
+        }
+
     def bulk_upsert(
         self, entries: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        批量写入种子：每项 {document, payload}。
+        管理端批量灌种：每项 {document, payload}。
+
+        业务逻辑：
+        库中或本批已见相同 document（strip 全等）则跳过，不覆盖 payload/质量分；
+        新文案才写入。确认词/空句计入 failed。运行时 add 仍可覆盖同句。
 
         Returns:
-            {ok: n, failed: [{index, reason}], ids: [...]}
+            {ok, added, skipped:[{index,document,existing_id}], failed, ids}
         """
         self._ensure_initialized()
-        ok = 0
+        added = 0
         ids: List[str] = []
         failed: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        # 本批已处理过的判重键 → 已有/刚写入的 id
+        seen: Dict[str, str] = {}
         for i, entry in enumerate(entries or []):
             if not isinstance(entry, dict):
                 failed.append({"index": i, "reason": "条目不是对象"})
                 continue
-            doc = str(entry.get("document") or "").strip()
+            doc = self._document_key(str(entry.get("document") or ""))
             payload = entry.get("payload")
             if not isinstance(payload, dict):
                 payload = {}
+            if not doc or _is_confirm_only(doc):
+                failed.append({"index": i, "reason": "空句或确认词，未写入"})
+                continue
             try:
+                existing_id = seen.get(doc) or self._find_id_by_document(doc)
+                if existing_id:
+                    skipped.append(
+                        {
+                            "index": i,
+                            "document": doc,
+                            "existing_id": existing_id,
+                        }
+                    )
+                    seen[doc] = existing_id
+                    continue
                 vid = self.add(doc, payload)
                 if not vid:
                     failed.append({"index": i, "reason": "空句或确认词，未写入"})
                     continue
-                ok += 1
+                added += 1
                 ids.append(vid)
+                seen[doc] = vid
             except Exception as exc:
                 logger.error("bulk_upsert 第 %s 条失败: %s", i, exc, exc_info=True)
                 failed.append({"index": i, "reason": str(exc)})
-        return {"ok": ok, "failed": failed, "ids": ids}
+        return {
+            "ok": added,
+            "added": added,
+            "skipped": skipped,
+            "failed": failed,
+            "ids": ids,
+        }
 
     def penalize(
         self,
