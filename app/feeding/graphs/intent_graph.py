@@ -2,9 +2,9 @@
 意图分析图定义
 
 业务说明：
-缓存 → 槽位覆盖 → 进行中探针 → 分类 →（有未定名称才）备注反查 → 确认 END / 批量落库 / 模板查记录。
-缓存命中后先 overlay_slots；多钟点降级则视为未命中再走分类。
-路由按 events[].op 与 target_type，不读顶层 op/action。
+分句/单事件多维拼装 → 确认 END / 批量落库 / 模板查记录。
+已删除整包意图缓存免确认与满血一次多 events 分类主路径。
+路由按 events[].op 与 target_type。
 """
 
 import logging
@@ -12,15 +12,8 @@ from typing import Any
 
 from langgraph.graph import StateGraph, START, END
 
-from app.feeding.graphs.nodes.classify_intent import classify_intent
 from app.feeding.graphs.nodes.execute_history_crud import execute_history_crud
-from app.feeding.graphs.nodes.match_intent_cache import match_intent_cache
-from app.feeding.graphs.nodes.overlay_slots import overlay_slots
-from app.feeding.graphs.nodes.remark_probe import in_progress_probe
-from app.feeding.graphs.nodes.resolve_remark_event import (
-    has_unresolved_event_slots,
-    resolve_remark_event,
-)
+from app.feeding.graphs.nodes.resolve_segments import resolve_segments
 from app.feeding.graphs.nodes.speak_history import speak_history
 from app.feeding.graphs.nodes.thinking_messages import get_thinking_message
 from app.feeding.graphs.states.intent_state import IntentState
@@ -36,39 +29,20 @@ logger = logging.getLogger(__name__)
 State = IntentState
 
 
-def route_after_cache(state: Any) -> str:
-    """缓存命中 → 槽位覆盖；未命中 → 进行中探针。"""
-    if state_get(state, "intent_cache_hit"):
-        return "overlay_slots"
-    return "in_progress_probe"
-
-
-def route_after_overlay(state: Any) -> str:
+def _route_after_segments(state: Any) -> str:
     """
-    槽位覆盖后：仍命中则执行/查记录；降级则走进行中探针+分类。
-    """
-    if not state_get(state, "intent_cache_hit"):
-        return "in_progress_probe"
-    intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
-    kind = infer_route_kind(intent)
-    if kind == IntentOp.READ.value:
-        return "speak_history"
-    if kind == "cud":
-        return "execute_history_crud"
-    return "end"
-
-
-def _route_after_intent_ready(state: Any) -> str:
-    """
-    意图已就绪后的落点。
-
-    确认 → END；read → 模板播报；CUD → 批量落库；其余 END。
+    多维拼装后：需确认/重说/闲聊 → END；read → 查史；CUD → 落库。
     """
     if state_get(state, "need_confirm"):
         return "end"
     intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
     intent = normalize_intent_events(intent)
+    # 引导重说或闲聊：已有 content，直接 END
+    if intent.get("segment_failed"):
+        return "end"
     target = str(intent.get("target_type") or TargetType.CONVERSATION.value).lower()
+    if target in (TargetType.CONVERSATION.value, TargetType.EXIT.value):
+        return "end"
     kind = infer_route_kind(intent)
     if kind == IntentOp.READ.value or target == TargetType.HISTORY.value:
         return "speak_history"
@@ -77,73 +51,25 @@ def _route_after_intent_ready(state: Any) -> str:
     return "end"
 
 
-def route_after_classify(state: Any) -> str:
-    """分类后：有「有名无 id」槽位才进备注反查；否则直达确认/执行/查记录。"""
-    intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
-    if has_unresolved_event_slots(intent):
-        return "resolve_remark_event"
-    return _route_after_intent_ready(state)
-
-
-def route_after_remark_resolve(state: Any) -> str:
-    """备注反查后：与分类后无未定名称时相同的确认/执行/查记录分支。"""
-    return _route_after_intent_ready(state)
-
-
 def _wrap(name: str, fn):
     return with_node_thinking(name, fn, get_thinking_message)
 
 
 def build_intent_graph():
-    """构建意图分析图（缓存命中后槽位覆盖，无事件名向量、无 clinic）。"""
+    """构建意图分析图（段多维拼装，无整包缓存、无满血 classify）。"""
     graph = StateGraph(State)
 
-    graph.add_node("match_intent_cache", _wrap("match_intent_cache", match_intent_cache))
-    graph.add_node("overlay_slots", _wrap("overlay_slots", overlay_slots))
-    graph.add_node("in_progress_probe", _wrap("in_progress_probe", in_progress_probe))
-    graph.add_node("classify_intent", _wrap("classify_intent", classify_intent))
-    graph.add_node(
-        "resolve_remark_event", _wrap("resolve_remark_event", resolve_remark_event)
-    )
+    graph.add_node("resolve_segments", _wrap("resolve_segments", resolve_segments))
     graph.add_node(
         "execute_history_crud",
         _wrap("execute_history_crud", execute_history_crud),
     )
     graph.add_node("speak_history", _wrap("speak_history", speak_history))
 
-    graph.add_edge(START, "match_intent_cache")
+    graph.add_edge(START, "resolve_segments")
     graph.add_conditional_edges(
-        "match_intent_cache",
-        route_after_cache,
-        {
-            "overlay_slots": "overlay_slots",
-            "in_progress_probe": "in_progress_probe",
-        },
-    )
-    graph.add_conditional_edges(
-        "overlay_slots",
-        route_after_overlay,
-        {
-            "in_progress_probe": "in_progress_probe",
-            "speak_history": "speak_history",
-            "execute_history_crud": "execute_history_crud",
-            "end": END,
-        },
-    )
-    graph.add_edge("in_progress_probe", "classify_intent")
-    graph.add_conditional_edges(
-        "classify_intent",
-        route_after_classify,
-        {
-            "resolve_remark_event": "resolve_remark_event",
-            "end": END,
-            "speak_history": "speak_history",
-            "execute_history_crud": "execute_history_crud",
-        },
-    )
-    graph.add_conditional_edges(
-        "resolve_remark_event",
-        route_after_remark_resolve,
+        "resolve_segments",
+        _route_after_segments,
         {
             "end": END,
             "speak_history": "speak_history",
@@ -153,9 +79,7 @@ def build_intent_graph():
     graph.add_edge("execute_history_crud", END)
     graph.add_edge("speak_history", END)
 
-    logger.info(
-        "意图分析图构建完成（缓存/槽位覆盖/进行中/分类/条件备注反查/落库/模板查记录）"
-    )
+    logger.info("意图分析图构建完成（段多维 / 落库 / 模板查记录）")
     return graph.compile()
 
 

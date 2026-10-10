@@ -351,6 +351,46 @@ async def try_handle_pending(
             user_input=pending.original_utterance,
             full_events=full_events,
         )
+        # 确认策略 C 逐段：还有剩余段则继续问下一件
+        mc = getattr(pending, "model_config", None) or {}
+        rest = mc.get("_remaining_events") if isinstance(mc, dict) else None
+        if isinstance(rest, list) and rest:
+            nxt = rest[0]
+            more = rest[1:]
+            idx = int(mc.get("_remaining_index") or 2)
+            total = int(mc.get("_remaining_total") or (idx + len(more)))
+            new_pending = create_leaf_confirm_pending(
+                leaf={
+                    "event_id": nxt.get("event_id") or "",
+                    "event_name": nxt.get("event_name") or "",
+                    "extra_names": [],
+                },
+                original_utterance=pending.original_utterance,
+                action=nxt.get("action") or IntentAction.ONE.value,
+                quantity=nxt.get("quantity"),
+                match_source=pending.match_source,
+                matched_vector_id="",
+                device_no=pending.device_no,
+                model_config={
+                    **{k: v for k, v in mc.items() if not str(k).startswith("_")},
+                    "_remaining_events": more,
+                    "_remaining_index": idx + 1,
+                    "_remaining_total": total,
+                },
+                conversation_id=conversation_id,
+                events=[nxt],
+                op=str(nxt.get("op") or ""),
+                history_mode=str(getattr(pending, "history_mode", None) or ""),
+                limit=getattr(pending, "limit", None),
+            )
+            slot = build_multi_event_confirm_message([nxt]) or nxt.get("event_name")
+            new_pending.clarify_message = f"（{idx}/{total}）{slot}？"
+            # 附带上一轮回执，便于语音播完再问
+            prev = str(executed.get("content") or "").strip()
+            resp = response_from_pending(new_pending)
+            if prev:
+                resp.content = prev
+            return resp, False
         return build_intent_response_from_fields(executed), False
 
     if result.status == ResolveStatus.ASK_AGAIN:
@@ -447,6 +487,39 @@ def postprocess_feeding_result(
             events = new_events
             logger.info("确认前规则时间已覆盖: events=%s", len(new_events))
 
+    # number 叶缺量：先追问毫升，不进总确认/落库
+    if fields.get("missing_quantity") or any(
+        isinstance(e, dict) and e.get("missing_quantity") for e in events
+    ):
+        name = ""
+        for e in events:
+            if isinstance(e, dict) and e.get("missing_quantity"):
+                name = str(e.get("event_name") or "") or "该事件"
+                break
+        msg = f"请问「{name}」喝了多少毫升呢？"
+        pending = create_leaf_confirm_pending(
+            leaf={
+                "event_id": events[0].get("event_id") if events else "",
+                "event_name": name or (events[0].get("event_name") if events else ""),
+                "extra_names": [],
+            },
+            original_utterance=user_input,
+            action=events[0].get("action") if events else IntentAction.ONE.value,
+            quantity=None,
+            match_source=fields.get("match_source") or MatchSource.NAME.value,
+            matched_vector_id=matched_vector_id,
+            device_no=device_no,
+            model_config=model_config,
+            events=events,
+            op=str(events[0].get("op") or IntentOp.CREATE.value) if events else "",
+            confirm_message=msg,
+            history_mode=str(fields.get("history_mode") or ""),
+            limit=fields.get("limit"),
+        )
+        pending.clarify_message = msg
+        clarification_store.set(pending)
+        return response_from_pending(pending)
+
     head = first_display_event(fields)
     event_id = str(fields.get("event_id") or head.get("event_id") or "")
     action = str(head.get("action") or IntentAction.ONE.value)
@@ -480,29 +553,67 @@ def postprocess_feeding_result(
                 )
                 if pending:
                     return response_from_pending(pending)
-        # 多事件全是叶子：软确认
+        # 多事件全是叶子：确认策略 C（短同质拼问；长/混装逐段）
+        from app.feeding.services.segment_multidim import should_batch_confirm
+
+        if should_batch_confirm(events):
+            pending = create_leaf_confirm_pending(
+                leaf={
+                    "event_id": events[0].get("event_id") if events else "",
+                    "event_name": events[0].get("event_name") if events else "",
+                    "extra_names": [],
+                },
+                original_utterance=user_input,
+                action=events[0].get("action") if events else IntentAction.ONE.value,
+                quantity=quantity,
+                match_source=match_source,
+                matched_vector_id=matched_vector_id,
+                device_no=device_no,
+                model_config=model_config,
+                events=events,
+                op="",
+                history_mode=str(fields.get("history_mode") or ""),
+                limit=fields.get("limit"),
+            )
+            multi_msg = build_multi_event_confirm_message(events)
+            if multi_msg:
+                pending.clarify_message = multi_msg
+            pending.events = events  # type: ignore[attr-defined]
+            clarification_store.set(pending)
+            return response_from_pending(pending)
+
+        # 逐段：先确认第一件，其余挂在 events 里由后续轮次继续（首轮只带首条执行集）
+        first = events[0]
+        rest = events[1:]
         pending = create_leaf_confirm_pending(
             leaf={
-                "event_id": events[0].get("event_id") if events else "",
-                "event_name": events[0].get("event_name") if events else "",
+                "event_id": first.get("event_id") or "",
+                "event_name": first.get("event_name") or "",
                 "extra_names": [],
             },
             original_utterance=user_input,
-            action=events[0].get("action") if events else IntentAction.ONE.value,
-            quantity=quantity,
+            action=first.get("action") or IntentAction.ONE.value,
+            quantity=first.get("quantity"),
             match_source=match_source,
             matched_vector_id=matched_vector_id,
             device_no=device_no,
             model_config=model_config,
-            events=events,
-            op="",
+            events=[first],
+            op=str(first.get("op") or ""),
             history_mode=str(fields.get("history_mode") or ""),
             limit=fields.get("limit"),
         )
-        multi_msg = build_multi_event_confirm_message(events)
-        if multi_msg:
-            pending.clarify_message = multi_msg
-        pending.events = events  # type: ignore[attr-defined]
+        n = len(events)
+        slot = build_multi_event_confirm_message([first]) or first.get("event_name")
+        pending.clarify_message = f"（1/{n}）{slot}？其余将接着问。"
+        # 暂存剩余段于 remark 字段不安全；放入 events 扩展：确认执行只用 pending.events
+        # 用 model_config 旁路存剩余（进程内 pending）
+        pending.model_config = {
+            **(pending.model_config or {}),
+            "_remaining_events": rest,
+            "_remaining_index": 2,
+            "_remaining_total": n,
+        }
         clarification_store.set(pending)
         return response_from_pending(pending)
 

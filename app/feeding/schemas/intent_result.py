@@ -36,6 +36,9 @@ class IntentEventItem(BaseModel):
     end_time: Optional[int] = None
     # 点查「上一次」为 true → 拉史透传 ignoreTimeRange；缺省 false
     ignore_time_range: bool = False
+    # 段级多维：缺 quantity / 段原文（写短说法用）
+    missing_quantity: bool = False
+    segment_text: str = ""
 
 
 class IntentResult(BaseModel):
@@ -73,6 +76,9 @@ class IntentResult(BaseModel):
     confirm_message: str = ""
     conversation_id: Optional[str] = None
     options: List[Dict[str, Any]] = Field(default_factory=list)
+    # 段多维：分句/事件失败引导重说；number 叶缺量
+    segment_failed: bool = False
+    missing_quantity: bool = False
 
     def to_plain_dict(self) -> Dict[str, Any]:
         """管线/响应组装用字典。"""

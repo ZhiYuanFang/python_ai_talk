@@ -18,15 +18,11 @@ from app.feeding.services.event_hierarchy import (
     get_event_by_id,
     is_parent_event,
 )
-from app.feeding.services.history_crud import rewrite_standalone_document
 from app.feeding.services.history_mode_cues import (
     day_phrase_for_speak,
     is_count_query,
 )
-from app.feeding.services.intent_cache_store import (
-    intent_cache_store,
-    last_cache_turn_store,
-)
+from app.feeding.services.intent_cache_store import intent_cache_store
 from app.feeding.services.intent_events import coerce_ignore_time_range
 from app.shared.constants import IntentOp, TargetType
 from app.shared.graphs.state_patch import state_get
@@ -488,24 +484,22 @@ async def speak_history(state: Any) -> Dict[str, Any]:
         content = "没有查到相关记录。"
     intent["content"] = content
     intent["events"] = cache_events or intent.get("events") or []
-    # 缓存带上 history_mode，命中后区段汇总行为一致
-    cache_payload: Dict[str, Any] = {
-        "target_type": TargetType.HISTORY.value,
-        "events": intent["events"],
-        "remark": intent.get("remark") or "",
-        "history_mode": (intent.get("history_mode") or "point"),
-    }
-    if intent.get("limit") not in (None, ""):
-        cache_payload["limit"] = intent.get("limit")
-    intent_cache_store.add(
-        rewrite_standalone_document(intent, state_get(state, "user_input") or ""),
-        cache_payload,
-    )
-    if state_get(state, "intent_cache_hit"):
-        last_cache_turn_store.remember(
-            device_no,
-            state_get(state, "user_input") or "",
-            str(state_get(state, "matched_vector_id") or ""),
+    # 按段写事件短说法（查史确认后的说法→事件）
+    full = state_get(state, "event_dictionary_full") or []
+    for ev in intent.get("events") or []:
+        if not isinstance(ev, dict):
+            continue
+        eid = str(ev.get("event_id") or "").strip()
+        if not eid:
+            continue
+        seg = str(ev.get("segment_text") or "").strip()
+        ename = str(ev.get("event_name") or "").strip()
+        doc = seg or ename
+        if not doc:
+            continue
+        kind = "parent" if is_parent_event(eid, full) else "leaf"
+        intent_cache_store.add_event_phrase(
+            doc, event_id=eid, event_name=ename, kind=kind
         )
     logger.info(f"查记录模板: {content[:80]}")
     return {

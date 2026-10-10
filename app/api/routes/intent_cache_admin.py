@@ -1,9 +1,11 @@
 """
-意图向量管理路由
+事件短说法向量管理路由
 
 业务说明：
 供兄弟仓 Go Hub / voice admin 调用，对 Chroma feeding_intents 做列表、批量写入、
-整理重复（document 原文全等）、删除。不写 MySQL；鉴权依赖内网调用。
+整理重复（document 原文全等）、删除。
+payload 须为 {event_id, event_name, kind}，禁止整包 multi-events。
+不写 MySQL；鉴权依赖内网调用。
 """
 
 from __future__ import annotations
@@ -22,10 +24,13 @@ router = APIRouter(prefix="/admin/intent-cache", tags=["意图向量管理"])
 
 
 class IntentCacheBulkItem(BaseModel):
-    """单条种子：匹配句 + 载荷。"""
+    """单条种子：短说法 + 事件载荷。"""
 
-    document: str = Field(..., description="向量文档原文")
-    payload: Dict[str, Any] = Field(default_factory=dict, description="意图载荷 JSON")
+    document: str = Field(..., description="短说法原文")
+    payload: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="须含 event_id；可选 event_name、kind=leaf|parent",
+    )
 
 
 class IntentCacheBulkRequest(BaseModel):

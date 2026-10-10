@@ -2,8 +2,8 @@
 批量落库节点
 
 业务说明：
-已确认（或高置信免确认）的 create/update/delete/end 走一条 batch，
-用模板填写 content，成功后写意图缓存。
+已确认的 create/update/delete/end 走一条 batch，
+用模板填写 content，成功后按段写事件短说法。
 仅对 update/delete 子项现查 latest；create/end 不因无记录而跳过。
 """
 
@@ -19,13 +19,9 @@ from app.feeding.services.history_crud import (
     execute_batch,
     infer_route_kind,
     render_persist_content,
-    rewrite_standalone_document,
     sort_end_items_first,
 )
-from app.feeding.services.intent_cache_store import (
-    intent_cache_store,
-    last_cache_turn_store,
-)
+from app.feeding.services.intent_cache_store import intent_cache_store
 from app.feeding.services.intent_events import normalize_intent_events
 from app.shared.constants import IntentOp
 from app.shared.graphs.state_patch import state_get
@@ -112,22 +108,24 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
     intent["content"] = content
     any_ok = any(bool(r.get("ok")) for r in results)
     if any_ok:
-        doc = rewrite_standalone_document(
-            intent, state_get(state, "user_input") or ""
-        )
-        intent_cache_store.add(
-            doc,
-            {
-                "target_type": intent.get("target_type"),
-                "events": intent.get("events") or [],
-                "remark": intent.get("remark"),
-            },
-        )
-        if state_get(state, "intent_cache_hit"):
-            last_cache_turn_store.remember(
-                device_no,
-                state_get(state, "user_input") or "",
-                str(state_get(state, "matched_vector_id") or ""),
+        # 按段写入事件短说法（禁止整包复合句）
+        from app.feeding.services.event_hierarchy import is_parent_event
+
+        full = state_get(state, "event_dictionary_full") or []
+        for ev in intent.get("events") or []:
+            if not isinstance(ev, dict):
+                continue
+            eid = str(ev.get("event_id") or "").strip()
+            if not eid:
+                continue
+            seg = str(ev.get("segment_text") or "").strip()
+            ename = str(ev.get("event_name") or "").strip()
+            doc = seg or ename
+            if not doc:
+                continue
+            kind = "parent" if is_parent_event(eid, full) else "leaf"
+            intent_cache_store.add_event_phrase(
+                doc, event_id=eid, event_name=ename, kind=kind
             )
     logger.info(f"落库回执: {content}")
     return {"intent_result": IntentResult.model_validate(intent), "response": content}

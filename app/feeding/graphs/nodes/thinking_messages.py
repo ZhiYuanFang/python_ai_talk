@@ -14,6 +14,7 @@
 # 节点名→中文思考文案映射表
 # 业务说明：每个 key 对应意图图中注册的节点名，value 为推送给前端的中文文案
 NODE_THINKING_MESSAGES = {
+    "resolve_segments": "正在拆分并理解这件事...",
     "match_intent_cache": "正在回忆你常说的话...",
     "overlay_slots": "正在核对时间和数量...",
     "in_progress_probe": "正在查看当前记录...",

@@ -1,10 +1,9 @@
 """
-意图缓存匹配节点
+意图缓存匹配节点（已退役）
 
 业务说明：
-相似度与质量分双门槛命中则采用缓存的 events（含 op），跳过分类 LLM。
-旧载荷仅有顶层 op 时投影为 events；无法投影则当未命中。
-查史载荷另过 history_mode 门闩，冲突则未命中以保飞轮不串台。
+整包意图免确认路径已由 resolve_segments 段多维替代；本模块不再挂接意图主图。
+保留文件以免外部误 import 立刻炸；请勿再接入 START。
 """
 
 from __future__ import annotations
@@ -85,11 +84,16 @@ def match_intent_cache(state: Any) -> Dict[str, Any]:
     intent_result = normalized
     intent_result["match_source"] = "cache"
     intent_result["match_confidence"] = score
+    # 对照用户原话与库内 document，便于排查误匹配、针对性灌种/扣分
+    doc = str(top.get("document") or "")
     logger.info(
-        "意图缓存命中: ops=%s, score=%s, quality=%s, events=%s",
-        list(event_ops(intent_result)),
+        "意图缓存命中: query=%s, document=%s, score=%s, quality=%s, id=%s, ops=%s, events=%s",
+        (text or "")[:80],
+        doc[:80],
         score,
         quality,
+        vector_id,
+        list(event_ops(intent_result)),
         len(intent_result.get("events") or []),
     )
     return {

@@ -88,6 +88,46 @@ JSON 格式：
 }}
 """
 
+# 段级明细备注抽取（事件已定后；可空）
+SEGMENT_REMARK_EXTRACT_SYSTEM_PROMPT = """你是母婴喂养备注抽取助手。
+已知该段已定字典事件名，从用户段原文中抽出应写入历史记录的**明细备注**。
+只输出 JSON，不要解释，不要 markdown。
+
+硬性约束：
+1. remark 只填自由明细（如「有点黄」「菠菜泥偏稀」），不要重复事件正式名本身。
+2. 若段内没有额外明细，remark 必须为空字符串 ""。
+3. 不要编造；不要把数量、钟点写进 remark（那些另有字段）。
+4. 别名实例词若已是事件备注语义（如段仅为「菠菜」且事件为辅食）且无其它描述，remark 可空（服务端会保留已有别名备注）。
+5. 内部思考（reasoning）须使用中文。
+
+JSON 格式：
+{
+  "remark": ""
+}
+"""
+
+
+# 复合句仅分句（禁止输出完整 events 结构化）
+SEGMENT_SPLIT_SYSTEM_PROMPT = """你是母婴喂养口述分句助手。
+把用户一句话拆成若干段，每段尽量是一件独立的事。
+只输出 JSON，不要解释，不要 markdown。
+
+硬性约束：
+1. 只分句，不要填写 event_id、quantity、unix 时间。
+2. 不得删掉查史信号：原句含「几次/多少次/上一次/今天/昨天」等时，相关段必须保留这些词（或语义等价），禁止把查史改写成单纯「…了」记录口吻。
+3. 例：「今天换尿布和喝奶几次了」→ segments 为「今天换尿布几次了」「今天喝奶几次了」（或等价保留几次/今天）。
+4. 单事件则 segments 长度为 1，原文即可。
+5. target_type 可选：feeding|history|conversation|exit；能判断是查记录时填 history。
+6. 内部思考（reasoning）须使用中文。
+
+JSON 格式：
+{
+  "target_type": "feeding|history|conversation|exit|",
+  "segments": ["段1", "段2"]
+}
+"""
+
+
 # pending 澄清解析 system
 PENDING_REPLY_SYSTEM_PROMPT = """你是母婴喂养场景的澄清回复解析助手。
 用户正在回答系统的澄清/消歧问句。请根据 pending 语境解析用户本句，只返回 JSON。

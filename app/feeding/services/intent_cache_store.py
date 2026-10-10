@@ -1,12 +1,12 @@
 """
-意图缓存飞轮存储
+事件短说法向量库（原意图整包缓存）
 
 业务说明：
-独立 Collection feeding_intents，document 为改写后的独立问答句，
-顶层 metadata 含 quality_score 与 payload（op + events + 可选 remark）。
-确认且至少一条落库/播报成功后写入；同一 document 更新而非新 uuid。
-检索须相似度与质量分双门槛。短窗重复同一问扣分。
-「嗯/是的」等续聊词不得当 document。
+独立 Collection feeding_intents，document 为单事件短说法/别名，
+payload 仅含 event_id / event_name / kind（parent|leaf）。
+禁止再写入或回放整包 multi-events 意图。
+确认落库后按段写入；管理端 bulk 灌种子。
+相似度门槛 0.72；「嗯/是的」等不得当 document。
 """
 
 from __future__ import annotations
@@ -44,14 +44,15 @@ _CONFIRM_ONLY = {
     "yes",
 }
 
-# 高置信采用缓存
+# 事件短说法高置信门槛（与规格一致）
 INTENT_CACHE_HIGH_THRESHOLD = 0.72
-# 质量分下限；缺省按 0.8
+EVENT_PHRASE_THRESHOLD = INTENT_CACHE_HIGH_THRESHOLD
+# 质量分下限；缺省按 0.8（管理端列表/清理仍用）
 INTENT_CACHE_QUALITY_MIN = 0.7
 INTENT_CACHE_QUALITY_DEFAULT = 0.8
 INTENT_CACHE_QUALITY_PENALTY = 0.2
 INTENT_CACHE_CLEANUP_THRESHOLD = 0.3
-# 同一设备短窗内重复同一问视为否决刚免确认的那次
+# 遗留：短窗重复扣分（整包免确认已废，保留 API 兼容）
 INTENT_CACHE_REPEAT_WINDOW_S = 180
 
 _PUNCT_RE = re.compile(r"[。．.!！?？、，,；;：:\s]+")
@@ -124,12 +125,43 @@ class LastCacheTurnStore:
 last_cache_turn_store = LastCacheTurnStore()
 
 
+def _as_event_phrase_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    将写入载荷规范为事件说法形；整包 events 意图拒绝写入。
+
+    Returns:
+        {event_id, event_name, kind} 或 None（不可写入）
+    """
+    if not isinstance(payload, dict):
+        return None
+    # 显式整包意图：有非空 events 且超过「单事件镜像」则拒
+    events = payload.get("events")
+    if isinstance(events, list) and len(events) > 1:
+        return None
+    if isinstance(events, list) and len(events) == 1 and isinstance(events[0], dict):
+        ev = events[0]
+        eid = str(ev.get("event_id") or payload.get("event_id") or "").strip()
+        ename = str(ev.get("event_name") or payload.get("event_name") or "").strip()
+        kind = str(payload.get("kind") or "leaf").strip() or "leaf"
+        if eid:
+            return {"event_id": eid, "event_name": ename, "kind": kind}
+        return None
+    eid = str(payload.get("event_id") or "").strip()
+    ename = str(payload.get("event_name") or "").strip()
+    kind = str(payload.get("kind") or "leaf").strip() or "leaf"
+    if not eid:
+        return None
+    if kind not in ("leaf", "parent"):
+        kind = "leaf"
+    return {"event_id": eid, "event_name": ename, "kind": kind}
+
+
 class IntentCacheStore:
     """
-    意图缓存向量库。
+    事件短说法向量库（Collection 名仍为 feeding_intents）。
 
     业务说明：
-    与知识库 Collection 物理隔离；事件名向量 feeding_events 已拆除。
+    与知识库 Collection 物理隔离；供段级事件维检索，不回放整包意图。
     """
 
     def __init__(self) -> None:
@@ -156,10 +188,10 @@ class IntentCacheStore:
             )
             self._collection = self._chroma_client.get_or_create_collection(
                 name=COLLECTION_NAME,
-                metadata={"description": "喂养意图缓存飞轮"},
+                metadata={"description": "喂养事件短说法飞轮"},
             )
             self._initialized = True
-            logger.info("意图缓存向量库初始化完成")
+            logger.info("事件短说法向量库初始化完成")
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
         return self._embedding_model.encode(texts).tolist()
@@ -237,17 +269,24 @@ class IntentCacheStore:
         payload: Dict[str, Any],
     ) -> Optional[str]:
         """
-        写入或更新一条意图缓存。
+        写入或更新一条事件短说法。
 
         业务逻辑：
-        确认词不写；payload 去掉 history_id；同一 document 更新并重置质量分为 0.8。
+        确认词不写；仅接受 event_id(+name/kind)；拒绝整包 multi-events。
+        同一 document 更新并重置质量分为 0.8。
         """
         self._ensure_initialized()
         doc = (document or "").strip()
         if not doc or _is_confirm_only(doc):
-            logger.info("跳过意图缓存写入：空句或确认词")
+            logger.info("跳过事件说法写入：空句或确认词")
             return None
-        clean = _strip_create_absolute_times(_strip_history_ids(payload))
+        clean = _as_event_phrase_payload(payload)
+        if not clean:
+            logger.info(
+                "跳过事件说法写入：非短说法载荷或整包 events doc=%s",
+                doc[:40],
+            )
+            return None
         embedding = self._embed([doc])[0]
         meta = {
             "payload": json.dumps(clean, ensure_ascii=False),
@@ -256,14 +295,18 @@ class IntentCacheStore:
         }
         existing_id = self._find_id_by_document(doc)
         if existing_id:
-            # 用户再次确认同一句：覆盖载荷，质量分回到默认（不是给旧条偷偷 +0.1）
             self._collection.update(
                 ids=[existing_id],
                 embeddings=[embedding],
                 documents=[doc],
                 metadatas=[meta],
             )
-            logger.info(f"更新意图缓存: id={existing_id}, doc={doc[:40]}...")
+            logger.info(
+                "更新事件说法: id=%s, doc=%s, event_id=%s",
+                existing_id,
+                doc[:40],
+                clean.get("event_id"),
+            )
             return existing_id
         vector_id = f"intent_{uuid.uuid4().hex}"
         self._collection.add(
@@ -272,8 +315,54 @@ class IntentCacheStore:
             documents=[doc],
             metadatas=[meta],
         )
-        logger.info(f"写入意图缓存: id={vector_id}, doc={doc[:40]}...")
+        logger.info(
+            "写入事件说法: id=%s, doc=%s, event_id=%s",
+            vector_id,
+            doc[:40],
+            clean.get("event_id"),
+        )
         return vector_id
+
+    def add_event_phrase(
+        self,
+        document: str,
+        *,
+        event_id: str,
+        event_name: str = "",
+        kind: str = "leaf",
+    ) -> Optional[str]:
+        """段确认后写入短说法 → 事件。"""
+        return self.add(
+            document,
+            {
+                "event_id": str(event_id or "").strip(),
+                "event_name": str(event_name or "").strip(),
+                "kind": kind if kind in ("leaf", "parent") else "leaf",
+            },
+        )
+
+    def search_event_phrase(
+        self, query: str, n_results: int = 1
+    ) -> List[Dict[str, Any]]:
+        """
+        检索最相似短说法；调用方用 EVENT_PHRASE_THRESHOLD 过滤。
+
+        Returns:
+            含 score、document、payload(event_id/name/kind)、id 的列表
+        """
+        hits = self.search(query, n_results=n_results)
+        # 打对照日志便于灌种排查
+        if hits:
+            top = hits[0]
+            logger.info(
+                "事件说法检索: query=%s, document=%s, score=%s, event_id=%s, id=%s",
+                (query or "")[:80],
+                str(top.get("document") or "")[:80],
+                top.get("score"),
+                (top.get("payload") or {}).get("event_id"),
+                top.get("id"),
+            )
+        return hits
 
     def list_entries(
         self,
@@ -575,9 +664,9 @@ class IntentCacheStore:
             logger.warning(f"删除 feeding_intents 集合时忽略: {exc}")
         self._collection = self._chroma_client.get_or_create_collection(
             name=COLLECTION_NAME,
-            metadata={"description": "喂养意图缓存飞轮"},
+            metadata={"description": "喂养事件短说法飞轮"},
         )
-        logger.warning("已按开关清空意图缓存 Collection feeding_intents")
+        logger.warning("已按开关清空事件说法 Collection feeding_intents")
 
     def migrate_legacy_remark_keys(self) -> Dict[str, int]:
         """

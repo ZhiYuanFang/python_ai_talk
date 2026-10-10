@@ -1,10 +1,8 @@
 """
-意图缓存命中后的槽位覆盖节点
+意图缓存命中后的槽位覆盖节点（已退役）
 
 业务说明：
-从本轮原文抽取 clock / duration / quantity，盖到缓存 events[]。
-计时闭合补记（时长或双钟点起止）写 start+end；
-≥3 钟点单条、或半命中（有 clock 仍有日/段残留）则降级 LLM。
+整包缓存后覆盖已并入段级 TIME/QTY；本节点不再挂接意图主图。
 """
 
 from __future__ import annotations
