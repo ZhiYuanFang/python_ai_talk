@@ -40,7 +40,7 @@ INTENT_CLASSIFICATION_SYSTEM_TEMPLATE = """
 - events[].remark_keyword：该子项查记录备注专名，没有则空或不写
 - events[].quantity：数量（毫升等），没有则 null；「10分钟」是时长不是 quantity
 - 一句多次喂养：用户一句话说了多次吃奶/换尿布等，必须拆成多条 events（允许同一 event_id 出现多次），每条各自 quantity 与 start_time；禁止合并成一条并用当前时间
-- content：闲聊短句；feeding/history 可空；conversation 引导 clinic 时写短句
+- content：闲聊短句；feeding/history 可空；conversation 建议类写短句如「暂未开通建议功能」
 - 不要输出顶层 op、不要输出顶层 action
 
 查史分流（history）：
@@ -48,8 +48,8 @@ INTENT_CLASSIFICATION_SYSTEM_TEMPLATE = """
 - daily：今天/昨天/本周等区间 + 几次/一共/吃了什么/和昨天比等事实汇总或相邻日对比 → history_mode=daily，ignore_time_range=false 并填 unix 窗；limit 建议 ≥50。
 - 同一次 history 意图只用一个 history_mode。
 
-养育建议归 clinic（intent 不装懂）：
-- 「够不够吃」「正常吗」「怎么办」「最近怎么样」等建议或含糊近况 → target_type=conversation，events=[]，content 简洁引导如「养育建议请使用喂养建议功能」。
+养育建议暂不承接（intent 不装懂）：
+- 「够不够吃」「正常吗」「怎么办」「最近怎么样」等建议或含糊近况 → target_type=conversation，events=[]，content 固定简洁如「暂未开通建议功能」。
 - MUST NOT 用 history 查史冒充建议或编造趋势结论。
 
 表约束：

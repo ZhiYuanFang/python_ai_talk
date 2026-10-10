@@ -205,7 +205,7 @@ def build_parent_disambiguation_message(
 ) -> str:
     """生成父事件消歧问句。"""
     lines = [
-        f"您提到的是「{parent_name}」。请选择具体事件（回复序号或名称）：",
+        f"您提到的是「{parent_name}」。请选择具体事件：",
     ]
     for i, child in enumerate(children, start=1):
         name = child.get("event_name") or ""
