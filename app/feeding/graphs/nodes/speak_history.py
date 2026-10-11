@@ -4,14 +4,16 @@
 业务说明：
 按已定 event_ids + unix 窗 + 可选 remark 拉史，用模板填 content。
 父 id 递归展开为叶子再拉史；来自父则塌成最近一条并点出父名与叶子名。
-点查优先已完成记录；仅有进行中时用固定话术，并可拼接进行中 ETA。
-日汇总走共享紧凑聚合。不调用历史答题 LLM。
+点查选行/进行中话术服从查史播报飞轮两维（point_pick / open_speak）；
+缺维走小 LLM，禁止静默优先已完成。日汇总走共享紧凑聚合。
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
 from app.feeding.services.active_timing_eta import eta_suffix_for_row
@@ -23,6 +25,10 @@ from app.feeding.services.event_hierarchy import (
 from app.feeding.services.history_mode_cues import (
     day_phrase_for_speak,
     is_count_query,
+)
+from app.feeding.services.history_speak_policy import (
+    HISTORY_SPEAK_DEGRADE,
+    resolve_history_speak_policy,
 )
 from app.feeding.services.intent_cache_store import intent_cache_store
 from app.feeding.services.intent_events import coerce_ignore_time_range
@@ -41,6 +47,11 @@ from app.shared.history_window import (
 from app.shared.http_client import http_client
 
 logger = logging.getLogger(__name__)
+
+
+def _shanghai_now() -> datetime:
+    """服务端当前时间（Asia/Shanghai）。"""
+    return datetime.now(ZoneInfo("Asia/Shanghai"))
 
 
 def _row_name(row: Dict[str, Any]) -> str:
@@ -62,12 +73,7 @@ def _row_start_ts(row: Dict[str, Any]) -> float:
 
 
 def _is_in_progress_row(row: Dict[str, Any]) -> bool:
-    """
-    进行中：无有效结束时间（空 / 0 / 不可解析）。
-
-    业务说明：
-    点查「上次」须跳过此类行，优先答已完成记录。
-    """
+    """进行中：无有效结束时间（空 / 0 / 不可解析）。"""
     end = row.get("endTime")
     if end in (None, ""):
         end = row.get("end_time")
@@ -88,6 +94,20 @@ def _duration_seconds(row: Dict[str, Any]) -> Optional[int]:
     return secs
 
 
+def _elapsed_seconds_now(row: Dict[str, Any]) -> Optional[int]:
+    """进行中已持续：now−start 秒数。"""
+    dt_s = _parse_epoch(row.get("startTime") or row.get("start_time"))
+    if dt_s is None:
+        return None
+    now = _shanghai_now()
+    if dt_s.tzinfo is None:
+        dt_s = dt_s.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    secs = int((now - dt_s).total_seconds())
+    if secs < 0:
+        return None
+    return secs
+
+
 def _format_only_in_progress(
     row: Dict[str, Any],
     *,
@@ -97,7 +117,7 @@ def _format_only_in_progress(
     full_events: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
-    仅有进行中、无已完成时的固定话术。
+    open_speak=in_progress 时的固定话术。
 
     例：目前仅找到一条记录，是今天 14:11发生，正在进行中
     有匹配 ETA 时追加「，预计约 HH:mm 结束」或带「 · 已超时」。
@@ -120,11 +140,72 @@ def _format_only_in_progress(
     return f"目前仅找到一条记录，是{when}发生，正在进行中{eta_part}"
 
 
-def _will_speak_only_in_progress_point(
+def _format_elapsed_open(
+    row: Dict[str, Any],
+    *,
+    name: str = "",
+    parent_name: str = "",
+    leaf_name: str = "",
+) -> str:
+    """
+    open_speak=elapsed：报已持续时长（now−start）。
+
+    例：睡眠从今天 14:11 开始，已持续约 2小时15分
+    """
+    when = (
+        format_history_time(
+            row.get("startTime") or row.get("start_time"),
+            style="relative",
+        )
+        or "未知时间"
+    )
+    secs = _elapsed_seconds_now(row)
+    dur = _format_duration_hm(secs) if secs is not None else "一段时间"
+    if parent_name and leaf_name:
+        return (
+            f"{leaf_name}（{parent_name}）从{when}开始，已持续约{dur}"
+        )
+    label = name or leaf_name or "该记录"
+    return f"{label}从{when}开始，已持续约{dur}"
+
+
+def _format_open_row(
+    row: Dict[str, Any],
+    *,
+    open_speak: str,
+    name: str = "",
+    parent_name: str = "",
+    leaf_name: str = "",
+    eta_items: Optional[List[Dict[str, Any]]] = None,
+    full_events: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """按 open_speak 拼进行中行话术。"""
+    if open_speak == "elapsed":
+        return _format_elapsed_open(
+            row,
+            name=name,
+            parent_name=parent_name,
+            leaf_name=leaf_name,
+        )
+    return _format_only_in_progress(
+        row,
+        parent_name=parent_name,
+        leaf_name=leaf_name,
+        eta_items=eta_items,
+        full_events=full_events,
+    )
+
+
+def _will_need_eta_point(
     rows: List[Dict[str, Any]],
     event_names: List[str],
+    *,
+    point_pick: str,
+    open_speak: str,
 ) -> bool:
-    """点查模板是否会走上「仅进行中」话术（用于决定是否拉 ETA）。"""
+    """点查是否会走 in_progress 话术（决定是否拉 ETA）。"""
+    if open_speak != "in_progress":
+        return False
     by_name: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
         name = _row_name(row)
@@ -133,26 +214,33 @@ def _will_speak_only_in_progress_point(
         by_name.setdefault(name, []).append(row)
     wanted = event_names or list(by_name.keys())
     for name in wanted:
-        row, only_open = _pick_completed_or_only_open(by_name.get(name) or [])
-        if row and only_open:
+        row, is_open = _pick_point_row(by_name.get(name) or [], point_pick)
+        if row and is_open:
             return True
     return False
 
 
-def _will_speak_only_in_progress_parent(rows: List[Dict[str, Any]]) -> bool:
-    """父塌缩点查是否会走上「仅进行中」话术。"""
-    row, only_open = _pick_completed_or_only_open(rows)
-    return bool(row and only_open)
+def _will_need_eta_parent(
+    rows: List[Dict[str, Any]],
+    *,
+    point_pick: str,
+    open_speak: str,
+) -> bool:
+    """父塌缩是否会走 in_progress 话术。"""
+    if open_speak != "in_progress":
+        return False
+    row, is_open = _pick_point_row(rows, point_pick)
+    return bool(row and is_open)
 
 
 def _pick_completed_or_only_open(
     rows: List[Dict[str, Any]],
 ) -> Tuple[Optional[Dict[str, Any]], bool]:
     """
-    在候选行中取最近已完成；若无已完成则取最近进行中。
+    prefer_completed：取最近已完成；若无已完成则取最近进行中。
 
     Returns:
-        (选中行, 是否「仅有进行中」)
+        (选中行, 是否进行中)
     """
     if not rows:
         return None, False
@@ -163,6 +251,25 @@ def _pick_completed_or_only_open(
     if opens:
         return max(opens, key=_row_start_ts), True
     return None, False
+
+
+def _pick_point_row(
+    rows: List[Dict[str, Any]],
+    point_pick: str,
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """
+    按 point_pick 选行。
+
+    Returns:
+        (选中行, 是否进行中)
+    """
+    if not rows:
+        return None, False
+    pick = (point_pick or "").strip().lower()
+    if pick == "latest":
+        row = max(rows, key=_row_start_ts)
+        return row, _is_in_progress_row(row)
+    return _pick_completed_or_only_open(rows)
 
 
 def _format_duration_hm(secs: int) -> str:
@@ -273,13 +380,12 @@ def _template_point(
     event_names: List[str],
     full_events: List[Dict[str, Any]],
     *,
+    point_pick: str,
+    open_speak: str,
     eta_items: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
-    多叶子分别点查：每事件优先最近已完成；仅进行中用固定话术。
-
-    业务说明：
-    不再把进行中行的开始时间答成「上一次」。
+    多叶子分别点查：按 point_pick 选行；进行中按 open_speak 话术。
     """
     by_name: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
@@ -291,14 +397,16 @@ def _template_point(
     wanted = event_names or list(by_name.keys())
     for name in wanted:
         candidates = by_name.get(name) or []
-        row, only_open = _pick_completed_or_only_open(candidates)
+        row, is_open = _pick_point_row(candidates, point_pick)
         if not row:
             parts.append(f"没有记到{name}")
             continue
-        if only_open:
+        if is_open:
             parts.append(
-                _format_only_in_progress(
+                _format_open_row(
                     row,
+                    open_speak=open_speak,
+                    name=name,
                     eta_items=eta_items,
                     full_events=full_events,
                 )
@@ -318,21 +426,24 @@ def _template_parent_latest(
     parent_name: str,
     full_events: List[Dict[str, Any]],
     *,
+    point_pick: str,
+    open_speak: str,
     eta_items: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
-    父点查：子孙叶子优先最近已完成；仅进行中用固定话术并点出父/叶名。
+    父点查：按 point_pick 选行；进行中按 open_speak 并点出父/叶名。
     """
     if not rows:
         return f"没有记到{parent_name}相关记录。"
-    latest, only_open = _pick_completed_or_only_open(rows)
+    latest, is_open = _pick_point_row(rows, point_pick)
     if not latest:
         return f"没有记到{parent_name}相关记录。"
     leaf_name = _row_name(latest) or "该记录"
-    if only_open:
+    if is_open:
         return (
-            _format_only_in_progress(
+            _format_open_row(
                 latest,
+                open_speak=open_speak,
                 parent_name=parent_name,
                 leaf_name=leaf_name,
                 eta_items=eta_items,
@@ -406,17 +517,47 @@ async def speak_history(state: Any) -> Dict[str, Any]:
             "response": content,
         }
 
+    user_text = state_get(state, "user_input") or ""
+    mode = (intent.get("history_mode") or "point").strip().lower()
+    # 点查策略两维：飞轮或 LLM；daily 不需要
+    point_pick = ""
+    open_speak = ""
+    if mode != "daily":
+        llm_model = (
+            state_get(state, "llm_model")
+            or state_get(state, "model_config")
+            or {}
+        )
+        if not isinstance(llm_model, dict):
+            llm_model = {}
+        policy = await resolve_history_speak_policy(str(user_text), llm_model)
+        if policy is None:
+            content = HISTORY_SPEAK_DEGRADE
+            intent["content"] = content
+            logger.warning("查史播报策略解析失败，降级话术")
+            return {
+                "intent_result": IntentResult.model_validate(intent),
+                "response": content,
+            }
+        point_pick, open_speak = policy
+        logger.info(
+            "查史播报策略: pick=%s open=%s text=%s",
+            point_pick,
+            open_speak,
+            str(user_text)[:40],
+        )
+
     id_to_name = {
         str(e.get("event_id")): e.get("event_name") or "" for e in full_events
     }
     parts: List[str] = []
     all_rows: List[Dict[str, Any]] = []
     cache_events: List[Dict[str, Any]] = []
-    # 本轮设备级 ETA：未拉过为 None；拉过后为 list（可空）；仅 only_open 时拉取
+    # 本轮设备级 ETA：未拉过为 None；拉过后为 list（可空）；仅 in_progress 话术时拉取
     eta_items_cache: Optional[List[Dict[str, Any]]] = None
 
     async def _ensure_eta_items() -> List[Dict[str, Any]]:
-        """仅进行中播报时拉一次 active-eta；失败降级为空列表。"""
+        """仅 in_progress 播报时拉一次 active-eta；失败降级为空列表。"""
         nonlocal eta_items_cache
         if eta_items_cache is not None:
             return eta_items_cache
@@ -452,8 +593,6 @@ async def speak_history(state: Any) -> Dict[str, Any]:
         start_time, end_time = resolve_window(req)
         # LLM 判定「上一次」时为 true → 透传 Go ignoreTimeRange，避免猜测窗踩空
         ignore_time = coerce_ignore_time_range(item.get("ignore_time_range"))
-        mode = (intent.get("history_mode") or "point").strip().lower()
-        user_text = state_get(state, "user_input") or ""
         # daily 且窗无效：按原文日词补窗（和昨天比→两日，勿无界拉史）
         if (
             mode == "daily"
@@ -526,24 +665,37 @@ async def speak_history(state: Any) -> Dict[str, Any]:
         elif collapse_parent:
             parent_name = name or id_to_name.get(parent_ids[0], "") or "该分类"
             etas: Optional[List[Dict[str, Any]]] = None
-            if _will_speak_only_in_progress_parent(rows or []):
+            if _will_need_eta_parent(
+                rows or [],
+                point_pick=point_pick,
+                open_speak=open_speak,
+            ):
                 etas = await _ensure_eta_items()
             chunk = _template_parent_latest(
                 rows or [],
                 str(parent_name),
                 full_events,
+                point_pick=point_pick,
+                open_speak=open_speak,
                 eta_items=etas,
             )
         else:
             names = [name] if name else [id_to_name.get(str(x), "") for x in original_ids]
             names = [n for n in names if n]
             etas = None
-            if _will_speak_only_in_progress_point(rows or [], names):
+            if _will_need_eta_point(
+                rows or [],
+                names,
+                point_pick=point_pick,
+                open_speak=open_speak,
+            ):
                 etas = await _ensure_eta_items()
             chunk = _template_point(
                 rows or [],
                 names,
                 full_events,
+                point_pick=point_pick,
+                open_speak=open_speak,
                 eta_items=etas,
             )
         parts.append(chunk.rstrip("。"))

@@ -123,6 +123,35 @@ JSON 格式：
 """
 
 
+# 查史点查播报策略小 LLM（独立飞轮未命中时；不猜库内行）
+HISTORY_SPEAK_LLM_PROMPT = """你是母婴喂养「查史点查播报策略」助手。
+用户已判定为查历史点查（非预测、非日汇总）。请只根据**句意**决定如何选记录、进行中如何报，只输出 JSON，不要 markdown。
+
+硬性约束：
+1. point_pick 只能是：
+   - latest：按开始时间取最近一条（有无结束时间都算；进行中可胜出）
+   - prefer_completed：优先最近已完成；没有已完成才用最近进行中
+2. open_speak 只能是：
+   - elapsed：选中行无结束时间时，报已持续多久（从开始到现在）
+   - in_progress：选中行无结束时间时，说正在进行中（可不报已持续分钟）
+3. need_confirm：本任务默认 false（策略直播，勿轻易 true）
+4. keywords：从原文抽可复用短线索 1～3 个，如「多久了」「上次」「上一次」；禁止整句复合长文；可为空数组
+5. 语义纠偏：
+   - 「睡了多久了」「多久了」「多长时间了」（问最近这次持续多久）→ latest + elapsed
+   - 「上次」「上一次」「上次睡眠多久」（强调上一笔完整记录）→ prefer_completed + in_progress
+6. 不要输出 events、时间、数量、target_type
+7. 内部思考（reasoning）须使用中文
+
+JSON 格式：
+{
+  "point_pick": "latest",
+  "open_speak": "elapsed",
+  "need_confirm": false,
+  "keywords": ["多久了"]
+}
+"""
+
+
 # 段 EVENT 维小 LLM（词典/别名/向量/Go 反查均未定事件后）
 SEGMENT_EVENT_LLM_PROMPT = """你是母婴喂养事件对齐助手。
 用户说了一段话，规则与历史备注反查未能定事件。请从给定**叶子事件表**中选唯一一项，或无法确定则留空。
