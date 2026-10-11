@@ -88,6 +88,85 @@ JSON 格式：
 }}
 """
 
+# 段 TYPE 维小 LLM（规则无线索时）
+SEGMENT_TYPE_LLM_PROMPT = """你是母婴喂养意图类型助手。
+根据用户**一段**原文判断类型，只输出 JSON，不要 markdown。
+
+硬性约束：
+1. target_type 只能是：feeding|history|conversation|exit
+2. op 可选：create|read|update|delete|end；history 时 op 用 read；feeding 记录用 create
+3. history_mode 仅 history 时填 point|daily；其它为空字符串
+4. 不确定时偏向 feeding + create
+5. 不要输出 events、时间、数量
+6. 内部思考（reasoning）须使用中文
+
+JSON 格式：
+{
+  "target_type": "feeding",
+  "op": "create",
+  "history_mode": ""
+}
+"""
+
+
+# 段 EVENT 维小 LLM（词典/别名/向量/Go 反查均未定事件后）
+SEGMENT_EVENT_LLM_PROMPT = """你是母婴喂养事件对齐助手。
+用户说了一段话，规则与历史备注反查未能定事件。请从给定**叶子事件表**中选唯一一项，或无法确定则留空。
+只输出 JSON，不要 markdown。
+
+硬性约束：
+1. event_id / event_name 必须来自表内；禁止编造 id
+2. 口语/体貌可对齐表内名（如「睡着了」→「睡觉」或「睡眠」）
+3. 短英文、补剂名等专名若表内无直接对应且无把握：event_id 与 event_name 必须为空字符串，禁止猜「营养品」等类别
+4. 禁止新建事件类型
+5. 内部思考（reasoning）须使用中文
+
+JSON 格式：
+{
+  "event_id": "",
+  "event_name": ""
+}
+"""
+
+
+# 段 TIME 维小 LLM（半命中或有时间词无可用 unix）
+SEGMENT_TIME_LLM_PROMPT = """你是母婴喂养时间解析助手。
+根据用户段原文与当前参考时间，解析应落库的 Unix 秒（Asia/Shanghai）。
+只输出 JSON，不要 markdown。
+
+硬性约束：
+1. 能解析则填 start_time / end_time（整数 Unix 秒）；瞬时记录可 end_time=start_time
+2. 无法可靠解析则 resolved=false，时间为 0
+3. 禁止忽略「昨晚/昨天」等日段而把钟点落在错误日期
+4. 不要输出事件名或数量
+5. 内部思考（reasoning）须使用中文
+
+JSON 格式：
+{
+  "resolved": true,
+  "start_time": 0,
+  "end_time": 0
+}
+"""
+
+
+# 段 QTY 维小 LLM（有量线索但规则抽空）
+SEGMENT_QTY_LLM_PROMPT = """你是母婴喂养数量解析助手。
+从用户段原文抽取毫升等数量。只输出 JSON，不要 markdown。
+
+硬性约束：
+1. 有明确数量则 quantity 为正整数；没有则 null
+2. 不要把钟点、分钟时长当成 quantity
+3. 不要编造用户未说出的毫升数
+4. 内部思考（reasoning）须使用中文
+
+JSON 格式：
+{
+  "quantity": null
+}
+"""
+
+
 # 段级明细备注抽取（事件已定后；可空）
 SEGMENT_REMARK_EXTRACT_SYSTEM_PROMPT = """你是母婴喂养备注抽取助手。
 已知该段已定字典事件名，从用户段原文中抽出应写入历史记录的**明细备注**。

@@ -2,8 +2,9 @@
 分句 + 段级多维节点
 
 业务说明：
-单事件跳过分句 LLM；复合句仅分句 LLM，再逐段 TYPE→EVENT→REMARK→SHAPE→QTY→TIME。
-EVENT 阶梯含 extra_names / Go 备注反查；事件已定后抽明细备注。
+单事件跳过分句与满血 classify；复合句仅分句 LLM，再逐段多维。
+段序：TYPE(可小LLM) → EVENT(词典→extra_names→向量→Go→小LLM)
+→ 明细备注 LLM → SHAPE → QTY(可小LLM) → TIME(可小LLM)。
 失败引导重说，禁止回退满血 classify。
 """
 
@@ -132,7 +133,7 @@ async def resolve_segments(state: Any) -> Dict[str, Any]:
         segments = [str(s).strip() for s in segs if str(s).strip()]
         sentence_tt = str(data.get("target_type") or "").strip().lower()
     else:
-        logger.info("单事件多维（可含明细备注 LLM）: %s", text[:60])
+        logger.info("单事件多维（维级/明细小 LLM 可按需）: %s", text[:60])
         segments = [text]
 
     # 同句备注反查短缓存，避免重复 HTTP

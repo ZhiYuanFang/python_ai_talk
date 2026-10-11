@@ -3,8 +3,9 @@
 
 业务说明：
 顺序 TYPE → EVENT → REMARK(明细) → SHAPE → QTY → TIME。
-事件维阶梯：词典名 → extra_names 精确 → 短说法向量 0.72 → Go 备注反查。
-禁止常识升格；miss 记缺口。仅事件飞轮；其它维 miss 写 rule_gap_store。
+单事件跳过分句与满血 classify；维级小 LLM（TYPE/EVENT/TIME/QTY）与明细备注 LLM 可按需。
+事件维阶梯：词典名 → extra_names → 向量 0.72 → Go 备注反查 → 事件小 LLM。
+禁止专名常识升格；兜底写 rule_gap(llm_used=True)。
 """
 
 from __future__ import annotations
@@ -26,6 +27,13 @@ from app.feeding.services.intent_cache_store import (
     intent_cache_store,
 )
 from app.feeding.services.rule_gap_store import rule_gap_store
+from app.feeding.services.segment_dim_llm import (
+    has_quantity_clue,
+    llm_resolve_event,
+    llm_resolve_quantity,
+    llm_resolve_time,
+    llm_resolve_type,
+)
 from app.feeding.services.segment_remark import (
     extract_detail_remark_llm,
     merge_remarks,
@@ -49,6 +57,7 @@ _SUGGEST_RE = re.compile(r"够不够|正常吗|怎么办|最近怎么样")
 _TEMPORAL_HINT = re.compile(
     r"昨天|昨日|前天|今天|今日|昨晚|刚才|刚才|半小时|分钟前|点|时"
 )
+_TYPE_FEEDING_CLUE = ("记录", "吃", "喝", "睡", "尿", "便", "尿布", "奶", "洗")
 
 # 短拼问最大段数（确认策略 C）
 MULTI_CONFIRM_BATCH_MAX = 3
@@ -83,15 +92,16 @@ class SegmentDraft:
     gaps: List[str] = field(default_factory=list)
 
 
-def resolve_type(
+async def resolve_type(
     segment: str,
     *,
     utterance: str,
     sentence_target_type: str = "",
     device_no: str = "",
+    llm_model: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, str]:
     """
-    类型维：返回 (target_type, op, history_mode)。
+    类型维：规则 →（无线索时）TYPE 小 LLM。
 
     句级 target_type 优先（查史复合句关键）。
     """
@@ -101,7 +111,6 @@ def resolve_type(
         not st and infer_expected_history_mode(text)
     ):
         mode = infer_expected_history_mode(text) or "point"
-        # 句级 history 时段内无次数词也保持 daily/point 启发式
         if st == TargetType.HISTORY.value and not infer_expected_history_mode(text):
             mode = infer_expected_history_mode(utterance) or "daily"
         return TargetType.HISTORY.value, IntentOp.READ.value, mode
@@ -115,18 +124,35 @@ def resolve_type(
         return TargetType.FEEDING.value, IntentOp.UPDATE.value, ""
     if _END_RE.search(text):
         return TargetType.FEEDING.value, "end", ""
-    # 无线索：默认 create；记缺口供扩规则
-    if not st and not any(
-        k in text for k in ("记录", "吃", "喝", "睡", "尿", "便", "尿布", "奶", "洗")
-    ):
+    # 有喂养口语线索：默认 create，不调 LLM
+    if st or any(k in text for k in _TYPE_FEEDING_CLUE):
+        return TargetType.FEEDING.value, IntentOp.CREATE.value, ""
+
+    # 无线索：TYPE 小 LLM 兜底
+    try:
+        tt, op, hm, summary = await llm_resolve_type(text, llm_model or {})
         rule_gap_store.record(
             dimension="type",
             segment_text=segment,
             utterance=utterance,
-            reason="type_ambiguous",
+            reason="type_ambiguous_llm",
+            llm_used=True,
+            llm_result=summary,
             device_no=device_no,
         )
-    return TargetType.FEEDING.value, IntentOp.CREATE.value, ""
+        return tt, op, hm
+    except Exception as exc:
+        logger.warning("TYPE 小 LLM 失败: %s", exc)
+        rule_gap_store.record(
+            dimension="type",
+            segment_text=segment,
+            utterance=utterance,
+            reason="type_ambiguous_llm_fail",
+            llm_used=True,
+            llm_result=str(exc)[:200],
+            device_no=device_no,
+        )
+        return TargetType.FEEDING.value, IntentOp.CREATE.value, ""
 
 
 async def resolve_event(
@@ -136,6 +162,7 @@ async def resolve_event(
     utterance: str,
     device_no: str = "",
     remark_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    llm_model: Optional[Dict[str, Any]] = None,
 ) -> Tuple[
     Optional[Dict[str, Any]],
     str,
@@ -146,7 +173,7 @@ async def resolve_event(
     str,
 ]:
     """
-    事件维阶梯：词典名 → extra_names → 向量 0.72 → Go 备注反查。
+    事件维阶梯：词典 → extra_names → 向量 → Go 反查 → 事件小 LLM。
 
     Returns:
         (event, match_source, score, fail_reason, remark,
@@ -154,12 +181,12 @@ async def resolve_event(
     """
     cache = remark_cache if remark_cache is not None else {}
 
-    # 1) 正式名词典匹配（含包含 / 进行态）
+    # 1) 正式名词典匹配
     hit = match_feeding_event(segment, full_events)
     if hit:
         return hit, MatchSource.NAME.value, 1.0, "", "", [], ""
 
-    # 2) extra_names 精确（类别/实例别名）→ remark=别名；禁止常识升格
+    # 2) extra_names 精确
     alias_ev, alias_hits, alias_word = match_extra_names(segment, full_events)
     if len(alias_hits) > 1:
         return (
@@ -202,9 +229,8 @@ async def resolve_event(
                     "type": "one",
                 }
             return ev, MatchSource.VECTOR.value, score, "", "", [], ""
-        # 低于门槛：不记缺口，继续 Go 反查
 
-    # 4) Go 备注模糊反查（禁止把未命中专名常识升格）
+    # 4) Go 备注模糊反查
     keyword = remark_keyword_from_segment(segment)
     leaves = await resolve_remark_leaves_cached(
         keyword,
@@ -233,12 +259,42 @@ async def resolve_event(
             keyword,
         )
 
-    # 终局 miss：记缺口
+    # 5) 事件小 LLM（表内对齐；专名无把握须空）
+    try:
+        ev_llm, summary = await llm_resolve_event(
+            segment, full_events, llm_model or {}
+        )
+    except Exception as exc:
+        logger.warning("EVENT 小 LLM 失败: %s", exc)
+        ev_llm, summary = None, str(exc)[:200]
+    if ev_llm is not None:
+        rule_gap_store.record(
+            dimension="event",
+            segment_text=segment,
+            utterance=utterance,
+            reason="event_llm_hit",
+            llm_used=True,
+            llm_result=summary,
+            rule_result=f"keyword={keyword}",
+            device_no=device_no,
+        )
+        return (
+            ev_llm,
+            MatchSource.LLM.value,
+            1.0,
+            "",
+            "",
+            [],
+            "",
+        )
+
     rule_gap_store.record(
         dimension="event",
         segment_text=segment,
         utterance=utterance,
-        reason="event_no_hit_after_remark",
+        reason="event_no_hit_after_llm",
+        llm_used=True,
+        llm_result=summary,
         rule_result=f"keyword={keyword}",
         device_no=device_no,
     )
@@ -253,9 +309,49 @@ def resolve_shape(
     if op == "end":
         return IntentAction.END.value, et
     if et == "time" and op == IntentOp.CREATE.value:
-        # 无时长时偏 start；有时长由 TIME 维再改 one
         return IntentAction.START.value, et
     return IntentAction.ONE.value, et
+
+
+async def _apply_time_llm(
+    draft: SegmentDraft,
+    *,
+    utterance: str,
+    device_no: str,
+    llm_model: Dict[str, Any],
+    reason: str,
+) -> None:
+    """弃权残缺规则时间后调 TIME 小 LLM。"""
+    draft.start_time = 0
+    draft.end_time = 0
+    try:
+        st, et, summary = await llm_resolve_time(draft.text, llm_model)
+    except Exception as exc:
+        logger.warning("TIME 小 LLM 失败: %s", exc)
+        rule_gap_store.record(
+            dimension="time",
+            segment_text=draft.text,
+            utterance=utterance,
+            reason=f"{reason}_llm_fail",
+            llm_used=True,
+            llm_result=str(exc)[:200],
+            device_no=device_no,
+        )
+        return
+    rule_gap_store.record(
+        dimension="time",
+        segment_text=draft.text,
+        utterance=utterance,
+        reason=reason,
+        llm_used=True,
+        llm_result=summary,
+        device_no=device_no,
+    )
+    if st is not None and st > 0:
+        draft.start_time = st
+        draft.end_time = int(et or st)
+        if draft.event_type == "time" and draft.end_time > draft.start_time:
+            draft.action = IntentAction.ONE.value
 
 
 async def resolve_segment(
@@ -269,18 +365,24 @@ async def resolve_segment(
     llm_model: Optional[Dict[str, Any]] = None,
     extract_detail_remark: bool = True,
 ) -> SegmentDraft:
-    """对单段跑完整多维（含 EVENT Go 反查与明细备注 LLM）。"""
+    """
+    对单段跑完整多维。
+
+    顺序：TYPE(可 LLM) → EVENT(…→Go→LLM) → 明细备注 LLM → SHAPE → QTY(可 LLM) → TIME(可 LLM)。
+    """
+    model = llm_model or {}
     draft = SegmentDraft(text=(segment or "").strip())
     if not draft.text:
         draft.ok = False
         draft.fail_reason = "empty_segment"
         return draft
 
-    tt, op, hm = resolve_type(
+    tt, op, hm = await resolve_type(
         draft.text,
         utterance=utterance,
         sentence_target_type=sentence_target_type,
         device_no=device_no,
+        llm_model=model,
     )
     draft.target_type = tt
     draft.op = op
@@ -303,6 +405,7 @@ async def resolve_segment(
         utterance=utterance,
         device_no=device_no,
         remark_cache=remark_cache,
+        llm_model=model,
     )
     if disamb_leaves:
         draft.ok = False
@@ -325,13 +428,13 @@ async def resolve_segment(
     draft.match_confidence = score
     draft.remark = remark or ""
 
-    # 明细备注 LLM（可空）；与别名/反查 remark 合并
+    # 明细备注 LLM（事件已定后）；与别名/反查 remark 合并
     if extract_detail_remark and draft.event_id:
         try:
             llm_r = await extract_detail_remark_llm(
                 draft.text,
                 draft.event_name,
-                llm_model or {},
+                model,
             )
             draft.remark = merge_remarks(draft.remark, llm_r)
         except Exception as exc:
@@ -341,10 +444,26 @@ async def resolve_segment(
     draft.action = action
     draft.event_type = et
 
-    # QTY
+    # QTY：规则 →（有线索抽空）小 LLM → number 无线索则追问
     qty = extract_quantity_from_text(draft.text)
     if qty is None and utterance and draft.text in utterance:
         qty = extract_quantity_from_text(utterance)
+    if qty is None and has_quantity_clue(draft.text):
+        try:
+            qty_llm, summary = await llm_resolve_quantity(draft.text, model)
+        except Exception as exc:
+            logger.warning("QTY 小 LLM 失败: %s", exc)
+            qty_llm, summary = None, str(exc)[:200]
+        rule_gap_store.record(
+            dimension="quantity",
+            segment_text=draft.text,
+            utterance=utterance,
+            reason="quantity_clue_llm",
+            llm_used=True,
+            llm_result=summary,
+            device_no=device_no,
+        )
+        qty = qty_llm
     draft.quantity = qty
     if (
         op == IntentOp.CREATE.value
@@ -352,12 +471,14 @@ async def resolve_segment(
         and draft.event_kind == "leaf"
         and qty is None
     ):
+        # 无量线索：缺量追问，不调 LLM 臆造
         draft.missing_quantity = True
         rule_gap_store.record(
             dimension="quantity",
             segment_text=draft.text,
             utterance=utterance,
             reason="number_leaf_missing_qty",
+            llm_used=False,
             device_no=device_no,
         )
 
@@ -367,20 +488,20 @@ async def resolve_segment(
             draft.ignore_time_range = True
         clocks = extract_clocks_from_text(draft.text)
         if clocks and has_unconsumed_temporal_residual(draft.text, clocks):
-            rule_gap_store.record(
-                dimension="time",
-                segment_text=draft.text,
+            await _apply_time_llm(
+                draft,
                 utterance=utterance,
-                reason="time_partial",
                 device_no=device_no,
+                llm_model=model,
+                reason="time_partial_llm",
             )
         elif _TEMPORAL_HINT.search(draft.text) and not clocks and hm != "point":
-            rule_gap_store.record(
-                dimension="time",
-                segment_text=draft.text,
+            await _apply_time_llm(
+                draft,
                 utterance=utterance,
-                reason="time_hint_no_clock",
                 device_no=device_no,
+                llm_model=model,
+                reason="time_hint_no_clock_llm",
             )
     else:
         ev_body = {
@@ -394,12 +515,13 @@ async def resolve_segment(
         }
         clocks = extract_clocks_from_text(draft.text)
         if clocks and has_unconsumed_temporal_residual(draft.text, clocks):
-            rule_gap_store.record(
-                dimension="time",
-                segment_text=draft.text,
+            # 半命中：禁止用残缺规则时间，走 TIME LLM
+            await _apply_time_llm(
+                draft,
                 utterance=utterance,
-                reason="time_partial",
                 device_no=device_no,
+                llm_model=model,
+                reason="time_partial_llm",
             )
         else:
             new_evs, changed = apply_time_slots_to_events(draft.text, [ev_body])
@@ -408,16 +530,15 @@ async def resolve_segment(
                 draft.end_time = int(new_evs[0].get("end_time") or 0)
                 if new_evs[0].get("quantity") is not None:
                     draft.quantity = new_evs[0].get("quantity")
-                # 计时补记
                 if draft.event_type == "time" and draft.end_time > draft.start_time > 0:
                     draft.action = IntentAction.ONE.value
             elif _TEMPORAL_HINT.search(draft.text) and not clocks:
-                rule_gap_store.record(
-                    dimension="time",
-                    segment_text=draft.text,
+                await _apply_time_llm(
+                    draft,
                     utterance=utterance,
-                    reason="time_hint_no_clock",
                     device_no=device_no,
+                    llm_model=model,
+                    reason="time_hint_no_clock_llm",
                 )
 
     return draft
@@ -438,7 +559,6 @@ def drafts_to_intent(
             "match_source": MatchSource.NAME.value,
         }
 
-    # conversation / exit 整句
     if len(drafts) == 1 and drafts[0].target_type == TargetType.EXIT.value:
         return {
             "target_type": TargetType.EXIT.value,
@@ -456,7 +576,6 @@ def drafts_to_intent(
 
     bad = [d for d in drafts if not d.ok]
     if bad:
-        # 反查零命中：文案点名无法识别
         fail_names = []
         for d in bad:
             if d.fail_reason == "event_unresolved":
@@ -510,7 +629,6 @@ def drafts_to_intent(
         }
         events.append(ev)
 
-    # 缺量：优先阻塞，由管线追问
     missing_qty = any(e.get("missing_quantity") for e in events)
     eids = [str(e.get("event_id") or "") for e in events if e.get("event_id")]
     return {
