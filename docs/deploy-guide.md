@@ -871,6 +871,7 @@ docker compose --env-file env/.env.prod \
 | `HISTORY_SERVICE_URL` | history-service 地址 | 是 | `http://host.docker.internal:9801` | `http://history-service:9801` | `http://history-service:9801` |
 | `DEVICE_SERVICE_URL` | device-service 地址 | 是 | `http://host.docker.internal:9803` | `http://device-service:9803` | `http://device-service:9803` |
 | `VOICE_SERVICE_URL` | voice-service 地址 | 是 | `http://host.docker.internal:9802` | `http://voice-service:9802` | `http://voice-service:9802` |
+| `DEVICE_GATEWAY_INTERNAL_SECRET` | voice internal 密钥（与 Go 同源；进行中 ETA GET） | 否（空则 ETA 降级） | 与 go 侧一致 | 与 go 侧一致 | 与 go 侧一致 |
 | `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 是 | `sk-xxx` | `sk-xxx` | `sk-xxx` |
 | `GLM_API_KEY` | 智谱 GLM API 密钥 | 是 | `xxx` | `xxx` | `xxx` |
 | `CHROMA_PERSIST_DIR` | 向量库存储路径 | 否 | `/app/data/chroma_db` | `/app/data/chroma_db` | `/app/data/chroma_db` |

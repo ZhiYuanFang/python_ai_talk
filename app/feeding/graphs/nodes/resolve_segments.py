@@ -191,13 +191,16 @@ async def resolve_segments(state: Any) -> Dict[str, Any]:
         TargetType.EXIT.value,
     ):
         need_confirm = False
-    # 缺量阻塞：强制确认门控，避免图直执行落库
+    # 缺量 / TYPE 需确认：强制门控，避免图直执行
     elif intent.get("missing_quantity") or any(
         isinstance(e, dict) and e.get("missing_quantity")
         for e in (intent.get("events") or [])
     ):
         need_confirm = True
         intent["need_confirm"] = True
+    elif intent.get("need_confirm") and (intent.get("confirm_message") or "").strip():
+        # TYPE LLM need_confirm=true 已带确认话术
+        need_confirm = True
 
     logger.info(
         "段多维完成: segments=%s target=%s events=%s need_confirm=%s remark=%s",

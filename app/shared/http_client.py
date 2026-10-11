@@ -3,7 +3,7 @@ HTTP 客户端模块
 
 业务说明：
 本模块负责封装对 go_ai_talk 兄弟仓服务的 HTTP 调用。
-包括历史服务（history-service）和设备服务（device-service）。
+包括历史服务（history-service）、设备服务（device-service）与 voice-service（进行中 ETA 等）。
 
 设计思路：
 1. 使用 httpx 作为异步 HTTP 客户端
@@ -376,6 +376,57 @@ class HttpClient:
             return []
         except httpx.HTTPError as e:
             logger.error(f"批量写历史失败: device_no={device_no}, error={str(e)}")
+            raise
+
+    async def get_predict_active_eta(self, device_no: str) -> List[Dict[str, Any]]:
+        """
+        拉取宝宝进行中计时 ETA 列表（voice internal）。
+
+        业务逻辑：
+        1. 调用 GET /voice/internal/api/predict/active-eta?deviceNo=
+        2. 请求头带 X-Device-Gateway-Internal-Secret（与 Go 同源密钥）
+        3. 解包 GoFrame data.items（不是 list）
+        4. voice_url / 密钥 / deviceNo 缺失时返回空列表（由调用方降级，不抛）
+
+        Args:
+            device_no: 设备编号
+
+        Returns:
+            ETA 条目列表（含 rootEventId/leafEventId/historyId/expectEndAt 等）
+
+        Raises:
+            httpx.HTTPError: HTTP 请求失败（配置齐全但仍失败时）
+        """
+        self._ensure_initialized()
+        dn = str(device_no or "").strip()
+        base = str(settings.voice_service_url or "").strip().rstrip("/")
+        secret = str(settings.device_gateway_internal_secret or "").strip()
+        # 缺配置：静默空列表，避免点查整轮失败
+        if not dn or not base or not secret:
+            logger.warning(
+                "跳过进行中 ETA：deviceNo/voice_url/内部密钥缺失 "
+                f"deviceNoLen={len(dn)} hasVoice={bool(base)} hasSecret={bool(secret)}"
+            )
+            return []
+
+        url = f"{base}/voice/internal/api/predict/active-eta"
+        headers = {"X-Device-Gateway-Internal-Secret": secret}
+        params = {"deviceNo": dn}
+        try:
+            logger.info(f"进行中 ETA GET: {url}, deviceNoLen={len(dn)}")
+            response = await self._client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            payload = self._unwrap_go_data(response.json())
+            if isinstance(payload, dict):
+                items = payload.get("items")
+                if isinstance(items, list):
+                    return [x for x in items if isinstance(x, dict)]
+            if isinstance(payload, list):
+                return [x for x in payload if isinstance(x, dict)]
+            logger.warning(f"进行中 ETA data 格式异常: device_no={dn}")
+            return []
+        except httpx.HTTPError as e:
+            logger.error(f"进行中 ETA 拉取失败: device_no={dn}, error={str(e)}")
             raise
 
     async def get_baby_profile(self, device_no: str) -> Optional[Dict[str, Any]]:

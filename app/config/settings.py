@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # 兄弟仓服务地址
     history_service_url: str = "http://localhost:9801"  # 历史服务地址
     device_service_url: str = "http://localhost:9803"  # 设备服务地址
+    # voice-service：进行中 ETA internal GET 等（勿与 history 混用）
+    voice_service_url: str = "http://localhost:9802"
+    # 与 Go DEVICE_GATEWAY_INTERNAL_SECRET 同源；空则跳过 internal 调用并降级
+    device_gateway_internal_secret: str = ""
 
     # Redis 配置
     redis_url: str = "redis://localhost:6379/0"  # Redis 连接地址

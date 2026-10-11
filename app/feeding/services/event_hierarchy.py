@@ -102,6 +102,30 @@ def get_event_by_id(
     return None
 
 
+def get_root_event_id(event_id: Any, events: List[Dict[str, Any]]) -> str:
+    """
+    沿 parent_id 向上归根，返回根事件 id 字符串。
+
+    业务说明：
+    目录缺项或环时停止并返回当前游标，避免死循环。
+    入参空则返回空串。
+    """
+    cur = str(event_id or "").strip()
+    if not cur:
+        return ""
+    seen: Set[str] = set()
+    while cur and cur not in seen:
+        seen.add(cur)
+        found = get_event_by_id(cur, events)
+        if not found:
+            return cur
+        raw_pid = found.get("parent_id")
+        if raw_pid in (None, ""):
+            return cur
+        cur = str(raw_pid).strip()
+    return cur
+
+
 def _extra_name_list(event: Dict[str, Any]) -> List[str]:
     extras = event.get("extra_names") or []
     if isinstance(extras, str):

@@ -2,9 +2,9 @@
 规则缺口收件箱
 
 业务说明：
-非事件维（及事件 miss）规则未覆盖时落盘，供 Hub/人工整理后改代码规则。
+仅 TIME/QTY 规则未覆盖且走小 LLM 时落盘，供 Hub 扩规则。
+TYPE/EVENT/SHAPE 走飞轮自更新，不进本箱。
 JSONL 存于 chroma 同级 data 目录；短窗按 dimension+segment 去重。
-不得写入事件向量库、不得热改规则代码。
 """
 
 from __future__ import annotations

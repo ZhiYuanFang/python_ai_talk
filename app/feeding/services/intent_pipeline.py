@@ -345,6 +345,14 @@ async def try_handle_pending(
             fields["history_mode"] = hm
         if getattr(pending, "limit", None) not in (None, ""):
             fields["limit"] = pending.limit
+        # TYPE 确认后带回 keywords 供飞轮写入
+        mc = getattr(pending, "model_config", None) or {}
+        if isinstance(mc, dict) and mc.get("_type_keywords"):
+            fields["keywords"] = list(mc.get("_type_keywords") or [])
+            if mc.get("_type_target"):
+                fields["target_type"] = mc.get("_type_target")
+            if mc.get("_type_history_mode") is not None:
+                fields["history_mode"] = mc.get("_type_history_mode")
         executed = await _execute_after_confirm(
             fields,
             device_no=pending.device_no,
@@ -352,7 +360,6 @@ async def try_handle_pending(
             full_events=full_events,
         )
         # 确认策略 C 逐段：还有剩余段则继续问下一件
-        mc = getattr(pending, "model_config", None) or {}
         rest = mc.get("_remaining_events") if isinstance(mc, dict) else None
         if isinstance(rest, list) and rest:
             nxt = rest[0]
@@ -613,6 +620,12 @@ def postprocess_feeding_result(
             slot_qty = head.get("quantity")
             if slot_qty is None:
                 slot_qty = quantity
+            # TYPE 关键字挂 pending，确认后写入类型飞轮
+            mc = dict(model_config or {})
+            if fields.get("keywords"):
+                mc["_type_keywords"] = list(fields.get("keywords") or [])
+                mc["_type_target"] = fields.get("target_type")
+                mc["_type_history_mode"] = fields.get("history_mode")
             pending = create_leaf_confirm_pending(
                 leaf=leaf,
                 original_utterance=user_input,
@@ -621,7 +634,7 @@ def postprocess_feeding_result(
                 match_source=match_source,
                 matched_vector_id=matched_vector_id,
                 device_no=device_no,
-                model_config=model_config,
+                model_config=mc,
                 events=fields.get("events") or [],
                 op=str(head.get("op") or ""),
                 remark=fields.get("remark")
@@ -661,7 +674,27 @@ async def _execute_after_confirm(
     from app.feeding.graphs.nodes.execute_history_crud import execute_history_crud
     from app.feeding.graphs.nodes.speak_history import speak_history
     from app.feeding.services.history_crud import infer_route_kind
+    from app.feeding.services.type_cue_store import type_cue_store
     from app.shared.constants import IntentOp
+
+    # TYPE 冷路径确认后：按 keywords 写入类型飞轮
+    type_kws = [
+        str(k).strip()
+        for k in (fields.get("keywords") or [])
+        if str(k or "").strip()
+    ]
+    if type_kws:
+        op0 = ""
+        for e in fields.get("events") or []:
+            if isinstance(e, dict) and e.get("op"):
+                op0 = str(e.get("op") or "")
+                break
+        type_cue_store.add_type_keywords(
+            type_kws,
+            target_type=str(fields.get("target_type") or ""),
+            op=op0 or str(fields.get("op") or ""),
+            history_mode=str(fields.get("history_mode") or ""),
+        )
 
     state = {
         "intent_result": fields,

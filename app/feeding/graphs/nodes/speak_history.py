@@ -4,7 +4,8 @@
 业务说明：
 按已定 event_ids + unix 窗 + 可选 remark 拉史，用模板填 content。
 父 id 递归展开为叶子再拉史；来自父则塌成最近一条并点出父名与叶子名。
-点查优先已完成记录；仅有进行中时用固定话术。日汇总走共享紧凑聚合。不调用历史答题 LLM。
+点查优先已完成记录；仅有进行中时用固定话术，并可拼接进行中 ETA。
+日汇总走共享紧凑聚合。不调用历史答题 LLM。
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
+from app.feeding.services.active_timing_eta import eta_suffix_for_row
 from app.feeding.services.event_hierarchy import (
     get_descendant_leaves,
     get_event_by_id,
@@ -91,11 +93,14 @@ def _format_only_in_progress(
     *,
     parent_name: str = "",
     leaf_name: str = "",
+    eta_items: Optional[List[Dict[str, Any]]] = None,
+    full_events: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     仅有进行中、无已完成时的固定话术。
 
     例：目前仅找到一条记录，是今天 14:11发生，正在进行中
+    有匹配 ETA 时追加「，预计约 HH:mm 结束」或带「 · 已超时」。
     """
     when = (
         format_history_time(
@@ -104,12 +109,40 @@ def _format_only_in_progress(
         )
         or "未知时间"
     )
+    eta_part = eta_suffix_for_row(
+        row, eta_items, full_events or [],
+    )
     if parent_name and leaf_name:
         return (
             f"目前仅找到一条记录，是{when}发生的{leaf_name}"
-            f"（{parent_name}），正在进行中"
+            f"（{parent_name}），正在进行中{eta_part}"
         )
-    return f"目前仅找到一条记录，是{when}发生，正在进行中"
+    return f"目前仅找到一条记录，是{when}发生，正在进行中{eta_part}"
+
+
+def _will_speak_only_in_progress_point(
+    rows: List[Dict[str, Any]],
+    event_names: List[str],
+) -> bool:
+    """点查模板是否会走上「仅进行中」话术（用于决定是否拉 ETA）。"""
+    by_name: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        name = _row_name(row)
+        if not name:
+            continue
+        by_name.setdefault(name, []).append(row)
+    wanted = event_names or list(by_name.keys())
+    for name in wanted:
+        row, only_open = _pick_completed_or_only_open(by_name.get(name) or [])
+        if row and only_open:
+            return True
+    return False
+
+
+def _will_speak_only_in_progress_parent(rows: List[Dict[str, Any]]) -> bool:
+    """父塌缩点查是否会走上「仅进行中」话术。"""
+    row, only_open = _pick_completed_or_only_open(rows)
+    return bool(row and only_open)
 
 
 def _pick_completed_or_only_open(
@@ -239,6 +272,8 @@ def _template_point(
     rows: List[Dict[str, Any]],
     event_names: List[str],
     full_events: List[Dict[str, Any]],
+    *,
+    eta_items: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     多叶子分别点查：每事件优先最近已完成；仅进行中用固定话术。
@@ -261,7 +296,13 @@ def _template_point(
             parts.append(f"没有记到{name}")
             continue
         if only_open:
-            parts.append(_format_only_in_progress(row))
+            parts.append(
+                _format_only_in_progress(
+                    row,
+                    eta_items=eta_items,
+                    full_events=full_events,
+                )
+            )
             continue
         when = format_history_time(
             row.get("startTime") or row.get("start_time"),
@@ -276,6 +317,8 @@ def _template_parent_latest(
     rows: List[Dict[str, Any]],
     parent_name: str,
     full_events: List[Dict[str, Any]],
+    *,
+    eta_items: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     父点查：子孙叶子优先最近已完成；仅进行中用固定话术并点出父/叶名。
@@ -289,7 +332,11 @@ def _template_parent_latest(
     if only_open:
         return (
             _format_only_in_progress(
-                latest, parent_name=parent_name, leaf_name=leaf_name
+                latest,
+                parent_name=parent_name,
+                leaf_name=leaf_name,
+                eta_items=eta_items,
+                full_events=full_events,
             )
             + "。"
         )
@@ -365,6 +412,24 @@ async def speak_history(state: Any) -> Dict[str, Any]:
     parts: List[str] = []
     all_rows: List[Dict[str, Any]] = []
     cache_events: List[Dict[str, Any]] = []
+    # 本轮设备级 ETA：未拉过为 None；拉过后为 list（可空）；仅 only_open 时拉取
+    eta_items_cache: Optional[List[Dict[str, Any]]] = None
+
+    async def _ensure_eta_items() -> List[Dict[str, Any]]:
+        """仅进行中播报时拉一次 active-eta；失败降级为空列表。"""
+        nonlocal eta_items_cache
+        if eta_items_cache is not None:
+            return eta_items_cache
+        try:
+            eta_items_cache = await http_client.get_predict_active_eta(device_no)
+        except Exception as exc:
+            logger.warning(
+                "进行中 ETA 拉取失败，降级无 ETA: device_no=%s err=%s",
+                device_no,
+                exc,
+            )
+            eta_items_cache = []
+        return eta_items_cache
 
     for item in read_items:
         eid = str(item.get("event_id") or "").strip()
@@ -460,11 +525,27 @@ async def speak_history(state: Any) -> Dict[str, Any]:
                     chunk = f"{name or '这段时间'}没有相关记录。"
         elif collapse_parent:
             parent_name = name or id_to_name.get(parent_ids[0], "") or "该分类"
-            chunk = _template_parent_latest(rows or [], str(parent_name), full_events)
+            etas: Optional[List[Dict[str, Any]]] = None
+            if _will_speak_only_in_progress_parent(rows or []):
+                etas = await _ensure_eta_items()
+            chunk = _template_parent_latest(
+                rows or [],
+                str(parent_name),
+                full_events,
+                eta_items=etas,
+            )
         else:
             names = [name] if name else [id_to_name.get(str(x), "") for x in original_ids]
             names = [n for n in names if n]
-            chunk = _template_point(rows or [], names, full_events)
+            etas = None
+            if _will_speak_only_in_progress_point(rows or [], names):
+                etas = await _ensure_eta_items()
+            chunk = _template_point(
+                rows or [],
+                names,
+                full_events,
+                eta_items=etas,
+            )
         parts.append(chunk.rstrip("。"))
         # 缓存快照保留 ignore_time_range，命中后点查行为一致
         cache_events.append(

@@ -129,12 +129,12 @@ def _format_leaf_table(full_events: List[Dict[str, Any]]) -> str:
 async def llm_resolve_type(
     segment: str,
     llm_model: Dict[str, Any],
-) -> Tuple[str, str, str, str]:
+) -> Tuple[str, str, str, bool, List[str], str]:
     """
-    TYPE 小 LLM。
+    TYPE 小 LLM（含 need_confirm / keywords）。
 
     Returns:
-        (target_type, op, history_mode, raw_summary)
+        (target_type, op, history_mode, need_confirm, keywords, raw_summary)
     """
     cfg = llm_model_config_from_mapping(llm_model or {})
     content = await stream_llm_collect(
@@ -152,10 +152,19 @@ async def llm_resolve_type(
     tt = str(data.get("target_type") or "").strip().lower()
     op = str(data.get("op") or "").strip().lower()
     hm = str(data.get("history_mode") or "").strip().lower()
+    need_confirm = bool(data.get("need_confirm"))
+    raw_kws = data.get("keywords")
+    keywords: List[str] = []
+    if isinstance(raw_kws, list):
+        for k in raw_kws:
+            s = str(k or "").strip()
+            if s and s not in keywords:
+                keywords.append(s)
     allowed = {"feeding", "history", "conversation", "exit"}
     if tt not in allowed:
         tt = "feeding"
         op = op or "create"
+        need_confirm = True
     if tt == "history":
         op = "read"
         if hm not in ("point", "daily"):
@@ -166,10 +175,16 @@ async def llm_resolve_type(
     elif not op:
         op = "create"
     summary = json.dumps(
-        {"target_type": tt, "op": op, "history_mode": hm},
+        {
+            "target_type": tt,
+            "op": op,
+            "history_mode": hm,
+            "need_confirm": need_confirm,
+            "keywords": keywords,
+        },
         ensure_ascii=False,
     )
-    return tt, op, hm, summary
+    return tt, op, hm, need_confirm, keywords, summary
 
 
 async def llm_resolve_event(

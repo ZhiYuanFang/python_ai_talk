@@ -24,6 +24,7 @@ services:
       HISTORY_SERVICE_URL: "${HISTORY_SERVICE_URL:-}"
       DEVICE_SERVICE_URL: "${DEVICE_SERVICE_URL:-}"
       VOICE_SERVICE_URL: "${VOICE_SERVICE_URL:-}"
+      DEVICE_GATEWAY_INTERNAL_SECRET: "${DEVICE_GATEWAY_INTERNAL_SECRET:-}"
       # --- Redis ---
       REDIS_URL: "${REDIS_URL:-}"
       # --- AI 密钥（与 go_ai_talk 兄弟仓共用；选型由 Go 传入，Python 不换模）---

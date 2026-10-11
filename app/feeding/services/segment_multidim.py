@@ -2,10 +2,10 @@
 段级多维拼装
 
 业务说明：
-顺序 TYPE → EVENT → REMARK(明细) → SHAPE → QTY → TIME。
-单事件跳过分句与满血 classify；维级小 LLM（TYPE/EVENT/SHAPE/TIME/QTY）与明细备注 LLM 可按需。
+顺序 TYPE → EVENT → REMARK(明细) → QTY → TIME（SHAPE 并入 TYPE）。
+TYPE：类型关键字飞轮 → 小 LLM（need_confirm/keywords）；弱喂养词不再短路 create。
 事件维阶梯：词典名 → extra_names → 向量 0.72 → Go 备注反查 → 事件小 LLM。
-SHAPE：结束口语规则优先，计时暧昧时小 LLM；禁止专名常识升格；兜底写 rule_gap(llm_used=True)。
+TIME/QTY：规则优先，miss 后 LLM 并写 rule_gap；type/event/shape 不写缺口。
 """
 
 from __future__ import annotations
@@ -31,11 +31,12 @@ from app.feeding.services.segment_dim_llm import (
     has_quantity_clue,
     llm_resolve_event,
     llm_resolve_quantity,
-    llm_resolve_shape,
     llm_resolve_time,
     llm_resolve_type,
-    matches_end_cue,
-    needs_shape_llm,
+)
+from app.feeding.services.type_cue_store import (
+    TYPE_CUE_THRESHOLD,
+    type_cue_store,
 )
 from app.feeding.services.segment_remark import (
     extract_detail_remark_llm,
@@ -59,10 +60,7 @@ _SUGGEST_RE = re.compile(r"够不够|正常吗|怎么办|最近怎么样")
 _TEMPORAL_HINT = re.compile(
     r"昨天|昨日|前天|今天|今日|昨晚|刚才|刚才|半小时|分钟前|点|时"
 )
-# 「睡」在结束线索（睡醒）之后再作喂养 create 线索，避免「睡醒了」变开表
-_TYPE_FEEDING_CLUE = ("记录", "吃", "喝", "睡", "尿", "便", "尿布", "奶", "洗")
-
-# 短拼问最大段数（确认策略 C）
+# 短拼问最大段数（确认策略 C，遗留）
 MULTI_CONFIRM_BATCH_MAX = 3
 
 
@@ -89,6 +87,9 @@ class SegmentDraft:
     match_source: str = MatchSource.NAME.value
     match_confidence: float = 0.0
     remark: str = ""
+    # TYPE LLM：是否需确认类型、待写入关键字
+    type_need_confirm: bool = False
+    type_keywords: List[str] = field(default_factory=list)
     # 多命中消歧：叶子列表 + 关键字（extra_names 或 Go 反查）
     disambiguation_leaves: List[Dict[str, Any]] = field(default_factory=list)
     disambiguation_keyword: str = ""
@@ -102,61 +103,71 @@ async def resolve_type(
     sentence_target_type: str = "",
     device_no: str = "",
     llm_model: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, str, str]:
+) -> Tuple[str, str, str, bool, List[str]]:
     """
-    类型维：规则 →（无线索时）TYPE 小 LLM。
+    类型维：强规则 → 类型关键字飞轮 → TYPE 小 LLM。
 
-    句级 target_type 优先（查史复合句关键）。
+    Returns:
+        (target_type, op, history_mode, need_confirm, keywords)
     """
     st = (sentence_target_type or "").strip().lower()
     text = segment or utterance or ""
+    # 句级 / 查史强线索
     if st == TargetType.HISTORY.value or (
         not st and infer_expected_history_mode(text)
     ):
         mode = infer_expected_history_mode(text) or "point"
         if st == TargetType.HISTORY.value and not infer_expected_history_mode(text):
             mode = infer_expected_history_mode(utterance) or "daily"
-        return TargetType.HISTORY.value, IntentOp.READ.value, mode
+        return TargetType.HISTORY.value, IntentOp.READ.value, mode, False, []
     if st == TargetType.EXIT.value or _EXIT_RE.search((text or "").strip()):
-        return TargetType.EXIT.value, "", ""
+        return TargetType.EXIT.value, "", "", False, []
     if st == TargetType.CONVERSATION.value or _SUGGEST_RE.search(text):
-        return TargetType.CONVERSATION.value, "", ""
+        return TargetType.CONVERSATION.value, "", "", False, []
+    # 显式改删强线索
     if _DELETE_RE.search(text):
-        return TargetType.FEEDING.value, IntentOp.DELETE.value, ""
+        return TargetType.FEEDING.value, IntentOp.DELETE.value, "", False, []
     if _UPDATE_RE.search(text):
-        return TargetType.FEEDING.value, IntentOp.UPDATE.value, ""
-    # 结束口语（含睡醒/醒了）须优先于「睡」喂养线索
-    if matches_end_cue(text):
-        return TargetType.FEEDING.value, "end", ""
-    # 有喂养口语线索：默认 create，不调 LLM
-    if st or any(k in text for k in _TYPE_FEEDING_CLUE):
-        return TargetType.FEEDING.value, IntentOp.CREATE.value, ""
+        return TargetType.FEEDING.value, IntentOp.UPDATE.value, "", False, []
 
-    # 无线索：TYPE 小 LLM 兜底
+    # 类型关键字飞轮
+    hits = type_cue_store.search_type_cue(text, n_results=1)
+    if hits:
+        top = hits[0]
+        score = float(top.get("score") or 0)
+        if score >= TYPE_CUE_THRESHOLD:
+            pl = top.get("payload") or {}
+            tt = str(pl.get("target_type") or TargetType.FEEDING.value).strip().lower()
+            op = str(pl.get("op") or "").strip().lower()
+            hm = str(pl.get("history_mode") or "").strip().lower()
+            if tt == TargetType.HISTORY.value:
+                op = IntentOp.READ.value
+                if hm not in ("point", "daily"):
+                    hm = "point"
+            logger.info(
+                "类型飞轮命中: doc=%s score=%s tt=%s op=%s",
+                str(top.get("document") or "")[:40],
+                score,
+                tt,
+                op,
+            )
+            return tt, op, hm, False, []
+
+    # 冷路径：TYPE 小 LLM（不再因「睡/吃」短路 create）
     try:
-        tt, op, hm, summary = await llm_resolve_type(text, llm_model or {})
-        rule_gap_store.record(
-            dimension="type",
-            segment_text=segment,
-            utterance=utterance,
-            reason="type_ambiguous_llm",
-            llm_used=True,
-            llm_result=summary,
-            device_no=device_no,
+        tt, op, hm, need_confirm, keywords, summary = await llm_resolve_type(
+            text, llm_model or {}
         )
-        return tt, op, hm
+        logger.info("TYPE LLM: %s", summary[:200])
+        if not need_confirm:
+            kws = keywords or ([text.strip()] if text.strip() else [])
+            type_cue_store.add_type_keywords(
+                kws, target_type=tt, op=op, history_mode=hm
+            )
+        return tt, op, hm, need_confirm, keywords
     except Exception as exc:
         logger.warning("TYPE 小 LLM 失败: %s", exc)
-        rule_gap_store.record(
-            dimension="type",
-            segment_text=segment,
-            utterance=utterance,
-            reason="type_ambiguous_llm_fail",
-            llm_used=True,
-            llm_result=str(exc)[:200],
-            device_no=device_no,
-        )
-        return TargetType.FEEDING.value, IntentOp.CREATE.value, ""
+        return TargetType.FEEDING.value, IntentOp.CREATE.value, "", True, []
 
 
 async def resolve_event(
@@ -272,16 +283,7 @@ async def resolve_event(
         logger.warning("EVENT 小 LLM 失败: %s", exc)
         ev_llm, summary = None, str(exc)[:200]
     if ev_llm is not None:
-        rule_gap_store.record(
-            dimension="event",
-            segment_text=segment,
-            utterance=utterance,
-            reason="event_llm_hit",
-            llm_used=True,
-            llm_result=summary,
-            rule_result=f"keyword={keyword}",
-            device_no=device_no,
-        )
+        # 事件种子走短说法库 / Hub，不写 rule_gap
         return (
             ev_llm,
             MatchSource.LLM.value,
@@ -292,16 +294,6 @@ async def resolve_event(
             "",
         )
 
-    rule_gap_store.record(
-        dimension="event",
-        segment_text=segment,
-        utterance=utterance,
-        reason="event_no_hit_after_llm",
-        llm_used=True,
-        llm_result=summary,
-        rule_result=f"keyword={keyword}",
-        device_no=device_no,
-    )
     return None, MatchSource.NAME.value, 0.0, "event_unresolved", "", [], ""
 
 
@@ -372,7 +364,7 @@ async def resolve_segment(
     """
     对单段跑完整多维。
 
-    顺序：TYPE(可 LLM) → EVENT(…→Go→LLM) → 明细备注 LLM → SHAPE → QTY(可 LLM) → TIME(可 LLM)。
+    顺序：TYPE(飞轮/LLM) → EVENT(…→Go→LLM) → 明细备注 LLM → QTY → TIME。
     """
     model = llm_model or {}
     draft = SegmentDraft(text=(segment or "").strip())
@@ -381,7 +373,7 @@ async def resolve_segment(
         draft.fail_reason = "empty_segment"
         return draft
 
-    tt, op, hm = await resolve_type(
+    tt, op, hm, type_need_confirm, type_keywords = await resolve_type(
         draft.text,
         utterance=utterance,
         sentence_target_type=sentence_target_type,
@@ -391,6 +383,8 @@ async def resolve_segment(
     draft.target_type = tt
     draft.op = op
     draft.history_mode = hm
+    draft.type_need_confirm = bool(type_need_confirm)
+    draft.type_keywords = list(type_keywords or [])
 
     if tt in (TargetType.CONVERSATION.value, TargetType.EXIT.value):
         return draft
@@ -444,41 +438,12 @@ async def resolve_segment(
         except Exception as exc:
             logger.warning("明细备注 LLM 失败: %s", exc)
 
-    # SHAPE：结束线索再保险 → 规则推导 →（time 暧昧）小 LLM
-    if matches_end_cue(draft.text) and op != IntentOp.DELETE.value:
-        op = "end"
-        draft.op = "end"
+    # 形态由 TYPE.op 推导（不再独立 SHAPE LLM）
     action, et = resolve_shape(op, ev)
     draft.action = action
     draft.event_type = et
     if et == "time" and op == "end":
-        # 明确结束：不调 LLM
         draft.action = IntentAction.END.value
-    elif needs_shape_llm(draft.text, op, et):
-        try:
-            sop, saction, summary = await llm_resolve_shape(
-                draft.text,
-                event_name=draft.event_name,
-                event_type=et,
-                rule_op=op,
-                rule_action=action,
-                llm_model=model,
-            )
-        except Exception as exc:
-            logger.warning("SHAPE 小 LLM 失败: %s", exc)
-            sop, saction, summary = op, action, str(exc)[:200]
-        rule_gap_store.record(
-            dimension="shape",
-            segment_text=draft.text,
-            utterance=utterance,
-            reason="shape_timer_llm",
-            llm_used=True,
-            llm_result=summary,
-            device_no=device_no,
-        )
-        draft.op = sop
-        op = sop
-        draft.action = saction
 
     # QTY：规则 →（有线索抽空）小 LLM → number 无线索则追问
     qty = extract_quantity_from_text(draft.text)
@@ -507,16 +472,8 @@ async def resolve_segment(
         and draft.event_kind == "leaf"
         and qty is None
     ):
-        # 无量线索：缺量追问，不调 LLM 臆造
+        # 无量线索：缺量追问；不写缺口箱（Hub 只要规则+LLM 类）
         draft.missing_quantity = True
-        rule_gap_store.record(
-            dimension="quantity",
-            segment_text=draft.text,
-            utterance=utterance,
-            reason="number_leaf_missing_qty",
-            llm_used=False,
-            device_no=device_no,
-        )
 
     # TIME
     if op == IntentOp.READ.value:
@@ -678,8 +635,25 @@ def drafts_to_intent(
             continue
         parent_cud_block = True
         break
-    # 无阻塞（缺量/父 CUD）时直执行，不再默认 leaf_confirm
-    need_confirm = bool(missing_qty or parent_cud_block)
+    # 无阻塞（缺量/父 CUD/TYPE 需确认）时直执行
+    type_need = any(bool(d.type_need_confirm) for d in drafts)
+    type_kws: List[str] = []
+    for d in drafts:
+        for k in d.type_keywords or []:
+            s = str(k or "").strip()
+            if s and s not in type_kws:
+                type_kws.append(s)
+    need_confirm = bool(missing_qty or parent_cud_block or type_need)
+    confirm_message = ""
+    if type_need and not missing_qty:
+        # TYPE LLM 自报需确认：简短类型问句
+        head_name = str(events[0].get("event_name") or "") if events else ""
+        if target == TargetType.HISTORY.value:
+            confirm_message = f"您是要查询「{head_name or '相关记录'}」吗？"
+        elif any(str(e.get("op") or "") == "end" for e in events):
+            confirm_message = f"您是要结束「{head_name or '计时'}」吗？"
+        else:
+            confirm_message = f"您是要记录「{head_name or '该事件'}」吗？"
     eids = [str(e.get("event_id") or "") for e in events if e.get("event_id")]
     return {
         "target_type": target,
@@ -695,8 +669,8 @@ def drafts_to_intent(
         "need_confirm": need_confirm,
         "missing_quantity": missing_qty,
         "content": "",
-        "confirm_message": "",
-        "keywords": [],
+        "confirm_message": confirm_message,
+        "keywords": type_kws,
         "utterance": utterance,
     }
 
