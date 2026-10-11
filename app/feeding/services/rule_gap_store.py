@@ -4,7 +4,8 @@
 业务说明：
 仅 TIME/QTY 规则未覆盖且走小 LLM 时落盘，供 Hub 扩规则。
 TYPE/EVENT/SHAPE 走飞轮自更新，不进本箱。
-JSONL 存于 chroma 同级 data 目录；短窗按 dimension+segment 去重。
+JSONL 落在 CHROMA_PERSIST_DIR 子目录 rule_gaps/，与 Docker chroma 卷同命运；
+短窗按 dimension+segment 去重。open 记录仅人工 dismissed，启动不清箱。
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -26,23 +28,59 @@ logger = logging.getLogger(__name__)
 _DEDUP_WINDOW_S = 120
 
 
+def _file_nonempty(path: str) -> bool:
+    """文件存在且字节数 > 0。"""
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
 class RuleGapStore:
-    """规则缺口 JSONL 存储。"""
+    """规则缺口 JSONL 存储（权威路径在 chroma 持久目录内）。"""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        # key -> last_ts
+        # key -> last_ts（进程内短窗去重，重启可丢）
         self._recent: Dict[str, float] = {}
-        self._path = os.path.join(
-            settings.chroma_persist_dir,
-            "..",
-            "rule_gaps",
-            "gaps.jsonl",
+        # 与 compose 挂载的 chroma 卷同前缀，重建容器不丢
+        self._path = os.path.normpath(
+            os.path.join(settings.chroma_persist_dir, "rule_gaps", "gaps.jsonl")
         )
-        self._path = os.path.normpath(self._path)
+        # 旧版误写到卷外兄弟目录，升级时一次性迁入
+        self._legacy_path = os.path.normpath(
+            os.path.join(settings.chroma_persist_dir, "..", "rule_gaps", "gaps.jsonl")
+        )
+        self._migrate_legacy_if_needed()
 
     def _ensure_dir(self) -> None:
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
+
+    def _migrate_legacy_if_needed(self) -> None:
+        """
+        旧路径有内容且新路径为空时迁入；失败只打日志。
+        新路径已有内容则绝不覆盖。
+        """
+        try:
+            if _file_nonempty(self._path):
+                if _file_nonempty(self._legacy_path):
+                    logger.warning(
+                        "规则缺口新旧路径均有内容，跳过迁移: new=%s old=%s",
+                        self._path,
+                        self._legacy_path,
+                    )
+                return
+            if not _file_nonempty(self._legacy_path):
+                return
+            self._ensure_dir()
+            shutil.move(self._legacy_path, self._path)
+            logger.info(
+                "规则缺口已从旧路径迁入: %s -> %s",
+                self._legacy_path,
+                self._path,
+            )
+        except Exception as exc:
+            logger.error("规则缺口旧路径迁移失败: %s", exc, exc_info=True)
 
     def _dedupe_key(self, dimension: str, segment_text: str) -> str:
         return f"{(dimension or '').strip()}|{(segment_text or '').strip()}"

@@ -155,6 +155,7 @@ python_ai_talk/
 │
 ├── data/                           # 数据目录（不提交到 Git）
 │   ├── chroma_db/                  # Chroma 向量库存储（compose 挂载持久化）
+│   │   └── rule_gaps/gaps.jsonl    # 规则缺口收件箱（与 chroma 同卷，无需单独挂载）
 │   └── models/                     # Embedding 模型缓存（仅本地非 Docker 开发用；
 │                                   # Docker 路径下模型在镜像构建时预下载打入镜像，
 │                                   # 切勿将空的 ./data/models 挂载进容器）
@@ -220,7 +221,9 @@ python_ai_talk/
 | 测试环境 | `/app/data/chroma_db` | Docker Volume |
 | 生产环境 | `/app/data/chroma_db` | Docker Volume |
 
-> **注意**：Chroma 持久化目录主要用于意图缓存集合 `feeding_intents`（通识 `mother_baby_knowledge` / Q&A 已退役）。
+> **注意**：Chroma 持久化目录用于意图缓存集合 `feeding_intents`、类型关键字 `feeding_type_cues` 等（通识 `mother_baby_knowledge` / Q&A 已退役）。
+>
+> **规则缺口**：JSONL 位于 `{CHROMA_PERSIST_DIR}/rule_gaps/gaps.jsonl`（容器内典型为 `/app/data/chroma_db/rule_gaps/gaps.jsonl`），与上述 chroma 卷同命运，**无需**单独挂载 `data/rule_gaps`。重建容器但保留 chroma 卷时，open 缺口仍在；仅 Hub/admin 标 `dismissed` 视为处理完。`CLEAR_FEEDING_INTENTS_ON_STARTUP` 只清 `feeding_intents`，不动缺口文件。
 
 ### 2.1.5 护理留意提示词
 

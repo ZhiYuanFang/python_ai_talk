@@ -24,7 +24,6 @@ from sentence_transformers import SentenceTransformer
 
 from app.config.settings import settings
 from app.feeding.services.intent_cache_store import (
-    EVENT_PHRASE_THRESHOLD,
     INTENT_CACHE_QUALITY_DEFAULT,
     _is_confirm_only,
 )
@@ -32,8 +31,8 @@ from app.feeding.services.intent_cache_store import (
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "feeding_type_cues"
-# 与事件短说法同一相似度门槛
-TYPE_CUE_THRESHOLD = EVENT_PHRASE_THRESHOLD
+# TYPE 热路径严于 EVENT：抬高阈值减轻「睡了多久了」误命中 predict 短线索
+TYPE_CUE_THRESHOLD = 0.9
 
 
 def _as_type_cue_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:

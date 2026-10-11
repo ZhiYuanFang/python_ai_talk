@@ -405,7 +405,7 @@ class HttpClient:
         if not dn or not base or not secret:
             logger.warning(
                 "跳过进行中 ETA：deviceNo/voice_url/内部密钥缺失 "
-                f"deviceNoLen={len(dn)} hasVoice={bool(base)} hasSecret={bool(secret)}"
+                f"deviceNo={dn} hasVoice={bool(base)} hasSecret={bool(secret)}"
             )
             return []
 
@@ -413,7 +413,7 @@ class HttpClient:
         headers = {"X-Device-Gateway-Internal-Secret": secret}
         params = {"deviceNo": dn}
         try:
-            logger.info(f"进行中 ETA GET: {url}, deviceNoLen={len(dn)}")
+            logger.info(f"进行中 ETA GET: {url}, deviceNo={dn}")
             response = await self._client.get(url, params=params, headers=headers)
             response.raise_for_status()
             payload = self._unwrap_go_data(response.json())
@@ -455,7 +455,7 @@ class HttpClient:
         if not dn or not base or not secret:
             logger.warning(
                 "跳过 imminent pending：deviceNo/voice_url/内部密钥缺失 "
-                f"deviceNoLen={len(dn)} hasVoice={bool(base)} hasSecret={bool(secret)}"
+                f"deviceNo={dn} hasVoice={bool(base)} hasSecret={bool(secret)}"
             )
             return []
 
@@ -463,7 +463,7 @@ class HttpClient:
         headers = {"X-Device-Gateway-Internal-Secret": secret}
         params = {"deviceNo": dn}
         try:
-            logger.info(f"imminent pending GET: {url}, deviceNoLen={len(dn)}")
+            logger.info(f"imminent pending GET: {url}, deviceNo={dn}")
             response = await self._client.get(url, params=params, headers=headers)
             response.raise_for_status()
             payload = self._unwrap_go_data(response.json())
