@@ -32,6 +32,9 @@ State = IntentState
 def _route_after_segments(state: Any) -> str:
     """
     多维拼装后：需确认/重说/闲聊 → END；read → 查史；CUD → 落库。
+
+    业务说明：
+    无阻塞时 need_confirm=false，直接落库/查史；缺量等阻塞仍 END 交给后处理追问。
     """
     if state_get(state, "need_confirm"):
         return "end"
@@ -39,6 +42,10 @@ def _route_after_segments(state: Any) -> str:
     intent = normalize_intent_events(intent)
     # 引导重说或闲聊：已有 content，直接 END
     if intent.get("segment_failed"):
+        return "end"
+    # 缺量：不得直执行（双保险，与 need_confirm 门控一致）
+    events = [e for e in (intent.get("events") or []) if isinstance(e, dict)]
+    if intent.get("missing_quantity") or any(e.get("missing_quantity") for e in events):
         return "end"
     target = str(intent.get("target_type") or TargetType.CONVERSATION.value).lower()
     if target in (TargetType.CONVERSATION.value, TargetType.EXIT.value):

@@ -468,8 +468,10 @@ def postprocess_feeding_result(
     对图执行后的 feeding 结果做叶子校验与消歧改写。
 
     - 父事件 → 强制消歧 pending
-    - 叶子且 need_confirm → leaf_confirm pending（自由文本）
-    - 叶子且无需确认 → 直接返回最终结果
+    - number 缺量 → 追问毫升
+    - 仅显式 need_confirm → leaf_confirm；match_source=llm 不单独强制确认
+    - 多段无阻塞 → 直返回（不拼 yes/no）
+    - 叶子且无需确认 → 直接返回最终结果（图可能已落库）
     """
     fields = _intent_fields(intent_result)
     from app.feeding.services.intent_events import (
@@ -553,69 +555,16 @@ def postprocess_feeding_result(
                 )
                 if pending:
                     return response_from_pending(pending)
-        # 多事件全是叶子：确认策略 C（短同质拼问；长/混装逐段）
-        from app.feeding.services.segment_multidim import should_batch_confirm
-
-        if should_batch_confirm(events):
-            pending = create_leaf_confirm_pending(
-                leaf={
-                    "event_id": events[0].get("event_id") if events else "",
-                    "event_name": events[0].get("event_name") if events else "",
-                    "extra_names": [],
-                },
-                original_utterance=user_input,
-                action=events[0].get("action") if events else IntentAction.ONE.value,
-                quantity=quantity,
-                match_source=match_source,
-                matched_vector_id=matched_vector_id,
-                device_no=device_no,
-                model_config=model_config,
-                events=events,
-                op="",
-                history_mode=str(fields.get("history_mode") or ""),
-                limit=fields.get("limit"),
-            )
-            multi_msg = build_multi_event_confirm_message(events)
-            if multi_msg:
-                pending.clarify_message = multi_msg
-            pending.events = events  # type: ignore[attr-defined]
-            clarification_store.set(pending)
-            return response_from_pending(pending)
-
-        # 逐段：先确认第一件，其余挂在 events 里由后续轮次继续（首轮只带首条执行集）
-        first = events[0]
-        rest = events[1:]
-        pending = create_leaf_confirm_pending(
-            leaf={
-                "event_id": first.get("event_id") or "",
-                "event_name": first.get("event_name") or "",
-                "extra_names": [],
-            },
-            original_utterance=user_input,
-            action=first.get("action") or IntentAction.ONE.value,
-            quantity=first.get("quantity"),
-            match_source=match_source,
-            matched_vector_id=matched_vector_id,
-            device_no=device_no,
-            model_config=model_config,
-            events=[first],
-            op=str(first.get("op") or ""),
-            history_mode=str(fields.get("history_mode") or ""),
-            limit=fields.get("limit"),
-        )
-        n = len(events)
-        slot = build_multi_event_confirm_message([first]) or first.get("event_name")
-        pending.clarify_message = f"（1/{n}）{slot}？其余将接着问。"
-        # 暂存剩余段于 remark 字段不安全；放入 events 扩展：确认执行只用 pending.events
-        # 用 model_config 旁路存剩余（进程内 pending）
-        pending.model_config = {
-            **(pending.model_config or {}),
-            "_remaining_events": rest,
-            "_remaining_index": 2,
-            "_remaining_total": n,
+        # 多事件全是叶子：无阻塞时直执行（图已落库/查史），不再拼 yes/no
+        out_fields = {
+            **fields,
+            "need_confirm": False,
+            "confirm_type": None,
+            "confirm_message": "",
+            "options": [],
+            "conversation_id": None,
         }
-        clarification_store.set(pending)
-        return response_from_pending(pending)
+        return build_intent_response_from_fields(out_fields)
 
     # 父事件强制消歧
     if event_id and is_parent_event(event_id, full_events):
@@ -652,13 +601,13 @@ def postprocess_feeding_result(
             }
         )
 
-    # 叶子：需要确认则 pending；否则直接返回
+    # 叶子：仅显式 need_confirm（缺量等阻塞）才 pending；llm 命中不再强制确认
     leaf = get_event_by_id(event_id, full_events) or {
         "event_id": event_id,
         "event_name": fields.get("event_name") or head.get("event_name") or "",
     }
 
-    if need_confirm or match_source == MatchSource.LLM.value:
+    if need_confirm:
         if event_id:
             # 槽位优先子项，便于确认话术反推日段/数量（贴合落库）
             slot_qty = head.get("quantity")

@@ -482,17 +482,23 @@ async def speak_history(state: Any) -> Dict[str, Any]:
     content = "。".join(parts) + ("。" if parts else "")
     if not content:
         content = "没有查到相关记录。"
+    # 回填 segment_text：cache_events 无原文时从拼装 events 按 event_id 取
+    seg_by_id = {
+        str(e.get("event_id") or "").strip(): str(e.get("segment_text") or "").strip()
+        for e in (intent.get("events") or [])
+        if isinstance(e, dict) and e.get("event_id")
+    }
     intent["content"] = content
     intent["events"] = cache_events or intent.get("events") or []
-    # 按段写事件短说法（查史确认后的说法→事件）
+    # 仅对拉史成功的段写短说法（失败段不写；不依赖 leaf_confirm）
     full = state_get(state, "event_dictionary_full") or []
-    for ev in intent.get("events") or []:
+    for ev in cache_events:
         if not isinstance(ev, dict):
             continue
         eid = str(ev.get("event_id") or "").strip()
         if not eid:
             continue
-        seg = str(ev.get("segment_text") or "").strip()
+        seg = str(ev.get("segment_text") or "").strip() or seg_by_id.get(eid, "")
         ename = str(ev.get("event_name") or "").strip()
         doc = seg or ename
         if not doc:

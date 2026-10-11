@@ -666,6 +666,20 @@ def drafts_to_intent(
         events.append(ev)
 
     missing_qty = any(e.get("missing_quantity") for e in events)
+    # 父事件 CUD（create/update/delete/end）须消歧，不得直执行；查史可带父 id
+    parent_cud_block = False
+    for d in drafts:
+        if (d.event_kind or "") != "parent":
+            continue
+        if d.target_type == TargetType.HISTORY.value:
+            continue
+        op = str(d.op or "").strip().lower()
+        if op == IntentOp.READ.value:
+            continue
+        parent_cud_block = True
+        break
+    # 无阻塞（缺量/父 CUD）时直执行，不再默认 leaf_confirm
+    need_confirm = bool(missing_qty or parent_cud_block)
     eids = [str(e.get("event_id") or "") for e in events if e.get("event_id")]
     return {
         "target_type": target,
@@ -678,7 +692,7 @@ def drafts_to_intent(
         "remark": top_remark,
         "match_source": drafts[0].match_source,
         "match_confidence": drafts[0].match_confidence,
-        "need_confirm": True,
+        "need_confirm": need_confirm,
         "missing_quantity": missing_qty,
         "content": "",
         "confirm_message": "",
@@ -688,7 +702,12 @@ def drafts_to_intent(
 
 
 def should_batch_confirm(events: List[Dict[str, Any]]) -> bool:
-    """确认策略 C：短且同质 → 拼问。"""
+    """
+    旧确认策略 C：短且同质是否可拼问。
+
+    业务说明：
+    直执行改造后多段不再拼 yes/no；保留函数供兼容调用方探测同质。
+    """
     if not events or len(events) > MULTI_CONFIRM_BATCH_MAX:
         return False
     ops = {str(e.get("op") or "") for e in events}

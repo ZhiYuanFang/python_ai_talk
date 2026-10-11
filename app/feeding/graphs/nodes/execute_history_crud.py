@@ -3,7 +3,7 @@
 
 业务说明：
 已确认的 create/update/delete/end 走一条 batch，
-用模板填写 content，成功后按段写事件短说法。
+用模板填写 content，落库成功后按段写事件短说法（直执行路径同样写入）。
 仅对 update/delete 子项现查 latest；create/end 不因无记录而跳过。
 """
 
@@ -106,9 +106,22 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
         merged_results.append(sf)
     content = render_persist_content(merged_items, merged_results, missing)
     intent["content"] = content
-    any_ok = any(bool(r.get("ok")) for r in results)
-    if any_ok:
-        # 按段写入事件短说法（禁止整包复合句）
+    # 仅成功子项写短说法（失败段不写；不依赖 leaf_confirm）
+    ok_eids: set[str] = set()
+    for i, it in enumerate(items):
+        res = {}
+        for r in results:
+            if int(r.get("index", -1)) == i:
+                res = r
+                break
+        if not res and i < len(results):
+            res = results[i] or {}
+        if not bool(res.get("ok")):
+            continue
+        eid = str(it.get("eventId") or it.get("event_id") or "").strip()
+        if eid:
+            ok_eids.add(eid)
+    if ok_eids:
         from app.feeding.services.event_hierarchy import is_parent_event
 
         full = state_get(state, "event_dictionary_full") or []
@@ -116,7 +129,7 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
             if not isinstance(ev, dict):
                 continue
             eid = str(ev.get("event_id") or "").strip()
-            if not eid:
+            if not eid or eid not in ok_eids:
                 continue
             seg = str(ev.get("segment_text") or "").strip()
             ename = str(ev.get("event_name") or "").strip()
