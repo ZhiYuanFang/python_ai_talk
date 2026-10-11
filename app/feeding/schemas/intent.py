@@ -104,7 +104,19 @@ class IntentResponse(BaseModel):
     业务说明：
     信封 + events[]；无顶层 op/action。与 Go AnalyzeIntentResponse 对齐。
     """
-    target_type: str = Field(..., description="目标类型：feeding, history, suggest, conversation, exit")
+    target_type: str = Field(
+        ...,
+        description="目标类型：feeding, history, predict, suggest, conversation, exit",
+    )
+    # 预测问答分维（仅 predict 有值；与 Go/飞轮载荷对齐）
+    predict_channel: Optional[str] = Field(
+        default=None,
+        description="预测通道：active|next；非 predict 为空",
+    )
+    time_answer: Optional[str] = Field(
+        default=None,
+        description="时间答法：clock|remain；非 predict 为空",
+    )
     remark: Optional[str] = Field(
         default=None,
         description="备注（权威以 events[].remark 为准）",

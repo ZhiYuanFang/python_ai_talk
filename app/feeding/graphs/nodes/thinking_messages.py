@@ -22,6 +22,7 @@ NODE_THINKING_MESSAGES = {
     "resolve_remark_event": "正在按备注对照事件...",
     "execute_history_crud": "正在写入喂养记录...",
     "speak_history": "正在整理历史记录...",
+    "speak_predict": "正在估算预计时间...",
     "llm_start": "正在生成回答...",
 }
 

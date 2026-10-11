@@ -38,6 +38,8 @@ class TargetType(str, Enum):
 
     FEEDING = "feeding"
     HISTORY = "history"
+    # 预测问答：进行中 ETA / 下次 imminent，与查史分轨
+    PREDICT = "predict"
     SUGGEST = "suggest"
     CONVERSATION = "conversation"
     EXIT = "exit"

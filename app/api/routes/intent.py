@@ -24,6 +24,7 @@ from app.feeding.services.event_cache import event_cache
 from app.feeding.services.intent_pipeline import (
     build_intent_response_from_fields,
     create_history_confirm_response,
+    create_predict_confirm_response,
     postprocess_feeding_result,
     response_from_pending,
     try_exact_parent_disambiguation,
@@ -163,6 +164,17 @@ def _response_from_final_state(
     # 查记录确认：话术由 Python 点出事件名（叶子或父），父仍是是/否不是选叶子
     if need_confirm and target_type == TargetType.HISTORY.value:
         return create_history_confirm_response(
+            ir,
+            full_events=full_events,
+            user_input=user_input,
+            device_no=device_no,
+            model_config=model_config,
+            match_source=str(match_source or ""),
+        )
+
+    # 预测问答确认：挂 pending，确认后 speak_predict（勿当 feeding/history）
+    if need_confirm and target_type == TargetType.PREDICT.value:
+        return create_predict_confirm_response(
             ir,
             full_events=full_events,
             user_input=user_input,

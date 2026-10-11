@@ -3,7 +3,7 @@
 
 业务说明：
 独立 Collection feeding_type_cues，document 为短关键字，
-payload 含 target_type / op / history_mode。
+payload 含 target_type / op / history_mode / predict_channel / time_answer。
 供 TYPE 维飞轮命中跳过 LLM；与 feeding_intents 事件说法隔离。
 管理端 bulk 同 document 跳过；禁止整包 multi-events。
 """
@@ -41,7 +41,7 @@ def _as_type_cue_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     规范类型载荷；拒绝整包 events。
 
     Returns:
-        {target_type, op, history_mode} 或 None
+        {target_type, op, history_mode, predict_channel, time_answer} 或 None
     """
     if not isinstance(payload, dict):
         return None
@@ -50,22 +50,40 @@ def _as_type_cue_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     tt = str(payload.get("target_type") or "").strip().lower()
     op = str(payload.get("op") or "").strip().lower()
     hm = str(payload.get("history_mode") or "").strip().lower()
-    allowed = {"feeding", "history", "conversation", "exit"}
+    pc = str(payload.get("predict_channel") or "").strip().lower()
+    ta = str(payload.get("time_answer") or "").strip().lower()
+    allowed = {"feeding", "history", "predict", "conversation", "exit"}
     if tt not in allowed:
         return None
     if tt == "history":
         op = "read"
         if hm not in ("point", "daily"):
             hm = "point"
+        pc, ta = "", ""
+    elif tt == "predict":
+        # 预测：op/history_mode 清空；两维必须合法
+        op = ""
+        hm = ""
+        if pc not in ("active", "next") or ta not in ("clock", "remain"):
+            return None
     elif tt in ("conversation", "exit"):
         op = ""
         hm = ""
+        pc, ta = "", ""
     elif not op:
         op = "create"
         hm = ""
+        pc, ta = "", ""
     else:
         hm = hm if hm in ("point", "daily") else ""
-    return {"target_type": tt, "op": op, "history_mode": hm}
+        pc, ta = "", ""
+    return {
+        "target_type": tt,
+        "op": op,
+        "history_mode": hm,
+        "predict_channel": pc,
+        "time_answer": ta,
+    }
 
 
 class TypeCueStore:
@@ -224,6 +242,8 @@ class TypeCueStore:
         target_type: str,
         op: str = "",
         history_mode: str = "",
+        predict_channel: str = "",
+        time_answer: str = "",
     ) -> int:
         """
         按关键字列表写入同一类型 payload。
@@ -235,6 +255,8 @@ class TypeCueStore:
             "target_type": target_type,
             "op": op,
             "history_mode": history_mode,
+            "predict_channel": predict_channel,
+            "time_answer": time_answer,
         }
         n = 0
         for kw in keywords or []:

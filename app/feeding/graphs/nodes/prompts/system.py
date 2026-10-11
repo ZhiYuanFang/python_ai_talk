@@ -93,21 +93,30 @@ SEGMENT_TYPE_LLM_PROMPT = """你是母婴喂养意图类型助手。
 根据用户**一段**原文判断类型与操作，只输出 JSON，不要 markdown。
 
 硬性约束：
-1. target_type 只能是：feeding|history|conversation|exit
-2. op 可选：create|read|update|delete|end；history 时 op 必须为 read；结束计时用 end；开始/记录用 create
+1. target_type 只能是：feeding|history|predict|conversation|exit
+2. op 可选：create|read|update|delete|end；history 时 op 必须为 read；predict 时 op 必须为空字符串；结束计时用 end；开始/记录用 create
 3. history_mode 仅 history 时填 point|daily；其它为空字符串
-4. need_confirm：仅当你对类型/操作无把握时为 true；高置信为 false（勿因句含「睡」「吃」就乱确认）
-5. keywords：从原文抽出可复用的短线索（1～3 个），如「多久了」「睡着了」「睡醒」；禁止整句复合长文；可为空数组
-6. 问时长/查记录（多久了、多长时间、上次、几次）→ history + read，勿当成 create 记睡眠
-7. 睡着了/开始睡 → feeding + create；睡醒/醒了/起床 → feeding + end
-8. 不要输出 events、时间、数量
-9. 内部思考（reasoning）须使用中文
+4. predict_channel / time_answer：**分维、禁止合并成单一枚举**；仅 predict 时必填：
+   - predict_channel：active=问进行中何时结束/多久醒来；next=问距离下次发生还有多久/几点
+   - time_answer：remain=还要多久/剩余多久；clock=几点/什么时候（墙钟）
+   非 predict 时两维均为空字符串
+5. need_confirm：仅当你对类型/操作/预测维无把握时为 true；高置信为 false（勿因句含「睡」「吃」就乱确认）
+6. keywords：从原文抽出可复用的短线索（1～3 个），如「多久了」「还有多久醒来」「睡着了」；禁止整句复合长文；可为空数组
+7. 语义纠偏（勿一律把「多久」打成 history）：
+   - 过去时长/上次用时（睡了多久了、多长时间、上次、几次）→ history + read
+   - 预测问答（大概还有多久醒来、还有多久睡觉、几点醒/几点睡）→ predict + 对应两维；勿回落查史上一次用时
+   - 例：「大概还有多久醒来」→ predict, active, remain；「还有多久睡觉」→ predict, next, remain；「大概几点醒」→ predict, active, clock
+8. 睡着了/开始睡 → feeding + create；睡醒/醒了/起床（陈述结束，非问多久）→ feeding + end
+9. 不要输出 events、时间、数量
+10. 内部思考（reasoning）须使用中文
 
 JSON 格式：
 {
   "target_type": "feeding",
   "op": "create",
   "history_mode": "",
+  "predict_channel": "",
+  "time_answer": "",
   "need_confirm": false,
   "keywords": ["睡着了"]
 }

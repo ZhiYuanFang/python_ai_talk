@@ -129,12 +129,13 @@ def _format_leaf_table(full_events: List[Dict[str, Any]]) -> str:
 async def llm_resolve_type(
     segment: str,
     llm_model: Dict[str, Any],
-) -> Tuple[str, str, str, bool, List[str], str]:
+) -> Tuple[str, str, str, str, str, bool, List[str], str]:
     """
-    TYPE 小 LLM（含 need_confirm / keywords）。
+    TYPE 小 LLM（含 need_confirm / keywords / 预测两维）。
 
     Returns:
-        (target_type, op, history_mode, need_confirm, keywords, raw_summary)
+        (target_type, op, history_mode, predict_channel, time_answer,
+         need_confirm, keywords, raw_summary)
     """
     cfg = llm_model_config_from_mapping(llm_model or {})
     content = await stream_llm_collect(
@@ -152,6 +153,8 @@ async def llm_resolve_type(
     tt = str(data.get("target_type") or "").strip().lower()
     op = str(data.get("op") or "").strip().lower()
     hm = str(data.get("history_mode") or "").strip().lower()
+    pc = str(data.get("predict_channel") or "").strip().lower()
+    ta = str(data.get("time_answer") or "").strip().lower()
     need_confirm = bool(data.get("need_confirm"))
     raw_kws = data.get("keywords")
     keywords: List[str] = []
@@ -160,31 +163,46 @@ async def llm_resolve_type(
             s = str(k or "").strip()
             if s and s not in keywords:
                 keywords.append(s)
-    allowed = {"feeding", "history", "conversation", "exit"}
+    allowed = {"feeding", "history", "predict", "conversation", "exit"}
     if tt not in allowed:
         tt = "feeding"
         op = op or "create"
         need_confirm = True
+        pc, ta = "", ""
     if tt == "history":
         op = "read"
         if hm not in ("point", "daily"):
             hm = "point"
+        pc, ta = "", ""
+    elif tt == "predict":
+        # 预测：清空 op/history_mode；两维非法则标需确认并清空（由调用方不写飞轮）
+        op = ""
+        hm = ""
+        if pc not in ("active", "next") or ta not in ("clock", "remain"):
+            pc, ta = "", ""
+            need_confirm = True
     elif tt in ("conversation", "exit"):
         op = ""
         hm = ""
-    elif not op:
-        op = "create"
+        pc, ta = "", ""
+    else:
+        if not op:
+            op = "create"
+        hm = hm if hm in ("point", "daily") else ""
+        pc, ta = "", ""
     summary = json.dumps(
         {
             "target_type": tt,
             "op": op,
             "history_mode": hm,
+            "predict_channel": pc,
+            "time_answer": ta,
             "need_confirm": need_confirm,
             "keywords": keywords,
         },
         ensure_ascii=False,
     )
-    return tt, op, hm, need_confirm, keywords, summary
+    return tt, op, hm, pc, ta, need_confirm, keywords, summary
 
 
 async def llm_resolve_event(

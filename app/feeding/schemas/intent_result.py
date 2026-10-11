@@ -69,6 +69,9 @@ class IntentResult(BaseModel):
     time_range: Optional[str] = None
     limit: Optional[int] = None
     history_mode: Optional[str] = None
+    # 预测问答分维：仅 target_type=predict 时有效（active|next / clock|remain）
+    predict_channel: Optional[str] = None
+    time_answer: Optional[str] = None
     match_source: Optional[str] = None
     match_confidence: Optional[float] = None
     need_confirm: Optional[bool] = None

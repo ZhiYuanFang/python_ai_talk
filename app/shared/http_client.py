@@ -429,6 +429,60 @@ class HttpClient:
             logger.error(f"进行中 ETA 拉取失败: device_no={dn}, error={str(e)}")
             raise
 
+    async def get_predict_imminent_pending(self, device_no: str) -> List[Dict[str, Any]]:
+        """
+        拉取宝宝即将发生事件 pending 列表（voice internal）。
+
+        业务逻辑：
+        1. 调用 GET /voice/internal/api/predict/imminent/pending?deviceNo=
+        2. 请求头带 X-Device-Gateway-Internal-Secret（与 active-eta 同源密钥）
+        3. 解包 GoFrame data.events（主路径是 events，不是 items）
+        4. voice_url / 密钥 / deviceNo 缺失时返回空列表（由调用方降级，不抛）
+
+        Args:
+            device_no: 设备编号
+
+        Returns:
+            imminent 事件列表（含 eventId/nextAt/title/expect* 等）
+
+        Raises:
+            httpx.HTTPError: HTTP 请求失败（配置齐全但仍失败时）
+        """
+        self._ensure_initialized()
+        dn = str(device_no or "").strip()
+        base = str(settings.voice_service_url or "").strip().rstrip("/")
+        secret = str(settings.device_gateway_internal_secret or "").strip()
+        if not dn or not base or not secret:
+            logger.warning(
+                "跳过 imminent pending：deviceNo/voice_url/内部密钥缺失 "
+                f"deviceNoLen={len(dn)} hasVoice={bool(base)} hasSecret={bool(secret)}"
+            )
+            return []
+
+        url = f"{base}/voice/internal/api/predict/imminent/pending"
+        headers = {"X-Device-Gateway-Internal-Secret": secret}
+        params = {"deviceNo": dn}
+        try:
+            logger.info(f"imminent pending GET: {url}, deviceNoLen={len(dn)}")
+            response = await self._client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            payload = self._unwrap_go_data(response.json())
+            if isinstance(payload, dict):
+                # 主路径 events；兼容误写成 items 的孪生实现
+                events = payload.get("events")
+                if isinstance(events, list):
+                    return [x for x in events if isinstance(x, dict)]
+                items = payload.get("items")
+                if isinstance(items, list):
+                    return [x for x in items if isinstance(x, dict)]
+            if isinstance(payload, list):
+                return [x for x in payload if isinstance(x, dict)]
+            logger.warning(f"imminent pending data 格式异常: device_no={dn}")
+            return []
+        except httpx.HTTPError as e:
+            logger.error(f"imminent pending 拉取失败: device_no={dn}, error={str(e)}")
+            raise
+
     async def get_baby_profile(self, device_no: str) -> Optional[Dict[str, Any]]:
         """
         获取宝宝画像信息

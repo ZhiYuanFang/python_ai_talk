@@ -1076,7 +1076,7 @@ def try_parent_hit_from_event_id(
 
 def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
     """将 pending 转为 IntentResponse 可用字段（无顶层 op/action）。"""
-    # 查记录确认：pending.op=read 或 events 含 read
+    # 查记录确认：pending.op=read 或 events 含 read；预测确认靠 model_config 标记
     events = list(pending.events or [])
     is_read = (pending.op or "").strip().lower() == IntentOp.READ.value
     if not is_read:
@@ -1085,8 +1085,22 @@ def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
             for e in events
             if isinstance(e, dict)
         )
+    mc = pending.model_config if isinstance(pending.model_config, dict) else {}
+    type_target = str(mc.get("_type_target") or "").strip().lower()
+    if type_target == TargetType.PREDICT.value:
+        target = TargetType.PREDICT.value
+    elif is_read:
+        target = TargetType.HISTORY.value
+    else:
+        target = TargetType.FEEDING.value
+    pc = str(mc.get("_type_predict_channel") or "").strip().lower()
+    ta = str(mc.get("_type_time_answer") or "").strip().lower()
+    if target != TargetType.PREDICT.value:
+        pc, ta = "", ""
     return {
-        "target_type": TargetType.HISTORY.value if is_read else TargetType.FEEDING.value,
+        "target_type": target,
+        "predict_channel": pc or None,
+        "time_answer": ta or None,
         "event_name": pending.parent_name or (
             pending.options[0]["event_name"] if pending.options else ""
         ),

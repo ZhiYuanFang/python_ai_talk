@@ -74,6 +74,9 @@ class SegmentDraft:
     target_type: str = TargetType.FEEDING.value
     op: str = IntentOp.CREATE.value
     history_mode: str = ""
+    # 预测问答分维（仅 predict；非 predict 须空）
+    predict_channel: str = ""
+    time_answer: str = ""
     event_id: str = ""
     event_name: str = ""
     event_kind: str = "leaf"  # leaf|parent
@@ -96,6 +99,11 @@ class SegmentDraft:
     gaps: List[str] = field(default_factory=list)
 
 
+def _empty_predict_dims() -> Tuple[str, str]:
+    """非 predict 时清空两维。"""
+    return "", ""
+
+
 async def resolve_type(
     segment: str,
     *,
@@ -103,34 +111,31 @@ async def resolve_type(
     sentence_target_type: str = "",
     device_no: str = "",
     llm_model: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, str, str, bool, List[str]]:
+) -> Tuple[str, str, str, str, str, bool, List[str]]:
     """
     类型维：强规则 → 类型关键字飞轮 → TYPE 小 LLM。
 
+    业务说明：
+    predict 由飞轮/TYPE LLM 判定两维；不以本地「多久」词表强制 history。
+    飞轮命中合法 predict 时优先于查史 point/daily 强线索（predict 优先门闩）。
+
     Returns:
-        (target_type, op, history_mode, need_confirm, keywords)
+        (target_type, op, history_mode, predict_channel, time_answer,
+         need_confirm, keywords)
     """
     st = (sentence_target_type or "").strip().lower()
     text = segment or utterance or ""
-    # 句级 / 查史强线索
-    if st == TargetType.HISTORY.value or (
-        not st and infer_expected_history_mode(text)
-    ):
-        mode = infer_expected_history_mode(text) or "point"
-        if st == TargetType.HISTORY.value and not infer_expected_history_mode(text):
-            mode = infer_expected_history_mode(utterance) or "daily"
-        return TargetType.HISTORY.value, IntentOp.READ.value, mode, False, []
     if st == TargetType.EXIT.value or _EXIT_RE.search((text or "").strip()):
-        return TargetType.EXIT.value, "", "", False, []
+        return TargetType.EXIT.value, "", "", "", "", False, []
     if st == TargetType.CONVERSATION.value or _SUGGEST_RE.search(text):
-        return TargetType.CONVERSATION.value, "", "", False, []
+        return TargetType.CONVERSATION.value, "", "", "", "", False, []
     # 显式改删强线索
     if _DELETE_RE.search(text):
-        return TargetType.FEEDING.value, IntentOp.DELETE.value, "", False, []
+        return TargetType.FEEDING.value, IntentOp.DELETE.value, "", "", "", False, []
     if _UPDATE_RE.search(text):
-        return TargetType.FEEDING.value, IntentOp.UPDATE.value, "", False, []
+        return TargetType.FEEDING.value, IntentOp.UPDATE.value, "", "", "", False, []
 
-    # 类型关键字飞轮
+    # 类型关键字飞轮（含 predict；合法 predict 优先于下方查史强线索）
     hits = type_cue_store.search_type_cue(text, n_results=1)
     if hits:
         top = hits[0]
@@ -140,34 +145,82 @@ async def resolve_type(
             tt = str(pl.get("target_type") or TargetType.FEEDING.value).strip().lower()
             op = str(pl.get("op") or "").strip().lower()
             hm = str(pl.get("history_mode") or "").strip().lower()
-            if tt == TargetType.HISTORY.value:
-                op = IntentOp.READ.value
-                if hm not in ("point", "daily"):
-                    hm = "point"
-            logger.info(
-                "类型飞轮命中: doc=%s score=%s tt=%s op=%s",
-                str(top.get("document") or "")[:40],
-                score,
-                tt,
-                op,
-            )
-            return tt, op, hm, False, []
+            pc = str(pl.get("predict_channel") or "").strip().lower()
+            ta = str(pl.get("time_answer") or "").strip().lower()
+            if tt == TargetType.PREDICT.value:
+                # 两维非法视为未命中，继续冷路径（勿用半残 predict）
+                if pc in ("active", "next") and ta in ("clock", "remain"):
+                    logger.info(
+                        "类型飞轮命中 predict: doc=%s score=%s ch=%s ta=%s",
+                        str(top.get("document") or "")[:40],
+                        score,
+                        pc,
+                        ta,
+                    )
+                    return (
+                        TargetType.PREDICT.value,
+                        "",
+                        "",
+                        pc,
+                        ta,
+                        False,
+                        [],
+                    )
+            else:
+                if tt == TargetType.HISTORY.value:
+                    op = IntentOp.READ.value
+                    if hm not in ("point", "daily"):
+                        hm = "point"
+                pc, ta = _empty_predict_dims()
+                logger.info(
+                    "类型飞轮命中: doc=%s score=%s tt=%s op=%s",
+                    str(top.get("document") or "")[:40],
+                    score,
+                    tt,
+                    op,
+                )
+                return tt, op, hm, pc, ta, False, []
+
+    # 句级 / 查史强线索（上一次/几次等）；不用「多久」本地门闩压 predict
+    if st == TargetType.HISTORY.value or (
+        not st and infer_expected_history_mode(text)
+    ):
+        mode = infer_expected_history_mode(text) or "point"
+        if st == TargetType.HISTORY.value and not infer_expected_history_mode(text):
+            mode = infer_expected_history_mode(utterance) or "daily"
+        return (
+            TargetType.HISTORY.value,
+            IntentOp.READ.value,
+            mode,
+            "",
+            "",
+            False,
+            [],
+        )
+    if st == TargetType.PREDICT.value:
+        # 句级已标 predict 但无飞轮两维：交 TYPE LLM 补齐
+        pass
 
     # 冷路径：TYPE 小 LLM（不再因「睡/吃」短路 create）
     try:
-        tt, op, hm, need_confirm, keywords, summary = await llm_resolve_type(
+        tt, op, hm, pc, ta, need_confirm, keywords, summary = await llm_resolve_type(
             text, llm_model or {}
         )
         logger.info("TYPE LLM: %s", summary[:200])
         if not need_confirm:
             kws = keywords or ([text.strip()] if text.strip() else [])
             type_cue_store.add_type_keywords(
-                kws, target_type=tt, op=op, history_mode=hm
+                kws,
+                target_type=tt,
+                op=op,
+                history_mode=hm,
+                predict_channel=pc,
+                time_answer=ta,
             )
-        return tt, op, hm, need_confirm, keywords
+        return tt, op, hm, pc, ta, need_confirm, keywords
     except Exception as exc:
         logger.warning("TYPE 小 LLM 失败: %s", exc)
-        return TargetType.FEEDING.value, IntentOp.CREATE.value, "", True, []
+        return TargetType.FEEDING.value, IntentOp.CREATE.value, "", "", "", True, []
 
 
 async def resolve_event(
@@ -373,7 +426,7 @@ async def resolve_segment(
         draft.fail_reason = "empty_segment"
         return draft
 
-    tt, op, hm, type_need_confirm, type_keywords = await resolve_type(
+    tt, op, hm, pc, ta, type_need_confirm, type_keywords = await resolve_type(
         draft.text,
         utterance=utterance,
         sentence_target_type=sentence_target_type,
@@ -383,6 +436,15 @@ async def resolve_segment(
     draft.target_type = tt
     draft.op = op
     draft.history_mode = hm
+    # 非 predict 强制清空两维
+    if tt == TargetType.PREDICT.value:
+        draft.predict_channel = pc if pc in ("active", "next") else ""
+        draft.time_answer = ta if ta in ("clock", "remain") else ""
+        draft.op = ""
+        draft.history_mode = ""
+    else:
+        draft.predict_channel = ""
+        draft.time_answer = ""
     draft.type_need_confirm = bool(type_need_confirm)
     draft.type_keywords = list(type_keywords or [])
 
@@ -437,6 +499,12 @@ async def resolve_segment(
             draft.remark = merge_remarks(draft.remark, llm_r)
         except Exception as exc:
             logger.warning("明细备注 LLM 失败: %s", exc)
+
+    # 预测问答：事件已定即可，跳过形态/量/时间（不进查史用时）
+    if tt == TargetType.PREDICT.value:
+        draft.action = ""
+        draft.event_type = str(ev.get("type") or ev.get("event_type") or "")
+        return draft
 
     # 形态由 TYPE.op 推导（不再独立 SHAPE LLM）
     action, et = resolve_shape(op, ev)
@@ -598,17 +666,31 @@ def drafts_to_intent(
 
     events: List[Dict[str, Any]] = []
     history_mode = ""
+    predict_channel = ""
+    time_answer = ""
     target = TargetType.FEEDING.value
     top_remark = ""
     for d in drafts:
-        if d.target_type == TargetType.HISTORY.value:
+        if d.target_type == TargetType.PREDICT.value:
+            # predict 优先于 history；多段时以 predict 为准
+            target = TargetType.PREDICT.value
+            history_mode = ""
+            if d.predict_channel in ("active", "next"):
+                predict_channel = d.predict_channel
+            if d.time_answer in ("clock", "remain"):
+                time_answer = d.time_answer
+        elif d.target_type == TargetType.HISTORY.value and target != TargetType.PREDICT.value:
             target = TargetType.HISTORY.value
             history_mode = d.history_mode or history_mode or "point"
         rem = (d.remark or "").strip()
         if rem and not top_remark:
             top_remark = rem
+        # predict 子项 op 空，禁止伪装成 read 进查史
+        op_out = "" if d.target_type == TargetType.PREDICT.value else (
+            d.op if d.op != "end" else "end"
+        )
         ev = {
-            "op": d.op if d.op != "end" else "end",
+            "op": op_out,
             "action": d.action,
             "event_id": d.event_id,
             "event_name": d.event_name,
@@ -623,12 +705,15 @@ def drafts_to_intent(
         events.append(ev)
 
     missing_qty = any(e.get("missing_quantity") for e in events)
-    # 父事件 CUD（create/update/delete/end）须消歧，不得直执行；查史可带父 id
+    # 父事件 CUD（create/update/delete/end）须消歧，不得直执行；查史/预测可带父 id
     parent_cud_block = False
     for d in drafts:
         if (d.event_kind or "") != "parent":
             continue
-        if d.target_type == TargetType.HISTORY.value:
+        if d.target_type in (
+            TargetType.HISTORY.value,
+            TargetType.PREDICT.value,
+        ):
             continue
         op = str(d.op or "").strip().lower()
         if op == IntentOp.READ.value:
@@ -637,6 +722,12 @@ def drafts_to_intent(
         break
     # 无阻塞（缺量/父 CUD/TYPE 需确认）时直执行
     type_need = any(bool(d.type_need_confirm) for d in drafts)
+    # predict 缺两维也须确认，避免半残路由
+    if target == TargetType.PREDICT.value and (
+        predict_channel not in ("active", "next")
+        or time_answer not in ("clock", "remain")
+    ):
+        type_need = True
     type_kws: List[str] = []
     for d in drafts:
         for k in d.type_keywords or []:
@@ -648,16 +739,23 @@ def drafts_to_intent(
     if type_need and not missing_qty:
         # TYPE LLM 自报需确认：简短类型问句
         head_name = str(events[0].get("event_name") or "") if events else ""
-        if target == TargetType.HISTORY.value:
+        if target == TargetType.PREDICT.value:
+            confirm_message = f"您是要问「{head_name or '相关事件'}」大概还要多久吗？"
+        elif target == TargetType.HISTORY.value:
             confirm_message = f"您是要查询「{head_name or '相关记录'}」吗？"
         elif any(str(e.get("op") or "") == "end" for e in events):
             confirm_message = f"您是要结束「{head_name or '计时'}」吗？"
         else:
             confirm_message = f"您是要记录「{head_name or '该事件'}」吗？"
     eids = [str(e.get("event_id") or "") for e in events if e.get("event_id")]
+    if target != TargetType.PREDICT.value:
+        predict_channel = ""
+        time_answer = ""
     return {
         "target_type": target,
         "history_mode": history_mode or None,
+        "predict_channel": predict_channel or None,
+        "time_answer": time_answer or None,
         "events": events,
         "event_ids": eids,
         "quantity": events[0].get("quantity") if len(events) == 1 else None,

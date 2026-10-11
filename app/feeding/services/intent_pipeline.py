@@ -91,8 +91,19 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
                 )
             )
 
+    # 非 predict 清空预测维，避免脏字段外泄
+    tt = str(fields.get("target_type") or TargetType.CONVERSATION.value).strip().lower()
+    pc = str(fields.get("predict_channel") or "").strip().lower()
+    ta = str(fields.get("time_answer") or "").strip().lower()
+    if tt != TargetType.PREDICT.value:
+        pc, ta = "", ""
+    elif pc not in ("active", "next") or ta not in ("clock", "remain"):
+        pc, ta = "", ""
+
     return IntentResponse(
         target_type=fields.get("target_type", TargetType.CONVERSATION.value),
+        predict_channel=pc or None,
+        time_answer=ta or None,
         event_name=fields.get("event_name", "") or "",
         event_id=str(fields.get("event_id", "") or ""),
         quantity=fields.get("quantity"),
@@ -173,6 +184,66 @@ def create_history_confirm_response(
         event_ids=event_ids,
         history_mode=str(fields.get("history_mode") or ""),
         limit=fields.get("limit"),
+    )
+    return response_from_pending(pending)
+
+
+def create_predict_confirm_response(
+    intent_result: IntentFields,
+    *,
+    full_events: List[Dict[str, Any]],
+    user_input: str,
+    device_no: str,
+    model_config: Dict[str, Any],
+    match_source: str = "",
+) -> IntentResponse:
+    """
+    预测问答软确认：挂 pending，确认后 speak_predict + 飞轮写两维。
+
+    业务说明：
+    op 空（非 read），避免确认后续聊被当成查史；预测维塞进 model_config。
+    """
+    fields = _intent_fields(intent_result)
+    event_ids = [
+        str(x)
+        for x in (fields.get("event_ids") or [])
+        if x not in (None, "")
+    ]
+    event_id = str(fields.get("event_id") or "")
+    if event_id and event_id not in event_ids:
+        event_ids = [event_id] + event_ids
+    event_name = resolve_event_display_name(
+        event_id=event_id,
+        event_name=str(fields.get("event_name") or ""),
+        events=full_events,
+        event_ids=event_ids,
+    )
+    mc = dict(model_config or {})
+    mc["_type_target"] = TargetType.PREDICT.value
+    mc["_type_predict_channel"] = fields.get("predict_channel")
+    mc["_type_time_answer"] = fields.get("time_answer")
+    if fields.get("keywords"):
+        mc["_type_keywords"] = list(fields.get("keywords") or [])
+    confirm_message = (
+        str(fields.get("confirm_message") or "").strip()
+        or f"您是要问「{event_name or '相关事件'}」大概还要多久吗？"
+    )
+    pending = create_leaf_confirm_pending(
+        leaf={
+            "event_id": event_id or (event_ids[0] if event_ids else ""),
+            "event_name": event_name,
+            "extra_names": [],
+        },
+        original_utterance=user_input,
+        action="",
+        match_source=str(match_source or fields.get("match_source") or ""),
+        device_no=device_no,
+        model_config=mc,
+        events=fields.get("events") or [],
+        op="",
+        remark=fields.get("remark") or "",
+        event_ids=event_ids,
+        confirm_message=confirm_message,
     )
     return response_from_pending(pending)
 
@@ -345,14 +416,19 @@ async def try_handle_pending(
             fields["history_mode"] = hm
         if getattr(pending, "limit", None) not in (None, ""):
             fields["limit"] = pending.limit
-        # TYPE 确认后带回 keywords 供飞轮写入
+        # TYPE 确认后带回 keywords / 预测维供飞轮写入与播报
         mc = getattr(pending, "model_config", None) or {}
-        if isinstance(mc, dict) and mc.get("_type_keywords"):
-            fields["keywords"] = list(mc.get("_type_keywords") or [])
+        if isinstance(mc, dict):
+            if mc.get("_type_keywords"):
+                fields["keywords"] = list(mc.get("_type_keywords") or [])
             if mc.get("_type_target"):
                 fields["target_type"] = mc.get("_type_target")
             if mc.get("_type_history_mode") is not None:
                 fields["history_mode"] = mc.get("_type_history_mode")
+            if mc.get("_type_predict_channel") is not None:
+                fields["predict_channel"] = mc.get("_type_predict_channel")
+            if mc.get("_type_time_answer") is not None:
+                fields["time_answer"] = mc.get("_type_time_answer")
         executed = await _execute_after_confirm(
             fields,
             device_no=pending.device_no,
@@ -620,12 +696,19 @@ def postprocess_feeding_result(
             slot_qty = head.get("quantity")
             if slot_qty is None:
                 slot_qty = quantity
-            # TYPE 关键字挂 pending，确认后写入类型飞轮
+            # TYPE 关键字挂 pending，确认后写入类型飞轮（含预测两维）
             mc = dict(model_config or {})
             if fields.get("keywords"):
                 mc["_type_keywords"] = list(fields.get("keywords") or [])
                 mc["_type_target"] = fields.get("target_type")
                 mc["_type_history_mode"] = fields.get("history_mode")
+                mc["_type_predict_channel"] = fields.get("predict_channel")
+                mc["_type_time_answer"] = fields.get("time_answer")
+            elif str(fields.get("target_type") or "") == TargetType.PREDICT.value:
+                # 无 keywords 仍须带回预测维供确认后播报
+                mc["_type_target"] = fields.get("target_type")
+                mc["_type_predict_channel"] = fields.get("predict_channel")
+                mc["_type_time_answer"] = fields.get("time_answer")
             pending = create_leaf_confirm_pending(
                 leaf=leaf,
                 original_utterance=user_input,
@@ -670,14 +753,15 @@ async def _execute_after_confirm(
     user_input: str,
     full_events: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """确认通过后执行 batch 或查记录模板。"""
+    """确认通过后执行 batch、查记录模板或预测播报。"""
     from app.feeding.graphs.nodes.execute_history_crud import execute_history_crud
     from app.feeding.graphs.nodes.speak_history import speak_history
+    from app.feeding.graphs.nodes.speak_predict import speak_predict
     from app.feeding.services.history_crud import infer_route_kind
     from app.feeding.services.type_cue_store import type_cue_store
     from app.shared.constants import IntentOp
 
-    # TYPE 冷路径确认后：按 keywords 写入类型飞轮
+    # TYPE 冷路径确认后：按 keywords 写入类型飞轮（含预测两维）
     type_kws = [
         str(k).strip()
         for k in (fields.get("keywords") or [])
@@ -689,11 +773,14 @@ async def _execute_after_confirm(
             if isinstance(e, dict) and e.get("op"):
                 op0 = str(e.get("op") or "")
                 break
+        tt = str(fields.get("target_type") or "")
         type_cue_store.add_type_keywords(
             type_kws,
-            target_type=str(fields.get("target_type") or ""),
+            target_type=tt,
             op=op0 or str(fields.get("op") or ""),
             history_mode=str(fields.get("history_mode") or ""),
+            predict_channel=str(fields.get("predict_channel") or ""),
+            time_answer=str(fields.get("time_answer") or ""),
         )
 
     state = {
@@ -704,13 +791,17 @@ async def _execute_after_confirm(
         "event_dictionary": full_events,
         "need_confirm": False,
     }
-    kind = infer_route_kind(fields)
-    if kind == IntentOp.READ.value or fields.get("target_type") == TargetType.HISTORY.value:
-        out = await speak_history(state)
-    elif kind == "cud":
-        out = await execute_history_crud(state)
+    # predict 优先于 history/read
+    if fields.get("target_type") == TargetType.PREDICT.value:
+        out = await speak_predict(state)
     else:
-        return fields
+        kind = infer_route_kind(fields)
+        if kind == IntentOp.READ.value or fields.get("target_type") == TargetType.HISTORY.value:
+            out = await speak_history(state)
+        elif kind == "cud":
+            out = await execute_history_crud(state)
+        else:
+            return fields
     merged = dict(fields)
     out_ir = out.get("intent_result")
     if out_ir is not None:

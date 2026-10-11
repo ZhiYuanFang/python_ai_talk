@@ -3,7 +3,8 @@
 
 业务说明：
 供兄弟仓 Go Hub 调用，对 Chroma feeding_type_cues 做列表、批量写入、
-整理重复、删除。payload 须为 {target_type, op, history_mode}。
+整理重复、删除。payload 须为 {target_type, op, history_mode,
+predict_channel, time_answer}（predict 时两维必填）。
 不写 MySQL；鉴权依赖内网调用。
 """
 
@@ -28,7 +29,7 @@ class TypeCacheBulkItem(BaseModel):
     document: str = Field(..., description="类型关键字原文")
     payload: Dict[str, Any] = Field(
         default_factory=dict,
-        description="须含 target_type；可选 op、history_mode",
+        description="须含 target_type；可选 op、history_mode、predict_channel、time_answer",
     )
 
 
