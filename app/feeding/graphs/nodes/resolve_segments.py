@@ -4,7 +4,7 @@
 业务说明：
 单事件跳过分句与满血 classify；复合句仅分句 LLM，再逐段多维。
 段序：TYPE(可小LLM) → EVENT(词典→extra_names→向量→Go→小LLM)
-→ 明细备注 LLM → SHAPE → QTY(可小LLM) → TIME(可小LLM)。
+→ 明细备注 LLM → SHAPE(结束线索/可小LLM) → QTY(可小LLM) → TIME(可小LLM)。
 失败引导重说，禁止回退满血 classify。
 """
 

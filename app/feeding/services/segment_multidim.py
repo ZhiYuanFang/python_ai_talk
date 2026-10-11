@@ -3,9 +3,9 @@
 
 业务说明：
 顺序 TYPE → EVENT → REMARK(明细) → SHAPE → QTY → TIME。
-单事件跳过分句与满血 classify；维级小 LLM（TYPE/EVENT/TIME/QTY）与明细备注 LLM 可按需。
+单事件跳过分句与满血 classify；维级小 LLM（TYPE/EVENT/SHAPE/TIME/QTY）与明细备注 LLM 可按需。
 事件维阶梯：词典名 → extra_names → 向量 0.72 → Go 备注反查 → 事件小 LLM。
-禁止专名常识升格；兜底写 rule_gap(llm_used=True)。
+SHAPE：结束口语规则优先，计时暧昧时小 LLM；禁止专名常识升格；兜底写 rule_gap(llm_used=True)。
 """
 
 from __future__ import annotations
@@ -31,8 +31,11 @@ from app.feeding.services.segment_dim_llm import (
     has_quantity_clue,
     llm_resolve_event,
     llm_resolve_quantity,
+    llm_resolve_shape,
     llm_resolve_time,
     llm_resolve_type,
+    matches_end_cue,
+    needs_shape_llm,
 )
 from app.feeding.services.segment_remark import (
     extract_detail_remark_llm,
@@ -51,12 +54,12 @@ logger = logging.getLogger(__name__)
 
 _DELETE_RE = re.compile(r"删除|删掉|去掉|取消记录")
 _UPDATE_RE = re.compile(r"改成|修改|更正|改一下")
-_END_RE = re.compile(r"结束|停了|停掉|喂完了|吃完了")
 _EXIT_RE = re.compile(r"^退出$|^拜拜$|^结束对话$")
 _SUGGEST_RE = re.compile(r"够不够|正常吗|怎么办|最近怎么样")
 _TEMPORAL_HINT = re.compile(
     r"昨天|昨日|前天|今天|今日|昨晚|刚才|刚才|半小时|分钟前|点|时"
 )
+# 「睡」在结束线索（睡醒）之后再作喂养 create 线索，避免「睡醒了」变开表
 _TYPE_FEEDING_CLUE = ("记录", "吃", "喝", "睡", "尿", "便", "尿布", "奶", "洗")
 
 # 短拼问最大段数（确认策略 C）
@@ -122,7 +125,8 @@ async def resolve_type(
         return TargetType.FEEDING.value, IntentOp.DELETE.value, ""
     if _UPDATE_RE.search(text):
         return TargetType.FEEDING.value, IntentOp.UPDATE.value, ""
-    if _END_RE.search(text):
+    # 结束口语（含睡醒/醒了）须优先于「睡」喂养线索
+    if matches_end_cue(text):
         return TargetType.FEEDING.value, "end", ""
     # 有喂养口语线索：默认 create，不调 LLM
     if st or any(k in text for k in _TYPE_FEEDING_CLUE):
@@ -440,9 +444,41 @@ async def resolve_segment(
         except Exception as exc:
             logger.warning("明细备注 LLM 失败: %s", exc)
 
+    # SHAPE：结束线索再保险 → 规则推导 →（time 暧昧）小 LLM
+    if matches_end_cue(draft.text) and op != IntentOp.DELETE.value:
+        op = "end"
+        draft.op = "end"
     action, et = resolve_shape(op, ev)
     draft.action = action
     draft.event_type = et
+    if et == "time" and op == "end":
+        # 明确结束：不调 LLM
+        draft.action = IntentAction.END.value
+    elif needs_shape_llm(draft.text, op, et):
+        try:
+            sop, saction, summary = await llm_resolve_shape(
+                draft.text,
+                event_name=draft.event_name,
+                event_type=et,
+                rule_op=op,
+                rule_action=action,
+                llm_model=model,
+            )
+        except Exception as exc:
+            logger.warning("SHAPE 小 LLM 失败: %s", exc)
+            sop, saction, summary = op, action, str(exc)[:200]
+        rule_gap_store.record(
+            dimension="shape",
+            segment_text=draft.text,
+            utterance=utterance,
+            reason="shape_timer_llm",
+            llm_used=True,
+            llm_result=summary,
+            device_no=device_no,
+        )
+        draft.op = sop
+        op = sop
+        draft.action = saction
 
     # QTY：规则 →（有线索抽空）小 LLM → number 无线索则追问
     qty = extract_quantity_from_text(draft.text)

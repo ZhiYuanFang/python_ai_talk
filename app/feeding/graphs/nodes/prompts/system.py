@@ -167,6 +167,27 @@ JSON 格式：
 """
 
 
+# 段 SHAPE 维小 LLM（计时叶开/关/补记暧昧时）
+SEGMENT_SHAPE_LLM_PROMPT = """你是母婴喂养计时形态助手。
+已知段原文与已定计时事件，裁定开表、结束或补记闭合。
+只输出 JSON，不要 markdown。
+
+硬性约束：
+1. 只允许三组：create+start（开始计时）、end+end（结束进行中）、create+one（补记已发生的一段时长）
+2. 「睡着了/睡觉了/开始睡/入睡」→ create + start
+3. 「睡醒了/醒了/起床/结束睡眠/睡完」→ end + end
+4. 有明确起止时长或双钟点补记 → create + one
+5. 禁止修改事件名或编造其它 op/action
+6. 内部思考（reasoning）须使用中文
+
+JSON 格式：
+{
+  "op": "create",
+  "action": "start"
+}
+"""
+
+
 # 段级明细备注抽取（事件已定后；可空）
 SEGMENT_REMARK_EXTRACT_SYSTEM_PROMPT = """你是母婴喂养备注抽取助手。
 已知该段已定字典事件名，从用户段原文中抽出应写入历史记录的**明细备注**。
