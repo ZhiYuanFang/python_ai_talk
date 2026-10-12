@@ -37,11 +37,12 @@ def _shanghai_tz() -> ZoneInfo:
     """延迟加载时区，避免无 tzdata 的环境在 import 期崩掉。"""
     return ZoneInfo("Asia/Shanghai")
 
-# 数量线索（有线索才调 QTY LLM；无则 number 叶走追问）
+# 数量线索（有真线索才调 QTY LLM；禁止裸「一」等中文数词假阳性）
+# 须：阿拉伯数字+单位/食物词，或「吃了/喝了/喂了」后的量，或中文数词+毫升/ml
 _QTY_CLUE_RE = re.compile(
     r"(?:\d+\s*(?:毫升|ml|ML|ｍｌ))"
-    r"|(?:吃了|喝了|喂了)\s*\d+"
-    r"|(?:[一二两三四五六七八九十百]+)\s*(?:毫升|ml)?"
+    r"|(?:吃了|喝了|喂了)(?:差不多|大概|约|了)?\s*(?:\d+|[一二两三四五六七八九十百]+)"
+    r"|(?:[一二两三四五六七八九十百]+)\s*(?:毫升|ml|ML|ｍｌ)"
     r"|(?:\d+\s*(?:配方|母乳|奶粉|辅食|水))"
 )
 
@@ -278,13 +279,20 @@ async def llm_resolve_event(
 async def llm_resolve_time(
     segment: str,
     llm_model: Dict[str, Any],
-) -> Tuple[Optional[int], Optional[int], str]:
+) -> Tuple[Optional[int], Optional[int], Optional[Dict[str, Any]], str]:
     """
-    TIME 小 LLM。
+    TIME 小 LLM：主出相对配方，可附带当次 Unix。
 
     Returns:
-        (start_time, end_time, summary)；未解析则 (None, None, summary)
+        (start_time, end_time, formula_or_none, summary)
+        未解析则 (None, None, None, summary)。
+        合法配方供调用方回写飞轮；仅有 Unix 时 formula 为 None。
     """
+    from app.feeding.services.time_formula import (
+        materialize_time_formula,
+        validate_time_formula,
+    )
+
     now = datetime.now(tz=_shanghai_tz())
     cfg = llm_model_config_from_mapping(llm_model or {})
     user = (
@@ -298,23 +306,58 @@ async def llm_resolve_time(
         node_name="segment_time_llm",
     )
     data = _parse_json_obj(content or "")
-    resolved = data.get("resolved")
-    if resolved is False:
-        return None, None, json.dumps(data, ensure_ascii=False)
-    try:
-        st = int(data.get("start_time") or 0)
-        et = int(data.get("end_time") or 0)
-    except (TypeError, ValueError):
-        return None, None, json.dumps(data, ensure_ascii=False)
-    if st <= 0 and et <= 0:
-        return None, None, json.dumps(data, ensure_ascii=False)
-    if et <= 0:
+    if not isinstance(data, dict):
+        data = {}
+    if data.get("resolved") is False:
+        return None, None, None, json.dumps(data, ensure_ascii=False)
+
+    formula = validate_time_formula(data.get("formula"))
+    # 物化成功才允许回写该配方（避免不可物化毒缓存）
+    writeable_formula: Optional[Dict[str, Any]] = None
+    st: Optional[int] = None
+    et: Optional[int] = None
+    if formula is not None:
+        matured = materialize_time_formula(formula, now=now)
+        if matured is not None:
+            st, et = matured[0], matured[1]
+            writeable_formula = formula
+
+    if st is None or st <= 0:
+        try:
+            st_raw = int(data.get("start_time") or 0)
+            et_raw = int(data.get("end_time") or 0)
+        except (TypeError, ValueError):
+            st_raw, et_raw = 0, 0
+        if st_raw > 0:
+            st = st_raw
+            et = et_raw if et_raw > 0 else st_raw
+            # 仅 Unix：不得把未物化成功的 formula 当作可写
+
+    if st is None or st <= 0:
+        return (
+            None,
+            None,
+            None,
+            json.dumps(
+                {"resolved": False, "formula": formula, "raw": data},
+                ensure_ascii=False,
+            ),
+        )
+
+    if writeable_formula and writeable_formula.get("kind") == "open_start":
+        et = 0
+    elif et is None:
         et = st
+
     summary = json.dumps(
-        {"start_time": st, "end_time": et},
+        {
+            "formula": writeable_formula,
+            "start_time": st,
+            "end_time": et,
+        },
         ensure_ascii=False,
     )
-    return st, et, summary
+    return st, et, writeable_formula, summary
 
 
 async def llm_resolve_quantity(

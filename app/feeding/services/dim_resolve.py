@@ -5,7 +5,7 @@
 各飞轮维共用同一判定形状（方法复用，非 chroma 基建复用）：
   ① 可选强规则 → ② 整段飞轮命中跳过 LLM → ③ 维小 LLM
   → ④ 成功则以段整句回写 → ⑤ 失败/缺槽不写飞轮。
-时间维特例：规则 → TIME LLM → rule_gap（无飞轮）。
+时间维：规则（调用方）→ 相对配方飞轮物化 → TIME LLM → 合法配方回写 + rule_gap。
 """
 
 from __future__ import annotations
@@ -21,6 +21,10 @@ from app.feeding.services.locate_cue_store import (
 )
 from app.feeding.services.predict_cue_store import predict_cue_store
 from app.feeding.services.read_source_cue_store import read_source_cue_store
+from app.feeding.services.rule_gap_store import rule_gap_store
+from app.feeding.services.segment_dim_llm import llm_resolve_time
+from app.feeding.services.time_cue_store import time_cue_store
+from app.feeding.services.time_formula import materialize_time_formula
 from app.shared.graphs.stream_llm_collect import stream_llm_collect
 from app.shared.llm_client import llm_model_config_from_mapping
 
@@ -123,6 +127,70 @@ async def resolve_predict_dims(
     if not need_confirm:
         predict_cue_store.add(text, pc, ta)
     return pc, ta, need_confirm
+
+
+async def resolve_time(
+    segment: str,
+    *,
+    utterance: str = "",
+    device_no: str = "",
+    llm_model: Optional[Dict[str, Any]] = None,
+    reason: str = "time_llm",
+    allow_flywheel: bool = True,
+) -> Tuple[Optional[int], Optional[int], str]:
+    """
+    时间维（规则已 miss 后）：飞轮物化 → TIME LLM → 合法配方回写。
+
+    业务说明：
+    调用方须先跑本地规则；本函数不重复规则。
+    allow_flywheel=False 时（如 read 轨）跳过飞轮读写，仍可 LLM + rule_gap。
+
+    Returns:
+        (start_unix, end_unix, source)；source 为 flywheel|llm|none
+        open_start 时 end_unix 可为 0。
+    """
+    text = (segment or "").strip()
+    if not text:
+        return None, None, "none"
+
+    if allow_flywheel:
+        formula = time_cue_store.search_formula(text)
+        if formula is not None:
+            matured = materialize_time_formula(formula)
+            if matured is not None:
+                st, et = matured
+                if st and st > 0:
+                    return st, et, "flywheel"
+
+    try:
+        st, et, formula, summary = await llm_resolve_time(text, llm_model or {})
+    except Exception as exc:
+        logger.warning("TIME 小 LLM 失败: %s", exc)
+        rule_gap_store.record(
+            dimension="time",
+            segment_text=text,
+            utterance=utterance or text,
+            reason=f"{reason}_llm_fail",
+            llm_used=True,
+            llm_result=str(exc)[:200],
+            device_no=device_no,
+        )
+        return None, None, "none"
+
+    rule_gap_store.record(
+        dimension="time",
+        segment_text=text,
+        utterance=utterance or text,
+        reason=reason,
+        llm_used=True,
+        llm_result=summary,
+        device_no=device_no,
+    )
+    if st is None or st <= 0:
+        return None, None, "none"
+    if allow_flywheel and formula is not None:
+        time_cue_store.add(text, formula)
+    return st, int(et if et is not None else st), "llm"
 
 
 async def resolve_locate(

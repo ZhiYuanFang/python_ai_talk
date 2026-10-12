@@ -105,8 +105,10 @@ SEGMENT_TYPE_LLM_PROMPT = """你是母婴喂养意图「顶层轨」助手。
 10. 语义纠偏：
    - 睡着了/吃了120 → create
    - 睡醒了/醒了（结束计时）→ update + op=end
-   - 睡了多久了/上次/几次 → read + read_source=record
+   - 睡了多久了/上次/上一次/几次 → read + read_source=record
+   - 下一次喂养是什么时候/下次什么时候喂/下一次还有多久 → read + read_source=predict + predict_channel=next + time_answer=clock 或 remain
    - 还有多久醒来/还有多久睡觉/几点醒 → read + read_source=predict + 对应两维
+   - 禁止仅因「什么时候」判为 record；「下一次/下次」问预期归 predict，「上一次/上次」归 record
    - 改成150/删除刚才那条 → update / delete
    - 退出 → exit；非喂养闲聊/无关 → other（不要 conversation）
 11. 不要输出 events、时间、数量
@@ -175,21 +177,35 @@ JSON 格式：
 """
 
 
-# 段 TIME 维小 LLM（半命中或有时间词无可用 unix）
+# 段 TIME 维小 LLM（半命中或有时间词无可用规则结果）
+# 主出相对配方供飞轮跨天复用；可附带当次物化 unix
 SEGMENT_TIME_LLM_PROMPT = """你是母婴喂养时间解析助手。
-根据用户段原文与当前参考时间，解析应落库的 Unix 秒（Asia/Shanghai）。
+根据用户段原文与当前参考时间，解析**相对时间配方**（供跨天复用），并可附带当次 Unix。
 只输出 JSON，不要 markdown。
 
 硬性约束：
-1. 能解析则填 start_time / end_time（整数 Unix 秒）；瞬时记录可 end_time=start_time
-2. 无法可靠解析则 resolved=false，时间为 0
-3. 禁止忽略「昨晚/昨天」等日段而把钟点落在错误日期
-4. 不要输出事件名或数量
-5. 内部思考（reasoning）须使用中文
+1. 能解析则 resolved=true，并填写 formula（相对配方，必须）
+2. formula.kind 只能是：instant|interval|duration_to_now|open_start
+3. formula.points[].day 只能是：today|yesterday|day_before
+4. formula.points[].period 可为 null 或 morning|noon|afternoon|evening|night
+5. formula.points[].hour 为 0-23（可与 period 同给）；minute 为 0-59
+6. instant：1 个 point；interval：2 个 point；open_start：1 个 point（开表，无结束）；duration_to_now：填 duration_minutes（正整数），points 可空
+7. 可附带 start_time/end_time（当次 Asia/Shanghai Unix 秒）便于落库，但飞轮只认 formula
+8. 无法可靠解析则 resolved=false，formula 为 null
+9. 禁止忽略「昨晚/昨天」等日段；「昨晚八点」→ day=yesterday + period=evening 或 hour=20
+10. 不要输出事件名或数量
+11. 内部思考（reasoning）须使用中文
 
 JSON 格式：
 {
   "resolved": true,
+  "formula": {
+    "kind": "instant",
+    "points": [
+      {"day": "yesterday", "period": "evening", "hour": 20, "minute": 0}
+    ],
+    "duration_minutes": null
+  },
   "start_time": 0,
   "end_time": 0
 }

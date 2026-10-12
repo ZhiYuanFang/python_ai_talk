@@ -5,8 +5,9 @@
 顺序 OP(轨) → EVENT → REMARK(明细) → QTY → TIME（SHAPE 并入 OP）。
 OP：整段飞轮 → 小 LLM；短关键词 TYPE 飞轮已停用热路径。
 事件维阶梯：词典名 → extra_names → 向量 0.72 → Go 备注反查 → 事件小 LLM。
-TIME：规则优先，miss→LLM→rule_gap（无时间飞轮）。
-QTY：规则可先，miss→LLM→数量飞轮。
+TIME：规则优先 → 相对配方飞轮物化 → TIME LLM → 合法配方回写（仍写 rule_gap）。
+QTY：本地规则 → 整段飞轮 →（真线索）小 LLM → 回写。
+REMARK：别名已有可跳过；否则飞轮 → 明细 LLM → 回写（read 轨整维跳过）。
 """
 
 from __future__ import annotations
@@ -30,17 +31,18 @@ from app.feeding.services.intent_cache_store import (
 from app.feeding.services.dim_resolve import (
     resolve_predict_dims,
     resolve_read_source,
+    resolve_time,
 )
 from app.feeding.services.op_cue_store import op_cue_store
 from app.feeding.services.predict_cue_store import predict_cue_store
 from app.feeding.services.qty_cue_store import qty_cue_store
 from app.feeding.services.read_source_cue_store import read_source_cue_store
+from app.feeding.services.remark_cue_store import remark_cue_store
 from app.feeding.services.rule_gap_store import rule_gap_store
 from app.feeding.services.segment_dim_llm import (
     has_quantity_clue,
     llm_resolve_event,
     llm_resolve_quantity,
-    llm_resolve_time,
     llm_resolve_type,
 )
 from app.feeding.services.segment_outcome import (
@@ -142,11 +144,13 @@ async def resolve_type(
     llm_model: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, str, str, str, bool, List[str], str]:
     """
-    OP 轨：强规则 → 整段 OP 飞轮 →（read 时）R·source 飞轮 → OP 小 LLM。
+    OP 轨：显式 CUD/exit 规则 → 整段 OP 飞轮 →（read 时）R·source → OP 小 LLM。
 
     业务说明：
     短关键词 TYPE 飞轮已停用；document=整段。
-    read 由 read_source 区分 record|predict；不以「多久」本地门闩压 predict。
+    record|predict 仅由 source/predict 飞轮或 OP LLM 判定；
+    禁止用查史词表（如「什么时候」）强制 read+record。
+    infer_expected_history_mode 仅在 read_source 已为 record 后填 history_mode。
 
     Returns:
         (target_type, op, history_mode, predict_channel, time_answer,
@@ -154,14 +158,12 @@ async def resolve_type(
     """
     st_raw = (sentence_target_type or "").strip().lower()
     st = normalize_target_rail(st_raw) if st_raw else ""
-    # 句级若仍标旧 predict/history，保留子维线索
-    st_legacy = st_raw
     text = segment or utterance or ""
     if st == TargetType.EXIT.value or _EXIT_RE.search((text or "").strip()):
         return TargetType.EXIT.value, "", "", "", "", False, [], ""
     if _OTHER_HINT_RE.search(text) and st in ("", TargetType.OTHER.value):
         return TargetType.OTHER.value, "", "", "", "", False, [], ""
-    # 显式改删强线索
+    # 显式改删强线索（保留有效本地规则）
     if _DELETE_RE.search(text):
         return TargetType.DELETE.value, IntentOp.DELETE.value, "", "", "", False, [], ""
     if _UPDATE_RE.search(text) and not _END_HINT_RE.search(text):
@@ -172,7 +174,6 @@ async def resolve_type(
             return TargetType.UPDATE.value, "end", "", "", "", False, [], ""
 
     # OP 整段飞轮（仅轨；read 子维走 resolve_read_source / predict）
-    skip_history_clue = False
     hit_rail = op_cue_store.search_op_rail(text)
     if hit_rail:
         tt = hit_rail
@@ -193,6 +194,7 @@ async def resolve_type(
                     "predict",
                 )
             if rs_hit == "record":
+                # record 已定：仅用 infer 填 history_mode，不改写 source
                 hm = infer_expected_history_mode(text) or "point"
                 return (
                     TargetType.READ.value,
@@ -204,22 +206,7 @@ async def resolve_type(
                     [],
                     "record",
                 )
-            if st_legacy == TargetType.HISTORY.value or infer_expected_history_mode(
-                text
-            ):
-                hm = infer_expected_history_mode(text) or "point"
-                return (
-                    TargetType.READ.value,
-                    IntentOp.READ.value,
-                    hm,
-                    "",
-                    "",
-                    False,
-                    [],
-                    "record",
-                )
-            # 否则走 LLM 补 read_source / 预测两维
-            skip_history_clue = True
+            # source 未命中：走 OP 小 LLM 补 read_source / 预测两维
         elif tt == TargetType.CREATE.value:
             return tt, IntentOp.CREATE.value, "", "", "", False, [], ""
         elif tt == TargetType.UPDATE.value:
@@ -230,31 +217,15 @@ async def resolve_type(
         elif tt in (TargetType.EXIT.value, TargetType.OTHER.value):
             return tt, "", "", "", "", False, [], ""
 
-    # 查史强线索（上一次/几次等）→ read+record；不用「多久」压 predict
-    if not skip_history_clue and (
-        st_legacy == TargetType.HISTORY.value
-        or (not st_legacy and infer_expected_history_mode(text))
-    ):
-        mode = infer_expected_history_mode(text) or "point"
-        if st_legacy == TargetType.HISTORY.value and not infer_expected_history_mode(text):
-            mode = infer_expected_history_mode(utterance) or "daily"
-        return (
-            TargetType.READ.value,
-            IntentOp.READ.value,
-            mode,
-            "",
-            "",
-            False,
-            [],
-            "record",
-        )
-
     # 冷路径：OP 小 LLM；成功后拆写 OP / source / predict 各层
     try:
         tt, op, hm, pc, ta, need_confirm, keywords, summary, rs = await llm_resolve_type(
             text, llm_model or {}
         )
         logger.info("OP LLM: %s", summary[:200])
+        # record 已定：优先用查史词表填 history_mode（不改写 source）
+        if tt == TargetType.READ.value and rs == "record":
+            hm = infer_expected_history_mode(text) or hm or "point"
         if not need_confirm and tt:
             doc = text.strip()
             op_cue_store.add(doc, tt)
@@ -429,44 +400,33 @@ def resolve_shape(
     return IntentAction.ONE.value, et
 
 
-async def _apply_time_llm(
+async def _apply_time_resolve(
     draft: SegmentDraft,
     *,
     utterance: str,
     device_no: str,
     llm_model: Dict[str, Any],
     reason: str,
+    allow_flywheel: bool,
 ) -> None:
-    """弃权残缺规则时间后调 TIME 小 LLM。"""
+    """规则 miss 后：时间飞轮物化 → TIME LLM → 合法配方回写。"""
     draft.start_time = 0
     draft.end_time = 0
-    try:
-        st, et, summary = await llm_resolve_time(draft.text, llm_model)
-    except Exception as exc:
-        logger.warning("TIME 小 LLM 失败: %s", exc)
-        rule_gap_store.record(
-            dimension="time",
-            segment_text=draft.text,
-            utterance=utterance,
-            reason=f"{reason}_llm_fail",
-            llm_used=True,
-            llm_result=str(exc)[:200],
-            device_no=device_no,
-        )
-        return
-    rule_gap_store.record(
-        dimension="time",
-        segment_text=draft.text,
+    st, et, _src = await resolve_time(
+        draft.text,
         utterance=utterance,
-        reason=reason,
-        llm_used=True,
-        llm_result=summary,
         device_no=device_no,
+        llm_model=llm_model,
+        reason=reason,
+        allow_flywheel=allow_flywheel,
     )
     if st is not None and st > 0:
         draft.start_time = st
-        draft.end_time = int(et or st)
-        if draft.event_type == "time" and draft.end_time > draft.start_time:
+        draft.end_time = int(et if et is not None else st)
+        if (
+            draft.event_type == "time"
+            and draft.end_time > draft.start_time
+        ):
             draft.action = IntentAction.ONE.value
 
 
@@ -484,7 +444,7 @@ async def resolve_segment(
     """
     对单段跑完整多维。
 
-    顺序：OP(飞轮/LLM) → EVENT(…→Go→LLM) → 明细备注 LLM → QTY → TIME。
+    顺序：OP → EVENT → REMARK（read 跳过）→ QTY（read 跳过）→ TIME。
     """
     model = llm_model or {}
     draft = SegmentDraft(text=(segment or "").strip())
@@ -555,17 +515,32 @@ async def resolve_segment(
     draft.match_confidence = score
     draft.remark = remark or ""
 
-    # 明细备注 LLM（事件已定后）；与别名/反查 remark 合并
-    if extract_detail_remark and draft.event_id:
-        try:
-            llm_r = await extract_detail_remark_llm(
-                draft.text,
-                draft.event_name,
-                model,
-            )
-            draft.remark = merge_remarks(draft.remark, llm_r)
-        except Exception as exc:
-            logger.warning("明细备注 LLM 失败: %s", exc)
+    # 备注维：read 整维跳过；否则 别名已有 → 飞轮 → 明细 LLM → 回写
+    is_read_rail = tt == TargetType.READ.value
+    if (
+        extract_detail_remark
+        and draft.event_id
+        and not is_read_rail
+    ):
+        if (draft.remark or "").strip():
+            # 别名/反查已有备注：跳过 LLM，不强制写飞轮
+            pass
+        else:
+            fw_hit = remark_cue_store.search_remark(draft.text)
+            if fw_hit is not None:
+                draft.remark = merge_remarks(draft.remark, fw_hit[0])
+            else:
+                try:
+                    llm_r = await extract_detail_remark_llm(
+                        draft.text,
+                        draft.event_name,
+                        model,
+                    )
+                    draft.remark = merge_remarks(draft.remark, llm_r)
+                    # 成功调用后整段回写（含空串，表示已确认无明细）
+                    remark_cue_store.add(draft.text, draft.remark or "")
+                except Exception as exc:
+                    logger.warning("明细备注 LLM 失败: %s", exc)
 
     # R·predict：事件已定即可，跳过形态/量/时间
     if _is_read_predict(tt, draft.read_source):
@@ -589,35 +564,38 @@ async def resolve_segment(
         # 时间槽在 TIME 段填充后再二次检查；此处先占位
         pass
 
-    # QTY：飞轮 → 规则 →（有线索）小 LLM → 回写飞轮；number 无线索则追问
-    qty = qty_cue_store.search_quantity(draft.text)
-    if qty is None:
-        qty = extract_quantity_from_text(draft.text)
-    if qty is None and utterance and draft.text in utterance:
-        qty = extract_quantity_from_text(utterance)
+    # QTY：read 跳过；否则 规则 → 飞轮 →（真线索）小 LLM → 回写
+    qty: Optional[int] = None
     qty_from_llm = False
-    if qty is None and has_quantity_clue(draft.text):
-        try:
-            qty_llm, summary = await llm_resolve_quantity(draft.text, model)
-        except Exception as exc:
-            logger.warning("QTY 小 LLM 失败: %s", exc)
-            qty_llm, summary = None, str(exc)[:200]
-        rule_gap_store.record(
-            dimension="quantity",
-            segment_text=draft.text,
-            utterance=utterance,
-            reason="quantity_clue_llm",
-            llm_used=True,
-            llm_result=summary,
-            device_no=device_no,
-        )
-        qty = qty_llm
-        qty_from_llm = qty is not None
+    if not is_read_rail:
+        qty = extract_quantity_from_text(draft.text)
+        if qty is None and utterance and draft.text in utterance:
+            qty = extract_quantity_from_text(utterance)
+        if qty is None:
+            qty = qty_cue_store.search_quantity(draft.text)
+        if qty is None and has_quantity_clue(draft.text):
+            try:
+                qty_llm, summary = await llm_resolve_quantity(draft.text, model)
+            except Exception as exc:
+                logger.warning("QTY 小 LLM 失败: %s", exc)
+                qty_llm, summary = None, str(exc)[:200]
+            rule_gap_store.record(
+                dimension="quantity",
+                segment_text=draft.text,
+                utterance=utterance,
+                reason="quantity_clue_llm",
+                llm_used=True,
+                llm_result=summary,
+                device_no=device_no,
+            )
+            qty = qty_llm
+            qty_from_llm = qty is not None
+        if qty_from_llm and qty is not None:
+            qty_cue_store.add(draft.text, int(qty))
     draft.quantity = qty
-    if qty_from_llm and qty is not None:
-        qty_cue_store.add(draft.text, int(qty))
     if (
-        tt in (TargetType.CREATE.value, TargetType.UPDATE.value)
+        not is_read_rail
+        and tt in (TargetType.CREATE.value, TargetType.UPDATE.value)
         and op in (IntentOp.CREATE.value, IntentOp.UPDATE.value, "end", "")
         and et == "number"
         and draft.event_kind == "leaf"
@@ -626,26 +604,28 @@ async def resolve_segment(
         # 无量线索：缺量追问；不写数量飞轮
         draft.missing_quantity = True
 
-    # TIME（无飞轮）
+    # TIME：规则 →（非 read）相对配方飞轮 → LLM；read 不读写时间飞轮
     if _is_read_record(tt, draft.read_source) or op == IntentOp.READ.value:
         if hm == "point":
             draft.ignore_time_range = True
         clocks = extract_clocks_from_text(draft.text)
         if clocks and has_unconsumed_temporal_residual(draft.text, clocks):
-            await _apply_time_llm(
+            await _apply_time_resolve(
                 draft,
                 utterance=utterance,
                 device_no=device_no,
                 llm_model=model,
                 reason="time_partial_llm",
+                allow_flywheel=False,
             )
         elif _TEMPORAL_HINT.search(draft.text) and not clocks and hm != "point":
-            await _apply_time_llm(
+            await _apply_time_resolve(
                 draft,
                 utterance=utterance,
                 device_no=device_no,
                 llm_model=model,
                 reason="time_hint_no_clock_llm",
+                allow_flywheel=False,
             )
     else:
         ev_body = {
@@ -659,12 +639,13 @@ async def resolve_segment(
         }
         clocks = extract_clocks_from_text(draft.text)
         if clocks and has_unconsumed_temporal_residual(draft.text, clocks):
-            await _apply_time_llm(
+            await _apply_time_resolve(
                 draft,
                 utterance=utterance,
                 device_no=device_no,
                 llm_model=model,
                 reason="time_partial_llm",
+                allow_flywheel=not is_read_rail,
             )
         else:
             new_evs, changed = apply_time_slots_to_events(draft.text, [ev_body])
@@ -676,12 +657,13 @@ async def resolve_segment(
                 if draft.event_type == "time" and draft.end_time > draft.start_time > 0:
                     draft.action = IntentAction.ONE.value
             elif _TEMPORAL_HINT.search(draft.text) and not clocks:
-                await _apply_time_llm(
+                await _apply_time_resolve(
                     draft,
                     utterance=utterance,
                     device_no=device_no,
                     llm_model=model,
                     reason="time_hint_no_clock_llm",
+                    allow_flywheel=not is_read_rail,
                 )
 
     # create + time：仍无闭合起止则缺槽追问
