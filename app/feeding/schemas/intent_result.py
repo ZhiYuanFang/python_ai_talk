@@ -51,7 +51,8 @@ class IntentResult(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    target_type: str = "conversation"
+    # 权威六轨 create|read|update|delete|exit|other（遗留值经 normalize）
+    target_type: str = "other"
     event_name: str = ""
     event_id: str = ""
     event_ids: List[str] = Field(default_factory=list)
@@ -69,7 +70,9 @@ class IntentResult(BaseModel):
     time_range: Optional[str] = None
     limit: Optional[int] = None
     history_mode: Optional[str] = None
-    # 预测问答分维：仅 target_type=predict 时有效（active|next / clock|remain）
+    # R 子维：仅 target_type=read 时 record|predict
+    read_source: Optional[str] = None
+    # 预测问答分维：仅 read+predict（或遗留 predict）时有效
     predict_channel: Optional[str] = None
     time_answer: Optional[str] = None
     match_source: Optional[str] = None

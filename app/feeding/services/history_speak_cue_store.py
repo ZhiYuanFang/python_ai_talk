@@ -1,10 +1,10 @@
 """
-查史播报策略关键字向量库
+查史播报策略整段飞轮
 
 业务说明：
-独立 Collection feeding_history_speak_cues，document 为短关键字，
+独立 Collection feeding_history_speak_cues，document MUST 为段整句原文（硬切），
 payload 含 point_pick / open_speak。
-供 history 点查飞轮命中跳过小 LLM；与类型/事件飞轮隔离。
+短关键词主命中/主回写已停用；过短 document 热路径拒绝。
 管理端 bulk 同 document 跳过。
 """
 
@@ -31,8 +31,10 @@ from app.feeding.services.intent_cache_store import (
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "feeding_history_speak_cues"
-# 与 TYPE 热路径同严，减轻短线索误命中
+# 与 OP 整段同严
 HISTORY_SPEAK_CUE_THRESHOLD = 0.9
+# 短于该长度视为旧短词残留，热路径拒绝
+MIN_FULL_UTTERANCE_LEN = 4
 
 POINT_PICK_VALUES = frozenset({"latest", "prefer_completed"})
 OPEN_SPEAK_VALUES = frozenset({"elapsed", "in_progress"})
@@ -83,10 +85,10 @@ class HistorySpeakCueStore:
             )
             self._collection = self._chroma_client.get_or_create_collection(
                 name=COLLECTION_NAME,
-                metadata={"description": "查史播报策略关键字飞轮"},
+                metadata={"description": "查史播报策略整段飞轮"},
             )
             self._initialized = True
-            logger.info("查史播报策略向量库初始化完成")
+            logger.info("查史播报策略整段飞轮初始化完成")
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
         return self._embedding_model.encode(texts).tolist()
@@ -158,16 +160,23 @@ class HistorySpeakCueStore:
         self, query: str
     ) -> Optional[Tuple[str, str]]:
         """
-        热路径：命中且分数达标、两维合法则返回策略。
+        热路径：整段命中且分数达标、两维合法则返回策略。
 
-        Returns:
-            (point_pick, open_speak) 或 None
+        硬切：过短 document 拒绝；非全文相等须更高分。
         """
         hits = self.search(query, n_results=1)
         if not hits:
             return None
         top = hits[0]
-        if float(top.get("score") or 0) < HISTORY_SPEAK_CUE_THRESHOLD:
+        score = float(top.get("score") or 0)
+        if score < HISTORY_SPEAK_CUE_THRESHOLD:
+            return None
+        doc = self._document_key(str(top.get("document") or ""))
+        q = self._document_key(query)
+        if len(doc) < MIN_FULL_UTTERANCE_LEN:
+            logger.info("查史播报拒绝短词 document: %s", doc)
+            return None
+        if doc != q and score < 0.95:
             return None
         clean = as_history_speak_payload(top.get("payload") or {})
         if not clean:
@@ -175,15 +184,18 @@ class HistorySpeakCueStore:
         return clean["point_pick"], clean["open_speak"]
 
     def add(self, document: str, payload: Dict[str, Any]) -> Optional[str]:
-        """写入或更新一条策略关键字。"""
+        """写入或更新一条整段策略。"""
         self._ensure_initialized()
         doc = (document or "").strip()
         if not doc or _is_confirm_only(doc):
-            logger.info("跳过查史播报关键字写入：空句或确认词")
+            logger.info("跳过查史播报写入：空句或确认词")
+            return None
+        if len(doc) < MIN_FULL_UTTERANCE_LEN:
+            logger.info("跳过查史播报写入：过短非整段 doc=%s", doc)
             return None
         clean = as_history_speak_payload(payload)
         if not clean:
-            logger.info("跳过查史播报关键字写入：非法载荷 doc=%s", doc[:40])
+            logger.info("跳过查史播报写入：非法载荷 doc=%s", doc[:40])
             return None
         embedding = self._embed([doc])[0]
         meta = {
@@ -228,16 +240,37 @@ class HistorySpeakCueStore:
         point_pick: str,
         open_speak: str,
     ) -> int:
-        """按关键字列表写入同一策略 payload。"""
+        """
+        遗留 API：硬切后不再按短关键词写入。
+
+        仅当单条 keyword 自身已达整段长度时才写入（兼容误调）。
+        """
+        logger.info("add_keywords 已停用短词主策略，忽略短线索写入")
         payload = {"point_pick": point_pick, "open_speak": open_speak}
         n = 0
         for kw in keywords or []:
             doc = (kw or "").strip()
-            if not doc:
+            if len(doc) < MIN_FULL_UTTERANCE_LEN:
                 continue
             if self.add(doc, payload):
                 n += 1
         return n
+
+    def clear_short_documents(self, *, max_len: int = MIN_FULL_UTTERANCE_LEN) -> int:
+        """硬切：删除过短旧短词条目。"""
+        self._ensure_initialized()
+        data = self._collection.get(include=["documents"])
+        ids = data.get("ids") or []
+        docs = data.get("documents") or []
+        to_del = [
+            ids[i]
+            for i, d in enumerate(docs)
+            if len(self._document_key(d or "")) < max_len
+        ]
+        if to_del:
+            self._collection.delete(ids=to_del)
+            logger.info("查史播报已清除短词条目: n=%s", len(to_del))
+        return len(to_del)
 
     def list_entries(
         self,

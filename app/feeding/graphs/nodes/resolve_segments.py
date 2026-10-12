@@ -97,7 +97,7 @@ async def resolve_segments(state: Any) -> Dict[str, Any]:
 
     if not text:
         ir = {
-            "target_type": TargetType.CONVERSATION.value,
+            "target_type": TargetType.OTHER.value,
             "events": [],
             "content": "没听清，请再说一遍。",
             "need_confirm": False,
@@ -118,7 +118,7 @@ async def resolve_segments(state: Any) -> Dict[str, Any]:
         if not isinstance(segs, list) or not any(str(s).strip() for s in segs):
             logger.info("分句失败，引导重说")
             ir = {
-                "target_type": TargetType.CONVERSATION.value,
+                "target_type": TargetType.OTHER.value,
                 "events": [],
                 "content": "没听清有几件事，请分开说一下。",
                 "need_confirm": False,
@@ -188,6 +188,7 @@ async def resolve_segments(state: Any) -> Dict[str, Any]:
     # 失败重说 / 闲聊 / 退出：不需确认
     if intent.get("segment_failed") or intent.get("target_type") in (
         TargetType.CONVERSATION.value,
+        TargetType.OTHER.value,
         TargetType.EXIT.value,
     ):
         need_confirm = False

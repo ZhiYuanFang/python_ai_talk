@@ -106,9 +106,13 @@ class IntentResponse(BaseModel):
     """
     target_type: str = Field(
         ...,
-        description="目标类型：feeding, history, predict, suggest, conversation, exit",
+        description="目标类型：create|read|update|delete|exit|other（遗留 feeding/history/predict 仍可读）",
     )
-    # 预测问答分维（仅 predict 有值；与 Go/飞轮载荷对齐）
+    read_source: Optional[str] = Field(
+        default=None,
+        description="R 子维：record|predict；仅 target_type=read 有值",
+    )
+    # 预测问答分维（仅 read+predict / 遗留 predict 有值）
     predict_channel: Optional[str] = Field(
         default=None,
         description="预测通道：active|next；非 predict 为空",

@@ -4,7 +4,7 @@
 业务说明：
 分句/单事件多维拼装 → 确认 END / 批量落库 / 模板查记录 / 预测播报。
 已删除整包意图缓存免确认与满血一次多 events 分类主路径。
-路由按 events[].op 与 target_type（predict 优先于 history 查史）。
+路由按六轨 target_type + read_source（R·predict 优先于 R·record）。
 """
 
 import logging
@@ -21,7 +21,7 @@ from app.feeding.graphs.states.intent_state import IntentState
 from app.feeding.schemas.intent_result import coerce_intent_result
 from app.feeding.services.history_crud import infer_route_kind
 from app.feeding.services.intent_events import normalize_intent_events
-from app.shared.constants import IntentOp, TargetType
+from app.shared.constants import IntentOp, TargetType, normalize_target_rail
 from app.shared.graphs.node_thinking import with_node_thinking
 from app.shared.graphs.state_patch import state_get
 
@@ -32,33 +32,47 @@ State = IntentState
 
 def _route_after_segments(state: Any) -> str:
     """
-    多维拼装后：需确认/重说/闲聊 → END；predict → 预测播报；
-    read → 查史；CUD → 落库。
-
-    业务说明：
-    predict 不得进 speak_history；无阻塞时直执行。
+    多维拼装后：需确认/重说/other/exit → END；
+    read+predict → 预测播报；read+record → 查史；C/U/D → 落库。
     """
     if state_get(state, "need_confirm"):
         return "end"
     intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
     intent = normalize_intent_events(intent)
-    # 引导重说或闲聊：已有 content，直接 END
+    # 引导重说：已有 content，直接 END
     if intent.get("segment_failed"):
         return "end"
     # 缺量：不得直执行（双保险，与 need_confirm 门控一致）
     events = [e for e in (intent.get("events") or []) if isinstance(e, dict)]
     if intent.get("missing_quantity") or any(e.get("missing_quantity") for e in events):
         return "end"
-    target = str(intent.get("target_type") or TargetType.CONVERSATION.value).lower()
-    if target in (TargetType.CONVERSATION.value, TargetType.EXIT.value):
+    target_raw = str(intent.get("target_type") or TargetType.OTHER.value).lower()
+    target = normalize_target_rail(target_raw)
+    read_source = str(intent.get("read_source") or "").strip().lower()
+    # 兼容旧顶层 predict/history
+    if target_raw == TargetType.PREDICT.value:
+        target, read_source = TargetType.READ.value, "predict"
+    elif target_raw == TargetType.HISTORY.value:
+        target, read_source = TargetType.READ.value, "record"
+    if target in (TargetType.OTHER.value, TargetType.EXIT.value):
         return "end"
-    # 预测问答优先于查史「多久」/read 路由
-    if target == TargetType.PREDICT.value:
+    # R·predict 不得进 speak_history
+    if target == TargetType.READ.value and read_source == "predict":
+        return "speak_predict"
+    if target_raw == TargetType.PREDICT.value:
         return "speak_predict"
     kind = infer_route_kind(intent)
-    if kind == IntentOp.READ.value or target == TargetType.HISTORY.value:
+    if (
+        target == TargetType.READ.value
+        or kind == IntentOp.READ.value
+        or target_raw == TargetType.HISTORY.value
+    ):
         return "speak_history"
-    if kind == "cud":
+    if kind == "cud" or target in (
+        TargetType.CREATE.value,
+        TargetType.UPDATE.value,
+        TargetType.DELETE.value,
+    ):
         return "execute_history_crud"
     return "end"
 

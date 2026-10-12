@@ -1,11 +1,10 @@
 """
-类型关键字向量库
+类型关键字向量库（遗留）
 
 业务说明：
-独立 Collection feeding_type_cues，document 为短关键字，
-payload 含 target_type / op / history_mode / predict_channel / time_answer。
-供 TYPE 维飞轮命中跳过 LLM；与 feeding_intents 事件说法隔离。
-管理端 bulk 同 document 跳过；禁止整包 multi-events。
+独立 Collection feeding_type_cues，document 为短关键字。
+主路径已改 OP 整段飞轮（feeding_op_cues），本库热路径已停用；
+仅保留 admin / 迁移读取。新写入请用 op_cue_store。
 """
 
 from __future__ import annotations

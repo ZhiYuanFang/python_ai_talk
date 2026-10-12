@@ -64,7 +64,13 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
     失败/无匹配：估不准中文；MUST NOT 念「上一次…用时」。
     """
     intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
-    if str(intent.get("target_type") or "").lower() != TargetType.PREDICT.value:
+    tt = str(intent.get("target_type") or "").lower()
+    rs = str(intent.get("read_source") or "").lower()
+    # 新轨 read+predict；兼容旧顶层 predict
+    if not (
+        tt == TargetType.PREDICT.value
+        or (tt == TargetType.READ.value and rs == "predict")
+    ):
         return {}
 
     channel = str(intent.get("predict_channel") or "").strip().lower()

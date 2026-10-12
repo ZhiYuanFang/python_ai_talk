@@ -129,14 +129,16 @@ def _format_leaf_table(full_events: List[Dict[str, Any]]) -> str:
 async def llm_resolve_type(
     segment: str,
     llm_model: Dict[str, Any],
-) -> Tuple[str, str, str, str, str, bool, List[str], str]:
+) -> Tuple[str, str, str, str, str, bool, List[str], str, str]:
     """
-    TYPE 小 LLM（含 need_confirm / keywords / 预测两维）。
+    OP 轨小 LLM（六轨 + read_source + 预测两维）。
 
     Returns:
         (target_type, op, history_mode, predict_channel, time_answer,
-         need_confirm, keywords, raw_summary)
+         need_confirm, keywords, raw_summary, read_source)
     """
+    from app.shared.constants import TARGET_TYPE_RAILS, normalize_target_rail
+
     cfg = llm_model_config_from_mapping(llm_model or {})
     content = await stream_llm_collect(
         messages=[
@@ -147,10 +149,23 @@ async def llm_resolve_type(
         ],
         model_config=cfg,
         system_prompt=SEGMENT_TYPE_LLM_PROMPT,
-        node_name="segment_type_llm",
+        node_name="segment_op_llm",
     )
     data = _parse_json_obj(content or "")
-    tt = str(data.get("target_type") or "").strip().lower()
+    tt_raw = str(data.get("target_type") or "").strip().lower()
+    # 兼容模型仍吐旧枚举
+    if tt_raw == "history":
+        tt = "read"
+        rs = "record"
+    elif tt_raw == "predict":
+        tt = "read"
+        rs = "predict"
+    elif tt_raw in ("feeding", "conversation", "suggest"):
+        tt = normalize_target_rail(tt_raw)
+        rs = ""
+    else:
+        tt = tt_raw if tt_raw in TARGET_TYPE_RAILS else ""
+        rs = str(data.get("read_source") or "").strip().lower()
     op = str(data.get("op") or "").strip().lower()
     hm = str(data.get("history_mode") or "").strip().lower()
     pc = str(data.get("predict_channel") or "").strip().lower()
@@ -163,37 +178,47 @@ async def llm_resolve_type(
             s = str(k or "").strip()
             if s and s not in keywords:
                 keywords.append(s)
-    allowed = {"feeding", "history", "predict", "conversation", "exit"}
-    if tt not in allowed:
-        tt = "feeding"
-        op = op or "create"
-        need_confirm = True
-        pc, ta = "", ""
-    if tt == "history":
-        op = "read"
-        if hm not in ("point", "daily"):
-            hm = "point"
-        pc, ta = "", ""
-    elif tt == "predict":
-        # 预测：清空 op/history_mode；两维非法则标需确认并清空（由调用方不写飞轮）
-        op = ""
-        hm = ""
-        if pc not in ("active", "next") or ta not in ("clock", "remain"):
+    if not tt:
+        tt = "other"
+        need_confirm = False
+        op, hm, pc, ta, rs = "", "", "", "", ""
+    if tt == "read":
+        if rs not in ("record", "predict"):
+            # 有预测两维则判 predict，否则 record
+            if pc in ("active", "next") and ta in ("clock", "remain"):
+                rs = "predict"
+            else:
+                rs = "record"
+        if rs == "predict":
+            op = ""
+            hm = ""
+            if pc not in ("active", "next") or ta not in ("clock", "remain"):
+                pc, ta = "", ""
+                need_confirm = True
+        else:
+            op = "read"
+            if hm not in ("point", "daily"):
+                hm = "point"
             pc, ta = "", ""
-            need_confirm = True
-    elif tt in ("conversation", "exit"):
-        op = ""
-        hm = ""
-        pc, ta = "", ""
-    else:
-        if not op:
+    elif tt == "create":
+        if not op or op == "end":
             op = "create"
-        hm = hm if hm in ("point", "daily") else ""
-        pc, ta = "", ""
+        hm, pc, ta, rs = "", "", "", ""
+    elif tt == "update":
+        if op not in ("update", "end"):
+            op = "end" if op == "end" else "update"
+        hm, pc, ta, rs = "", "", "", ""
+    elif tt == "delete":
+        op = "delete"
+        hm, pc, ta, rs = "", "", "", ""
+    else:
+        # exit / other
+        op, hm, pc, ta, rs = "", "", "", "", ""
     summary = json.dumps(
         {
             "target_type": tt,
             "op": op,
+            "read_source": rs,
             "history_mode": hm,
             "predict_channel": pc,
             "time_answer": ta,
@@ -202,7 +227,7 @@ async def llm_resolve_type(
         },
         ensure_ascii=False,
     )
-    return tt, op, hm, pc, ta, need_confirm, keywords, summary
+    return tt, op, hm, pc, ta, need_confirm, keywords, summary, rs
 
 
 async def llm_resolve_event(

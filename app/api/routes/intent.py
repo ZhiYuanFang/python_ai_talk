@@ -139,18 +139,26 @@ def _response_from_final_state(
         intent_result["need_confirm"] = True
         return _build_intent_response(intent_result)
 
-    # 零命中无法识别：conversation 短回复，不进确认
-    if (
-        intent_result.get("target_type") == TargetType.CONVERSATION.value
-        and (intent_result.get("content") or "").startswith("无法识别对应的事件")
-    ):
+    # 零命中无法识别：other 短回复，不进确认
+    tt0 = str(intent_result.get("target_type") or "")
+    if tt0 in (
+        TargetType.CONVERSATION.value,
+        TargetType.OTHER.value,
+    ) and (intent_result.get("content") or "").startswith("无法识别对应的事件"):
         return _build_intent_response(intent_result)
 
-    target_type = intent_result.get("target_type", TargetType.CONVERSATION.value)
+    target_type = intent_result.get("target_type", TargetType.OTHER.value)
+    read_source = str(intent_result.get("read_source") or "").strip().lower()
     need_confirm = bool(st.need_confirm)
     matched_vector_id = st.matched_vector_id or ""
 
-    if target_type == TargetType.FEEDING.value:
+    # C/U/D（含遗留 feeding）走喂养后处理
+    if target_type in (
+        TargetType.FEEDING.value,
+        TargetType.CREATE.value,
+        TargetType.UPDATE.value,
+        TargetType.DELETE.value,
+    ):
         return postprocess_feeding_result(
             ir,
             full_events=full_events,
@@ -161,8 +169,11 @@ def _response_from_final_state(
             matched_vector_id=matched_vector_id,
         )
 
-    # 查记录确认：话术由 Python 点出事件名（叶子或父），父仍是是/否不是选叶子
-    if need_confirm and target_type == TargetType.HISTORY.value:
+    # 查记录确认：R·record（含遗留 history）
+    if need_confirm and (
+        target_type == TargetType.HISTORY.value
+        or (target_type == TargetType.READ.value and read_source != "predict")
+    ):
         return create_history_confirm_response(
             ir,
             full_events=full_events,
@@ -172,8 +183,11 @@ def _response_from_final_state(
             match_source=str(match_source or ""),
         )
 
-    # 预测问答确认：挂 pending，确认后 speak_predict（勿当 feeding/history）
-    if need_confirm and target_type == TargetType.PREDICT.value:
+    # 预测问答确认：R·predict（含遗留 predict）
+    if need_confirm and (
+        target_type == TargetType.PREDICT.value
+        or (target_type == TargetType.READ.value and read_source == "predict")
+    ):
         return create_predict_confirm_response(
             ir,
             full_events=full_events,

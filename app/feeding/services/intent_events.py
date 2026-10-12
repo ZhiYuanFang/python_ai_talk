@@ -200,13 +200,29 @@ def normalize_intent_events(
     # 由子项推断 target_type（若模型漏标）
     ops = event_ops(out)
     target = str(out.get("target_type") or "").strip().lower()
-    if not target or target == TargetType.CONVERSATION.value:
+    if not target or target in (
+        TargetType.CONVERSATION.value,
+        TargetType.OTHER.value,
+    ):
         if ops & {IntentOp.READ.value}:
-            out["target_type"] = TargetType.HISTORY.value
+            out["target_type"] = TargetType.READ.value
+            if not str(out.get("read_source") or "").strip():
+                out["read_source"] = "record"
         elif ops & CUD_OPS:
-            out["target_type"] = TargetType.FEEDING.value
-    elif target == TargetType.HISTORY.value and not (ops & {IntentOp.READ.value}):
-        # history 但子项未标 read：把无 op 的项补成 read
+            # 有 end → update；否则 create
+            if "end" in ops:
+                out["target_type"] = TargetType.UPDATE.value
+            elif IntentOp.DELETE.value in ops:
+                out["target_type"] = TargetType.DELETE.value
+            elif IntentOp.UPDATE.value in ops:
+                out["target_type"] = TargetType.UPDATE.value
+            else:
+                out["target_type"] = TargetType.CREATE.value
+    elif target in (
+        TargetType.HISTORY.value,
+        TargetType.READ.value,
+    ) and not (ops & {IntentOp.READ.value}):
+        # read/history 但子项未标 read：把无 op 的项补成 read
         fixed = []
         for item in out["events"]:
             it = dict(item)
@@ -217,6 +233,21 @@ def normalize_intent_events(
             fixed.append(it)
         if any(i.get("op") == IntentOp.READ.value for i in fixed):
             out["events"] = fixed
+        if target == TargetType.HISTORY.value:
+            out["target_type"] = TargetType.READ.value
+            out.setdefault("read_source", "record")
+    elif target == TargetType.PREDICT.value:
+        out["target_type"] = TargetType.READ.value
+        out["read_source"] = "predict"
+    elif target == TargetType.FEEDING.value:
+        if "end" in ops:
+            out["target_type"] = TargetType.UPDATE.value
+        elif IntentOp.DELETE.value in ops:
+            out["target_type"] = TargetType.DELETE.value
+        elif IntentOp.UPDATE.value in ops:
+            out["target_type"] = TargetType.UPDATE.value
+        else:
+            out["target_type"] = TargetType.CREATE.value
     return out
 
 

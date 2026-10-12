@@ -55,12 +55,35 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
     if slot_changed:
         intent["events"] = new_events
         logger.info("落库前闭合槽位已覆盖: events=%s", len(new_events))
+    # U·end：无进行中计时则转 C（create）；time 无闭合起止则追问
+    intent, end_clarify = await _rewrite_end_without_open(
+        device_no, intent, full_events
+    )
+    if end_clarify:
+        intent["content"] = end_clarify
+        intent["need_confirm"] = True
+        return {
+            "intent_result": IntentResult.model_validate(intent),
+            "response": end_clarify,
+            "need_confirm": True,
+        }
     items, missing = collect_event_items(intent, full_events)
     items = sort_end_items_first(items)
     intent["missing_events"] = missing
 
-    # 仅 update/delete 现查 latest；create/end 保持 id=0
-    items = await _fill_latest_ids_for_mutations(device_no, items)
+    # U/D：定位策略飞轮 → 再按策略现查行；create/end 保持 id=0
+    locate_strategy = "latest"
+    try:
+        from app.feeding.services.dim_resolve import resolve_locate
+
+        locate_strategy, _need_loc = await resolve_locate(
+            text, llm_model=state_get(state, "llm_model") or {}
+        )
+    except Exception as exc:
+        logger.warning("定位策略解析失败，回退 latest: %s", exc)
+    items = await _fill_latest_ids_for_mutations(
+        device_no, items, strategy=locate_strategy
+    )
 
     skip_fails = []
     runnable = []
@@ -144,10 +167,115 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
     return {"intent_result": IntentResult.model_validate(intent), "response": content}
 
 
+async def _rewrite_end_without_open(
+    device_no: str,
+    intent: Dict[str, Any],
+    full_events: list,
+) -> tuple:
+    """
+    U·end 无 open → 转 C。
+
+    Returns:
+        (intent, clarify_message|None)
+    """
+    from app.feeding.graphs.nodes.remark_probe import _is_open_end
+    from app.feeding.services.event_hierarchy import get_event_by_id
+    from app.shared.constants import IntentAction, IntentOp, TargetType
+    from app.shared.history_window import enum_to_unix
+    from app.shared.http_client import http_client
+
+    events = [e for e in (intent.get("events") or []) if isinstance(e, dict)]
+    if not any(str(e.get("op") or "").lower() == "end" for e in events):
+        return intent, None
+    start_time, end_time = enum_to_unix("last_30_days")
+    try:
+        rows = await http_client.get_filtered_history_events(
+            device_no=device_no,
+            event_ids=None,
+            start_time=start_time,
+            end_time=end_time,
+            limit=50,
+        )
+    except Exception as exc:
+        logger.warning("U·end 查进行中失败: %s", exc)
+        rows = []
+    open_by_eid = set()
+    for row in rows or []:
+        if not _is_open_end(row):
+            continue
+        eid = str(row.get("eventId") or row.get("event_id") or "").strip()
+        if eid:
+            open_by_eid.add(eid)
+    rewritten: list = []
+    clarify_parts: list = []
+    for ev in events:
+        item = dict(ev)
+        if str(item.get("op") or "").lower() != "end":
+            rewritten.append(item)
+            continue
+        eid = str(item.get("event_id") or "").strip()
+        if eid and eid in open_by_eid:
+            rewritten.append(item)
+            continue
+        # 无进行中 → 转 C
+        leaf = get_event_by_id(eid, full_events) if eid else None
+        et = str(
+            (leaf or {}).get("event_type")
+            or (leaf or {}).get("type")
+            or item.get("event_type")
+            or "one"
+        ).lower()
+        item["op"] = IntentOp.CREATE.value
+        try:
+            st = int(item.get("start_time") or 0)
+            etm = int(item.get("end_time") or 0)
+        except (TypeError, ValueError):
+            st, etm = 0, 0
+        if et == "time":
+            if st > 0 and etm > st:
+                item["action"] = IntentAction.ONE.value
+            else:
+                name = str(item.get("event_name") or "该计时")
+                clarify_parts.append(f"{name}需要补充开始和结束时间")
+                rewritten.append(item)
+                continue
+        elif et == "number":
+            item["action"] = IntentAction.ONE.value
+            if item.get("quantity") is None:
+                name = str(item.get("event_name") or "该事件")
+                clarify_parts.append(f"{name}需要补充数量")
+        else:
+            item["action"] = IntentAction.ONE.value
+        rewritten.append(item)
+        logger.info("U·end 无进行中，转 C: event_id=%s type=%s", eid, et)
+    out = dict(intent)
+    out["events"] = rewritten
+    out["target_type"] = TargetType.CREATE.value
+    if clarify_parts:
+        return out, "。".join(clarify_parts) + "。"
+    return out, None
+
+
+def _pick_row_by_strategy(rows: list, strategy: str) -> Any:
+    """按定位策略选一行；不含 historyId 持久化。"""
+    from app.feeding.graphs.nodes.remark_probe import _is_open_end
+
+    if not rows:
+        return None
+    st = (strategy or "latest").strip().lower()
+    if st == "open_timer":
+        opens = [r for r in rows if _is_open_end(r)]
+        return opens[0] if opens else None
+    if st == "prefer_completed":
+        completed = [r for r in rows if not _is_open_end(r)]
+        return completed[0] if completed else rows[0]
+    return rows[0]
+
+
 async def _fill_latest_ids_for_mutations(
-    device_no: str, items: list
+    device_no: str, items: list, *, strategy: str = "latest"
 ) -> list:
-    """仅对 update/delete 且无 id 的项，按 eventId 拉最近一条。"""
+    """仅对 update/delete 且无 id 的项，按策略现查选行。"""
     from app.shared.http_client import http_client
 
     filled = []
@@ -168,24 +296,25 @@ async def _fill_latest_ids_for_mutations(
             rows = await http_client.get_filtered_history_events(
                 device_no=device_no,
                 event_ids=[str(eid)],
-                limit=1,
+                limit=10,
             )
         except Exception as exc:
-            logger.warning(f"现查 latest 失败: {exc}")
+            logger.warning(f"现查定位失败: {exc}")
             rows = []
-        if not rows:
+        row = _pick_row_by_strategy(rows or [], strategy)
+        if not row:
             it["id"] = 0
             it["_skip_reason"] = "没有找到可改/删的最近记录"
             filled.append(it)
             continue
-        hid = rows[0].get("id") or rows[0].get("Id")
+        hid = row.get("id") or row.get("Id")
         try:
             it["id"] = int(hid)
         except (TypeError, ValueError):
             it["id"] = 0
         if item_op == IntentOp.UPDATE.value and not it.get("eventNumber"):
             it["eventNumber"] = int(
-                rows[0].get("eventNumber") or rows[0].get("event_number") or 0
+                row.get("eventNumber") or row.get("event_number") or 0
             )
         filled.append(it)
     return filled

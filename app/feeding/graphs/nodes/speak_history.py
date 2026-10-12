@@ -477,7 +477,12 @@ async def speak_history(state: Any) -> Dict[str, Any]:
 
     intent = coerce_intent_result(state_get(state, "intent_result")).to_plain_dict()
     intent = normalize_intent_events(intent)
-    if not has_read_events(intent) and intent.get("target_type") != TargetType.HISTORY.value:
+    tt = str(intent.get("target_type") or "").lower()
+    rs = str(intent.get("read_source") or "").lower()
+    is_record = tt == TargetType.HISTORY.value or (
+        tt == TargetType.READ.value and rs in ("record", "")
+    )
+    if not has_read_events(intent) and not is_record:
         return {}
     device_no = state_get(state, "device_no") or ""
     full_events = (

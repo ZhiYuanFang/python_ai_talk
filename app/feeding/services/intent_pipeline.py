@@ -91,17 +91,24 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
                 )
             )
 
-    # 非 predict 清空预测维，避免脏字段外泄
-    tt = str(fields.get("target_type") or TargetType.CONVERSATION.value).strip().lower()
+    # 非 R·predict 清空预测维，避免脏字段外泄
+    tt = str(fields.get("target_type") or TargetType.OTHER.value).strip().lower()
+    rs = str(fields.get("read_source") or "").strip().lower()
     pc = str(fields.get("predict_channel") or "").strip().lower()
     ta = str(fields.get("time_answer") or "").strip().lower()
-    if tt != TargetType.PREDICT.value:
+    is_predict = tt == TargetType.PREDICT.value or (
+        tt == TargetType.READ.value and rs == "predict"
+    )
+    if not is_predict:
         pc, ta = "", ""
+        if tt != TargetType.READ.value:
+            rs = ""
     elif pc not in ("active", "next") or ta not in ("clock", "remain"):
         pc, ta = "", ""
 
     return IntentResponse(
-        target_type=fields.get("target_type", TargetType.CONVERSATION.value),
+        target_type=fields.get("target_type", TargetType.OTHER.value),
+        read_source=rs or None,
         predict_channel=pc or None,
         time_answer=ta or None,
         event_name=fields.get("event_name", "") or "",
@@ -758,30 +765,26 @@ async def _execute_after_confirm(
     from app.feeding.graphs.nodes.speak_history import speak_history
     from app.feeding.graphs.nodes.speak_predict import speak_predict
     from app.feeding.services.history_crud import infer_route_kind
-    from app.feeding.services.type_cue_store import type_cue_store
-    from app.shared.constants import IntentOp
+    from app.feeding.services.op_cue_store import op_cue_store
+    from app.feeding.services.predict_cue_store import predict_cue_store
+    from app.feeding.services.read_source_cue_store import read_source_cue_store
+    from app.shared.constants import IntentOp, normalize_target_rail
 
-    # TYPE 冷路径确认后：按 keywords 写入类型飞轮（含预测两维）
-    type_kws = [
-        str(k).strip()
-        for k in (fields.get("keywords") or [])
-        if str(k or "").strip()
-    ]
-    if type_kws:
-        op0 = ""
-        for e in fields.get("events") or []:
-            if isinstance(e, dict) and e.get("op"):
-                op0 = str(e.get("op") or "")
-                break
-        tt = str(fields.get("target_type") or "")
-        type_cue_store.add_type_keywords(
-            type_kws,
-            target_type=tt,
-            op=op0 or str(fields.get("op") or ""),
-            history_mode=str(fields.get("history_mode") or ""),
-            predict_channel=str(fields.get("predict_channel") or ""),
-            time_answer=str(fields.get("time_answer") or ""),
-        )
+    # 确认后拆写 OP / R·source / predict 各层（整段）
+    doc = (user_input or "").strip()
+    tt = normalize_target_rail(str(fields.get("target_type") or ""))
+    if doc and tt:
+        op_cue_store.add(doc, tt)
+        rs_w = str(fields.get("read_source") or "").strip().lower()
+        if tt == TargetType.READ.value and rs_w in ("record", "predict"):
+            read_source_cue_store.add(doc, rs_w)
+        pc_w = str(fields.get("predict_channel") or "").strip().lower()
+        ta_w = str(fields.get("time_answer") or "").strip().lower()
+        if (
+            (tt == TargetType.READ.value and rs_w == "predict")
+            or tt == TargetType.PREDICT.value
+        ) and pc_w in ("active", "next") and ta_w in ("clock", "remain"):
+            predict_cue_store.add(doc, pc_w, ta_w)
 
     state = {
         "intent_result": fields,
@@ -791,14 +794,27 @@ async def _execute_after_confirm(
         "event_dictionary": full_events,
         "need_confirm": False,
     }
-    # predict 优先于 history/read
-    if fields.get("target_type") == TargetType.PREDICT.value:
+    # R·predict 优先于 R·record / CUD
+    tt = str(fields.get("target_type") or "").lower()
+    rs = str(fields.get("read_source") or "").lower()
+    if tt == TargetType.PREDICT.value or (
+        tt == TargetType.READ.value and rs == "predict"
+    ):
         out = await speak_predict(state)
     else:
         kind = infer_route_kind(fields)
-        if kind == IntentOp.READ.value or fields.get("target_type") == TargetType.HISTORY.value:
+        if (
+            kind == IntentOp.READ.value
+            or tt == TargetType.HISTORY.value
+            or (tt == TargetType.READ.value and rs != "predict")
+        ):
             out = await speak_history(state)
-        elif kind == "cud":
+        elif kind == "cud" or tt in (
+            TargetType.CREATE.value,
+            TargetType.UPDATE.value,
+            TargetType.DELETE.value,
+            TargetType.FEEDING.value,
+        ):
             out = await execute_history_crud(state)
         else:
             return fields

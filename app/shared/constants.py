@@ -34,15 +34,60 @@ class IntentOp(str, Enum):
 
 
 class TargetType(str, Enum):
-    """意图目标类型（IntentResponse.target_type）。"""
+    """
+    意图轨（IntentResponse.target_type）。
 
+    业务说明：
+    权威新轨：create|read|update|delete|exit|other（C/R/U/D）。
+    查史与预测均落在 read，由 read_source 等子维区分。
+    feeding/history/predict/conversation/suggest 为遗留值，读写时须 normalize。
+    """
+
+    CREATE = "create"
+    READ = "read"
+    UPDATE = "update"
+    DELETE = "delete"
+    EXIT = "exit"
+    OTHER = "other"
+    # --- 遗留（兼容旧飞轮/在途状态；新写入应 normalize 到上列）---
     FEEDING = "feeding"
     HISTORY = "history"
-    # 预测问答：进行中 ETA / 下次 imminent，与查史分轨
     PREDICT = "predict"
-    SUGGEST = "suggest"
     CONVERSATION = "conversation"
-    EXIT = "exit"
+    SUGGEST = "suggest"
+
+
+# 权威六轨（新写入 / OP 飞轮）
+TARGET_TYPE_RAILS = frozenset(
+    {
+        TargetType.CREATE.value,
+        TargetType.READ.value,
+        TargetType.UPDATE.value,
+        TargetType.DELETE.value,
+        TargetType.EXIT.value,
+        TargetType.OTHER.value,
+    }
+)
+
+
+def normalize_target_rail(raw: str) -> str:
+    """
+    将任意 target_type 规范为六轨之一。
+
+    predict/history → read（预测须另带 read_source=predict）；
+    feeding → create；conversation/suggest → other。
+    """
+    s = (raw or "").strip().lower()
+    if s in TARGET_TYPE_RAILS:
+        return s
+    legacy = {
+        TargetType.FEEDING.value: TargetType.CREATE.value,
+        TargetType.HISTORY.value: TargetType.READ.value,
+        TargetType.PREDICT.value: TargetType.READ.value,
+        TargetType.CONVERSATION.value: TargetType.OTHER.value,
+        TargetType.SUGGEST.value: TargetType.OTHER.value,
+    }
+    return legacy.get(s, TargetType.OTHER.value)
 
 
 class MatchSource(str, Enum):

@@ -3,8 +3,8 @@
 
 业务说明：
 history 点查前解析 point_pick / open_speak。
-飞轮命中合法则跳过 LLM；缺维/非法必调小 LLM。
-禁止静默默认 prefer_completed。成功可按 keywords 灌飞轮。
+整段飞轮命中合法则跳过 LLM；缺维/非法必调小 LLM。
+禁止静默默认 prefer_completed。成功仅以段整句回写飞轮（硬切，禁用短词）。
 """
 
 from __future__ import annotations
@@ -90,9 +90,9 @@ async def resolve_history_speak_policy(
     llm_model: Dict[str, Any],
 ) -> Optional[Tuple[str, str]]:
     """
-    解析点查策略两维：飞轮优先，否则 LLM；失败返回 None。
+    解析点查策略两维：整段飞轮优先，否则 LLM；失败返回 None。
 
-    成功且来自 LLM 时按 keywords（或短句回退）写入飞轮。
+    成功且来自 LLM 时仅以段整句原文写入飞轮（硬切）。
     """
     text = (utterance or "").strip()
     hit = history_speak_cue_store.search_policy(text)
@@ -109,19 +109,15 @@ async def resolve_history_speak_policy(
     if not pp or not os_:
         return None
 
-    # 直播：不因 need_confirm 拦截；有 keywords 则灌库
-    to_write = list(keywords)
-    if not to_write and text and len(text) <= 16:
-        # 空 keywords：极短句可回退原文一条
-        to_write = [text]
-    if to_write:
-        n = history_speak_cue_store.add_keywords(
-            to_write, point_pick=pp, open_speak=os_
-        )
-        logger.info(
-            "查史播报飞轮灌库: n=%s pick=%s open=%s",
-            n,
-            pp,
-            os_,
-        )
+    # 硬切：只回写整段原文；忽略 keywords 短词列表
+    _ = keywords
+    vid = history_speak_cue_store.add(
+        text, {"point_pick": pp, "open_speak": os_}
+    )
+    logger.info(
+        "查史播报飞轮整段回写: id=%s pick=%s open=%s",
+        vid,
+        pp,
+        os_,
+    )
     return pp, os_
