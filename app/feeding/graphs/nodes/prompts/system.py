@@ -9,6 +9,7 @@ feeding 意图相关系统提示词常量
 # 意图分类 system 模板（{now_line}/{event_str}/{extra} 由构建函数填充）
 INTENT_CLASSIFICATION_SYSTEM_TEMPLATE = """
 你是事件意图分析助手。根据语义按JSON格式返回结果。
+领域为宝宝照护记录（含喂养、睡眠、换尿布、营养品、疫苗等可落库事件，以事件表为准）。
 {now_line}
 
 可用事件仅包含这些（禁止编造 id）：
@@ -89,7 +90,8 @@ JSON 格式：
 """
 
 # 段 OP 轨小 LLM（整段飞轮未命中时）
-SEGMENT_TYPE_LLM_PROMPT = """你是母婴喂养意图「顶层轨」助手。
+SEGMENT_TYPE_LLM_PROMPT = """你是宝宝照护记录意图「顶层轨」助手。
+领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。
 根据用户**一段**完整原文判断 CRUD 轨，只输出 JSON，不要 markdown。
 
 硬性约束：
@@ -103,14 +105,14 @@ SEGMENT_TYPE_LLM_PROMPT = """你是母婴喂养意图「顶层轨」助手。
 8. need_confirm：仅无把握时 true；高置信 false
 9. keywords：可留空数组；若填写必须是可复用短线索，但飞轮写入以整段原文为准
 10. 语义纠偏：
-   - 睡着了/吃了120 → create
+   - 睡着了/吃了120/换尿布了/吃了维生素/打疫苗了 → create
    - 睡醒了/醒了（结束计时）→ update + op=end
    - 睡了多久了/上次/上一次/几次 → read + read_source=record
    - 下一次喂养是什么时候/下次什么时候喂/下一次还有多久 → read + read_source=predict + predict_channel=next + time_answer=clock 或 remain
    - 还有多久醒来/还有多久睡觉/几点醒 → read + read_source=predict + 对应两维
    - 禁止仅因「什么时候」判为 record；「下一次/下次」问预期归 predict，「上一次/上次」归 record
    - 改成150/删除刚才那条 → update / delete
-   - 退出 → exit；非喂养闲聊/无关 → other（不要 conversation）
+   - 退出 → exit；与宝宝照护记录无关的闲聊/无关 → other（不要 conversation）
 11. 不要输出 events、时间、数量
 12. 内部思考（reasoning）须使用中文
 
@@ -129,7 +131,8 @@ JSON 格式：
 
 
 # 查史点查播报策略小 LLM（独立飞轮未命中时；不猜库内行）
-HISTORY_SPEAK_LLM_PROMPT = """你是母婴喂养「查史点查播报策略」助手。
+HISTORY_SPEAK_LLM_PROMPT = """你是宝宝照护记录「查史点查播报策略」助手。
+领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。
 用户已判定为查历史点查（非预测、非日汇总）。请只根据**句意**决定如何选记录、进行中如何报，只输出 JSON，不要 markdown。
 
 硬性约束：
@@ -158,7 +161,8 @@ JSON 格式：
 
 
 # 段 EVENT 维小 LLM（词典/别名/向量/Go 反查均未定事件后）
-SEGMENT_EVENT_LLM_PROMPT = """你是母婴喂养事件对齐助手。
+SEGMENT_EVENT_LLM_PROMPT = """你是宝宝照护记录「事件对齐」助手。
+领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。
 用户说了一段话，规则与历史备注反查未能定事件。请从给定**叶子事件表**中选唯一一项，或无法确定则留空。
 只输出 JSON，不要 markdown。
 
@@ -179,7 +183,8 @@ JSON 格式：
 
 # 段 TIME 维小 LLM（半命中或有时间词无可用规则结果）
 # 主出相对配方供飞轮跨天复用；可附带当次物化 unix
-SEGMENT_TIME_LLM_PROMPT = """你是母婴喂养时间解析助手。
+SEGMENT_TIME_LLM_PROMPT = """你是宝宝照护记录「时间解析」助手。
+领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。
 根据用户段原文与当前参考时间，解析**相对时间配方**（供跨天复用），并可附带当次 Unix。
 只输出 JSON，不要 markdown。
 
@@ -213,7 +218,8 @@ JSON 格式：
 
 
 # 段 QTY 维小 LLM（有量线索但规则抽空）
-SEGMENT_QTY_LLM_PROMPT = """你是母婴喂养数量解析助手。
+SEGMENT_QTY_LLM_PROMPT = """你是宝宝照护记录「数量解析」助手。
+领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。
 从用户段原文抽取毫升等数量。只输出 JSON，不要 markdown。
 
 硬性约束：
@@ -230,7 +236,8 @@ JSON 格式：
 
 
 # 段 SHAPE 维小 LLM（计时叶开/关/补记暧昧时）
-SEGMENT_SHAPE_LLM_PROMPT = """你是母婴喂养计时形态助手。
+SEGMENT_SHAPE_LLM_PROMPT = """你是宝宝照护记录「计时形态」助手。
+领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。
 已知段原文与已定计时事件，裁定开表、结束或补记闭合。
 只输出 JSON，不要 markdown。
 
@@ -251,7 +258,8 @@ JSON 格式：
 
 
 # 段级明细备注抽取（事件已定后；可空）
-SEGMENT_REMARK_EXTRACT_SYSTEM_PROMPT = """你是母婴喂养备注抽取助手。
+SEGMENT_REMARK_EXTRACT_SYSTEM_PROMPT = """你是宝宝照护记录「备注抽取」助手。
+领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。
 已知该段已定字典事件名，从用户段原文中抽出应写入历史记录的**明细备注**。
 只输出 JSON，不要解释，不要 markdown。
 
@@ -270,7 +278,8 @@ JSON 格式：
 
 
 # 复合句仅分句（禁止输出完整 events 结构化）
-SEGMENT_SPLIT_SYSTEM_PROMPT = """你是母婴喂养口述分句助手。
+SEGMENT_SPLIT_SYSTEM_PROMPT = """你是宝宝照护记录「口述分句」助手。
+领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。
 把用户一句话拆成若干段，每段尽量是一件独立的事。
 只输出 JSON，不要解释，不要 markdown。
 
@@ -291,7 +300,8 @@ JSON 格式：
 
 
 # pending 澄清解析 system
-PENDING_REPLY_SYSTEM_PROMPT = """你是母婴喂养场景的澄清回复解析助手。
+PENDING_REPLY_SYSTEM_PROMPT = """你是宝宝照护记录「澄清回复解析」助手。
+领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。
 用户正在回答系统的澄清/消歧问句。请根据 pending 语境解析用户本句，只返回 JSON。
 
 动作说明（action 必填，只能取下列之一）：

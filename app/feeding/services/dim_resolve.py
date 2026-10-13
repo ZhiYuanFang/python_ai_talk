@@ -110,7 +110,8 @@ async def resolve_predict_dims(
         ],
         model_config=cfg,
         system_prompt=(
-            "你是母婴喂养「预测两维」助手。只输出 JSON，不要 markdown。\n"
+            "你是宝宝照护记录「预测两维」助手。只输出 JSON，不要 markdown。\n"
+            "领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。\n"
             "predict_channel 只能 active|next；time_answer 只能 clock|remain。\n"
             "还有多久醒来/几点醒 → active+remain 或 active+clock；"
             "还有多久睡觉 → next+remain 或 next+clock。\n"
@@ -222,7 +223,8 @@ async def resolve_locate(
         ],
         model_config=cfg,
         system_prompt=(
-            "你是母婴喂养「改删定位策略」助手。只输出 JSON，不要 markdown。\n"
+            "你是宝宝照护记录「改删定位策略」助手。只输出 JSON，不要 markdown。\n"
+            "领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。\n"
             "strategy 只能是：latest（最近一条）、open_timer（仅进行中计时）、"
             "prefer_completed（优先已完成）。\n"
             "禁止输出 historyId。内部思考（reasoning）须使用中文。\n"
