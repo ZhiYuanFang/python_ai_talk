@@ -77,7 +77,8 @@ def emit_thinking(node_name: str, content: str) -> None:
 
 def emit_llm_thinking_delta(node_name: str, content: str) -> None:
     """
-    透出 LLM reasoning 增量；**不加** \\r（避免一字一泡）。
+    透出 LLM reasoning 增量；本函数不加 \\r。
+    句级「下一句首 \\r」由 ThinkingSentenceCrRewriter 在上游处理后再传入。
     无 writer / 空内容时静默跳过。
     """
     text = content if content is not None else ""

@@ -28,6 +28,7 @@ from app.shared.companion_session import (
 )
 from app.shared.graphs.node_thinking import ensure_orchestration_thinking_content
 from app.shared.graphs.stream_graph import iter_graph_custom_thinking
+from app.shared.graphs.thinking_sentence_cr import ThinkingSentenceCrRewriter
 
 logger = logging.getLogger(__name__)
 
@@ -158,21 +159,30 @@ async def _stream_clinic_response(
     )
     yield f"data: {json.dumps(llm_start_event.model_dump(), ensure_ascii=False)}\n\n"
 
-    # 本流首次 LLM thinking 需段首 \r 开新气泡；其后原样追加
+    # 本流首次 LLM thinking 段首 \r 开泡；句界后下一句首再 \r（不清空最后一句）
     first_llm_thinking = True
+    sentence_cr = ThinkingSentenceCrRewriter()
     async for chunk in stream_response(final_state):
         if chunk.thinking:
-            thinking_text = chunk.thinking
-            if first_llm_thinking:
-                thinking_text = ensure_orchestration_thinking_content(thinking_text)
-                first_llm_thinking = False
-            event = ClinicStreamResponse(type="thinking", content=thinking_text)
-            yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
-
+            for thinking_text in sentence_cr.feed(chunk.thinking):
+                if first_llm_thinking:
+                    thinking_text = ensure_orchestration_thinking_content(
+                        thinking_text
+                    )
+                    first_llm_thinking = False
+                event = ClinicStreamResponse(
+                    type="thinking", content=thinking_text
+                )
+                yield (
+                    f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
+                )
         if chunk.content:
             answer_parts.append(chunk.content)
             event = ClinicStreamResponse(type="answer", content=chunk.content)
             yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
+    for thinking_text in sentence_cr.flush():
+        event = ClinicStreamResponse(type="thinking", content=thinking_text)
+        yield f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
 
     full_answer = "".join(answer_parts)
 
