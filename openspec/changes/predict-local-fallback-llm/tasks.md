@@ -19,9 +19,10 @@
 ## 4. speak_predict 兜底编排
 
 - [x] 4.1 Go 命中保留现有模板；miss / 预约进入冷路径
-- [x] 4.2 冷路径：TIME 与查史同方法解语境窗 → 拉史 → `build_feeding_history_prompt_blocks`；算法轨固定 7 日（或快照）
-- [x] 4.3 样本够：LLM 注入原话+紧凑史+工具 JSON；提示词在 `prompts/system.py`；SSE `stream(thinking_enabled=True)`；禁止编造数字
+- [x] 4.2 冷路径：算法轨固定 7 日（或快照）；语境史仅在日词/近况/规律线索时 TIME 解窗 → 拉史 → `build_feeding_history_prompt_blocks`
+- [x] 4.3 样本够：LLM 注入原话+工具 JSON（+按需紧凑史）；提示词在 `prompts/system.py`；SSE `stream(thinking_enabled=True)`；禁止编造数字
 - [x] 4.4 全程 MUST NOT 回落「上一次…用时」查史完成句
+- [x] 4.5 纯「下次何时」类不拉语境史；有日词/最近/隔多久等才注入史
 
 ## 5. 验收
 
@@ -30,3 +31,4 @@
 - [ ] 5.3 手工：样本不足 → 「数据量太少，无法预测」
 - [ ] 5.4 手工：预约有/无 nextAt → 约定时间或无约定降级
 - [ ] 5.5 手工：CUD 落库后快照失效，再问会重算
+- [ ] 5.6 手工：纯「下一次配方奶是什么时候」不二次拉语境史；「最近隔多久」会拉史

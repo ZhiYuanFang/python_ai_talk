@@ -50,9 +50,33 @@ from app.shared.llm_client import llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
+# 日词 / 近况：需拉语境史给 LLM
 _TEMPORAL_HINT = re.compile(
     r"今天|昨天|前天|今晚|昨晚|今早|明早|本周|这周|上周|最近|这两天|近几天|几天"
 )
+# 规律/综合问：需看史才能答准
+_PATTERN_HINT = re.compile(
+    r"隔多久|间隔|勤不勤|一般几点|根据记录|看看最近|规律|比上次|和上次|对比"
+)
+
+
+def _needs_context_history(user_text: str) -> bool:
+    """
+    是否注入语境紧凑史（方案 B）。
+
+    纯「下次何时/还有多久」不拉史；有日词/近况/规律综合线索才拉。
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return False
+    filled = parse_day_word_window(text)
+    if filled and filled[0] and filled[1]:
+        return True
+    if _TEMPORAL_HINT.search(text):
+        return True
+    if _PATTERN_HINT.search(text):
+        return True
+    return False
 
 
 def _first_event_ids(intent: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -210,7 +234,7 @@ async def _cold_path_answer(
     full_events: List[Dict[str, Any]],
     is_appointment: bool,
 ) -> str:
-    """算法/预约 + 语境史 + LLM（或样本不足直接降级）。"""
+    """算法/预约 +（按需）语境史 + LLM；样本不足直接降级。"""
     tool = await _resolve_tool_result(
         device_no=device_no,
         event_id=event_id,
@@ -224,13 +248,16 @@ async def _cold_path_answer(
     if tool.status == "no_appointment":
         return tool.message or "还没有约定下次时间"
 
-    history_text = await _load_context_history_compact(
-        state=state,
-        device_no=device_no,
-        user_text=user_text,
-        root_id=root_id,
-        full_events=full_events,
-    )
+    # B：纯下次何时只灌工具；有日词/近况/规律线索才拉语境史
+    history_text = ""
+    if _needs_context_history(user_text):
+        history_text = await _load_context_history_compact(
+            state=state,
+            device_no=device_no,
+            user_text=user_text,
+            root_id=root_id,
+            full_events=full_events,
+        )
     return await _llm_predict_answer(
         state=state,
         user_text=user_text,
@@ -369,7 +396,8 @@ async def _load_context_history_compact(
 ) -> str:
     """
     语境 TIME（与查史同方法）解窗 → 拉史 → 共享 compact。
-    无时间线索时默认近 7 日。
+
+    仅在调用方判定需要语境史时调用；窗内无日词时默认近 7 日。
     """
     start_u, end_u = await _resolve_context_window(
         user_text=user_text,
@@ -431,13 +459,18 @@ async def _llm_predict_answer(
     tool: PredictToolResult,
     event_name: str,
 ) -> str:
-    """原话 + 紧凑史 + 工具 JSON → LLM 终答。"""
+    """原话 + 工具 JSON（+ 按需紧凑史）→ LLM 终答。"""
     tool_json = json.dumps(tool.to_prompt_dict(), ensure_ascii=False)
+    hist_block = (
+        f"紧凑历史：\n{history_text}\n"
+        if (history_text or "").strip()
+        else "紧凑历史：（未注入，请仅依据工具 JSON 与原话作答）\n"
+    )
     user_payload = (
         f"用户原话：{user_text or '（空）'}\n"
         f"事件：{event_name or tool.event_name or tool.event_id}\n"
         f"预测工具JSON：{tool_json}\n"
-        f"紧凑历史：\n{history_text or '（无）'}\n"
+        f"{hist_block}"
         "请依据以上信息回答用户。"
     )
     cfg = llm_model_config_from_mapping(state_get(state, "llm_model") or {})

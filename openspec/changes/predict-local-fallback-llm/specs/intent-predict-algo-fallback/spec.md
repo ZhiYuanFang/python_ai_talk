@@ -10,20 +10,27 @@ When the predict speak path cannot answer from Go active-eta or imminent anchors
 - **THEN** 系统 SHALL 以近 7 日史为算法输入
 - **AND** MUST NOT 仅用「这两天」物化窗作为算法拉史上界
 
-### Requirement: Predict cold path SHALL inject context history via shared compact builder
+### Requirement: Predict cold path SHALL inject context history only when utterance needs it
 
-On the same cold path, the system SHALL resolve a context time window using the same TIME methods as read-record (day-word rules, relative time flywheel, TIME small LLM as applicable), fetch history for that window, and format it with the shared `build_feeding_history_prompt_blocks` (or equivalent shared compact API). That compact history MUST be available to the answering LLM together with the user utterance and algorithm (or appointment) JSON. When the utterance has no usable time clue, the context history window MAY default to the same seven-day range as the algorithm.
+On the cold path, the system MUST NOT always fetch context history for the LLM. When the utterance is a pure next-when / remain-style question without day-word, near-term, or pattern/comparative cues, the answering LLM MUST receive the original utterance and tool/appointment JSON only (compact history omitted). When the utterance includes such cues (day words, 最近/这两天, 隔多久/规律/比上次, or equivalent), the system SHALL resolve a context time window using the same TIME methods as read-record, fetch history for that window, and format it with the shared `build_feeding_history_prompt_blocks`. When a context fetch is triggered but the utterance has no sharper window, the context history window MAY default to the same seven-day range as the algorithm. Algorithm seven-day bounds MUST remain independent of this gate.
+
+#### Scenario: Pure next-when skips context history
+
+- **WHEN** 用户问「下一次配方奶是什么时候」类且进入算法兜底且工具样本足够
+- **THEN** 系统 MUST NOT 仅为该问再拉语境史注入 LLM
+- **AND** SHALL 以原话 + 工具 JSON 调用 LLM（或等价终答）
+- **AND** 算法轨仍 MUST 使用固定近 7 日（非预约）
 
 #### Scenario: Context window feeds LLM not algorithm
 
-- **WHEN** 用户原话含可解析相对时间且进入预测兜底
+- **WHEN** 用户原话含可解析相对时间或规律/近况线索且进入预测兜底
 - **THEN** 系统 SHALL 用与查史相同的 TIME 路径得到语境窗并拉史
 - **AND** SHALL 以共享紧凑史拼法注入 LLM 提示
 - **AND** 算法轨仍 MUST 使用固定近 7 日（非预约）
 
-### Requirement: Cold-path final answer SHALL be LLM grounded on tools and history
+### Requirement: Cold-path final answer SHALL be LLM grounded on tools and optional history
 
-When algorithm or appointment outputs are sufficient, the cold-path user-facing answer MUST be produced by an LLM call that receives the original utterance, the compact context history, and the tool/appointment JSON. The system prompt MUST require Chinese reasoning and MUST forbid inventing numeric predictions not present in the injected tool or history evidence. On intent SSE paths the LLM call MUST use `stream(thinking_enabled=True)`.
+When algorithm or appointment outputs are sufficient, the cold-path user-facing answer MUST be produced by an LLM call that receives the original utterance, the tool/appointment JSON, and compact context history only when the context-history gate above requires it. The system prompt MUST require Chinese reasoning and MUST forbid inventing numeric predictions not present in the injected tool or (when present) history evidence. On intent SSE paths the LLM call MUST use `stream(thinking_enabled=True)`.
 
 #### Scenario: Grounded interval answer
 
