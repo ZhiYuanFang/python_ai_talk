@@ -12,7 +12,7 @@ When the predict speak path cannot answer from Go active-eta or imminent anchors
 
 ### Requirement: Predict cold path SHALL inject context history only when utterance needs it
 
-On the cold path, the system MUST NOT always fetch context history for the LLM. When the utterance is a pure next-when / remain-style question without day-word, near-term, or pattern/comparative cues, the answering LLM MUST receive the original utterance and tool/appointment JSON only (compact history omitted). When the utterance includes such cues (day words, 最近/这两天, 隔多久/规律/比上次, or equivalent), the system SHALL resolve a context time window using the same TIME methods as read-record, fetch history for that window, and format it with the shared `build_feeding_history_prompt_blocks`. When a context fetch is triggered but the utterance has no sharper window, the context history window MAY default to the same seven-day range as the algorithm. Algorithm seven-day bounds MUST remain independent of this gate.
+On the cold path, the system MUST NOT always fetch context history for the LLM. When the utterance is a pure next-when / remain-style question without day-word, near-term, or pattern/comparative cues, the answering LLM MUST receive the original utterance and tool/appointment JSON only (compact history omitted). When the utterance includes such cues (day words, 最近/这两天, 隔多久/规律/比上次, or equivalent), the system SHALL resolve a context time window using the same TIME methods as read-record, fetch history for that window, and format it with the shared `build_feeding_history_prompt_blocks`. When a context fetch is triggered but the utterance has no sharper window, the context history window MAY default to the same seven-day range as the algorithm. Algorithm seven-day bounds MUST remain independent of this gate. There is no mandatory one-calendar-day hard cap on the context window.
 
 #### Scenario: Pure next-when skips context history
 
@@ -27,6 +27,16 @@ On the cold path, the system MUST NOT always fetch context history for the LLM. 
 - **THEN** 系统 SHALL 用与查史相同的 TIME 路径得到语境窗并拉史
 - **AND** SHALL 以共享紧凑史拼法注入 LLM 提示
 - **AND** 算法轨仍 MUST 使用固定近 7 日（非预约）
+
+### Requirement: Context history for LLM SHALL be scoped to spoken events only
+
+When context history is injected for predict cold-path LLM, the fetched records MUST be limited to the spoken/matched catalog event(s): a leaf event uses only that eventId; a parent event uses only descendant leaves of that parent. The system MUST NOT expand to all sibling leaves under the catalog root solely because the algorithm rail uses root-scoped history. Device-wide unfiltered history in the time window MUST NOT be injected.
+
+#### Scenario: Formula leaf does not pull sibling feeding leaves
+
+- **WHEN** 用户问配方奶且语境史闸门命中、命中事件为配方奶叶
+- **THEN** 注入 LLM 的紧凑史 MUST 仅含该事件（配方奶）记录
+- **AND** MUST NOT 因同属喂养根而附带母乳/辅食等兄弟叶记录
 
 ### Requirement: Cold-path final answer SHALL be LLM grounded on tools and optional history
 

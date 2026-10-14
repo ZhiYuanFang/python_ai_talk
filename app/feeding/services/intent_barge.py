@@ -23,6 +23,7 @@ def should_concatenate_rerun(response: IntentResponse) -> bool:
     是否因 agent_miss 触发拼接重跑。
 
     确认/消歧不重跑；数据量太少不在 miss 清单。
+    优先认 miss_fail_kind / miss_canonical_content（软回复后 content 可能已无硬词）。
     """
     if bool(response.need_confirm):
         return False
@@ -31,12 +32,17 @@ def should_concatenate_rerun(response: IntentResponse) -> bool:
     confirm_type = str(getattr(response, "confirm_type", None) or "").strip()
     if confirm_type:
         return False
-    kind = infer_miss_fail_kind(
-        content=str(response.content or ""),
+    kind = str(getattr(response, "miss_fail_kind", None) or "").strip()
+    if kind:
+        return True
+    canonical = str(getattr(response, "miss_canonical_content", None) or "").strip()
+    content = canonical or str(response.content or "")
+    kind2 = infer_miss_fail_kind(
+        content=content,
         target_type=str(response.target_type or ""),
         need_confirm=False,
     )
-    return kind is not None
+    return kind2 is not None
 
 
 async def maybe_prepare_concat_rerun(

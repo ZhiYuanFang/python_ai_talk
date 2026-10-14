@@ -173,6 +173,17 @@ class IntentResponse(BaseModel):
         default_factory=list,
         description="澄清选项列表（如父事件下的子事件）",
     )
+    # 内部：miss 规范硬文案（软回复前）；不对外序列化，供 barge 判 miss
+    miss_canonical_content: Optional[str] = Field(
+        default=None,
+        exclude=True,
+        description="内部 miss 硬文案副本（不输出给客户端）",
+    )
+    miss_fail_kind: Optional[str] = Field(
+        default=None,
+        exclude=True,
+        description="内部 miss fail_kind（不输出给客户端）",
+    )
 
 
 class IntentStreamResponse(BaseModel):

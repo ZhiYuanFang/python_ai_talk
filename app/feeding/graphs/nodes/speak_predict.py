@@ -248,14 +248,14 @@ async def _cold_path_answer(
     if tool.status == "no_appointment":
         return tool.message or "还没有约定下次时间"
 
-    # B：纯下次何时只灌工具；有日词/近况/规律线索才拉语境史
+    # B：纯下次何时只灌工具；有日词/近况/规律线索才拉语境史（仅命中事件，非同根全叶）
     history_text = ""
     if _needs_context_history(user_text):
         history_text = await _load_context_history_compact(
             state=state,
             device_no=device_no,
             user_text=user_text,
-            root_id=root_id,
+            event_id=event_id,
             full_events=full_events,
         )
     return await _llm_predict_answer(
@@ -345,7 +345,7 @@ async def _resolve_tool_result(
 
 
 def _leaf_ids_for_root(root_id: str, full_events: List[Dict[str, Any]]) -> List[str]:
-    """拉史用叶子 id；根本身是叶则返回 [root]。"""
+    """算法轨拉史：根下全部叶子；根本身是叶则返回 [root]。"""
     rid = str(root_id or "").strip()
     if not rid:
         return []
@@ -354,6 +354,24 @@ def _leaf_ids_for_root(root_id: str, full_events: List[Dict[str, Any]]) -> List[
     leaves = get_descendant_leaves(rid, full_events)
     ids = [str(x.get("event_id") or "").strip() for x in leaves]
     return [x for x in ids if x] or [rid]
+
+
+def _context_history_event_ids(
+    event_id: str, full_events: List[Dict[str, Any]]
+) -> List[str]:
+    """
+    语境史事件范围：仅命中事件本身。
+
+    叶 → [eid]；父 → 该父下叶子（不问同根兄弟支）。
+    """
+    eid = str(event_id or "").strip()
+    if not eid:
+        return []
+    if is_parent_event(eid, full_events):
+        leaves = get_descendant_leaves(eid, full_events)
+        ids = [str(x.get("event_id") or "").strip() for x in leaves]
+        return [x for x in ids if x] or [eid]
+    return [eid]
 
 
 async def _baby_age_months(device_no: str) -> Optional[int]:
@@ -391,24 +409,27 @@ async def _load_context_history_compact(
     state: Any,
     device_no: str,
     user_text: str,
-    root_id: str,
+    event_id: str,
     full_events: List[Dict[str, Any]],
 ) -> str:
     """
-    语境 TIME（与查史同方法）解窗 → 拉史 → 共享 compact。
+    语境 TIME 解窗 → 仅命中事件拉史 → 共享 compact。
 
-    仅在调用方判定需要语境史时调用；窗内无日词时默认近 7 日。
+    MUST NOT 按根扩成同根全部兄弟叶（与算法轨区分）。
+    无日词时窗默认近 7 日；不设 1 日硬顶。
     """
     start_u, end_u = await _resolve_context_window(
         user_text=user_text,
         state=state,
         device_no=device_no,
     )
-    leaf_ids = _leaf_ids_for_root(root_id, full_events)
+    event_ids = _context_history_event_ids(event_id, full_events)
+    if not event_ids:
+        return ""
     try:
         rows = await http_client.get_filtered_history_events(
             device_no,
-            event_ids=leaf_ids or [root_id],
+            event_ids=event_ids,
             start_time=start_u,
             end_time=end_u,
             limit=200,

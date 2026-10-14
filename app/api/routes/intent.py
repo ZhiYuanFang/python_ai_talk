@@ -21,7 +21,11 @@ from app.feeding.schemas.intent import IntentRequest, IntentResponse, IntentStre
 from app.feeding.schemas.intent_result import coerce_intent_result
 from app.feeding.services.clarification import clarification_store
 from app.feeding.services.event_cache import event_cache
-from app.feeding.services.agent_miss_record import maybe_record_agent_miss
+from app.feeding.services.agent_miss_record import (
+    infer_miss_fail_kind,
+    maybe_record_agent_miss,
+)
+from app.feeding.services.agent_miss_soft_reply import soft_reply_for_miss
 from app.feeding.services.intent_barge import (
     dump_to_response,
     maybe_prepare_concat_rerun,
@@ -47,21 +51,42 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analyze", tags=["意图分析"])
 
 
-def _finish_intent_response(
+async def _finish_intent_response(
     response: IntentResponse,
     *,
     user_input: str,
     device_no: str,
+    model_config: Optional[Dict[str, Any]] = None,
 ) -> IntentResponse:
-    """对外返回前：终局失败则写入覆盖缺口（确认中跳过）。"""
+    """
+    对外返回前：终局 miss 先硬文案落库，再 LLM 软回复替换 content。
+
+    确认/消歧跳过。软回复失败回退硬文案。barge 认 miss_canonical_content。
+    """
+    hard = str(response.content or "")
+    need_confirm = bool(response.need_confirm)
+    confirm_type = str(getattr(response, "confirm_type", None) or "").strip()
+    options = list(response.options or [])
+    # 确认中不记、不润色
+    if need_confirm or confirm_type or options:
+        return response
+
+    kind = infer_miss_fail_kind(
+        content=hard,
+        target_type=str(response.target_type or ""),
+        need_confirm=False,
+    )
+    if not kind:
+        return response
+
     try:
         maybe_record_agent_miss(
             {
-                "content": response.content or "",
+                "content": hard,
                 "target_type": response.target_type or "",
-                "need_confirm": bool(response.need_confirm),
-                "confirm_type": getattr(response, "confirm_type", None) or "",
-                "options": list(response.options or []),
+                "need_confirm": False,
+                "confirm_type": "",
+                "options": [],
                 "conversation_id": getattr(response, "conversation_id", None) or "",
                 "utterance": user_input,
             },
@@ -73,6 +98,21 @@ def _finish_intent_response(
         )
     except Exception as exc:
         logger.warning("覆盖缺口挂钩失败: %s", exc)
+
+    response.miss_canonical_content = hard
+    response.miss_fail_kind = kind
+    try:
+        soft = await soft_reply_for_miss(
+            utterance=user_input,
+            hard_content=hard,
+            fail_kind=kind,
+            device_no=device_no,
+            llm_model=model_config,
+        )
+        if soft:
+            response.content = soft
+    except Exception as exc:
+        logger.warning("miss 软回复失败，保留硬文案: %s", exc)
     return response
 
 
@@ -140,7 +180,7 @@ async def _run_cold_intent(
     final_state = await intent_graph.ainvoke(
         initial_state.model_dump(), config=_run_config(thread_id)
     )
-    return _response_from_final_state(
+    return await _response_from_final_state(
         final_state,
         full_events=full_events,
         user_input=text,
@@ -149,7 +189,7 @@ async def _run_cold_intent(
     )
 
 
-def _response_from_final_state(
+async def _response_from_final_state(
     final_state: Any,
     *,
     full_events: list,
@@ -173,10 +213,11 @@ def _response_from_final_state(
         if st.conversation_id:
             intent_result["conversation_id"] = st.conversation_id
         intent_result["need_confirm"] = True
-        return _finish_intent_response(
+        return await _finish_intent_response(
             _build_intent_response(intent_result),
             user_input=user_input,
             device_no=device_no,
+            model_config=model_config,
         )
 
     # 零命中无法识别：other 短回复，不进确认
@@ -185,10 +226,11 @@ def _response_from_final_state(
         TargetType.CONVERSATION.value,
         TargetType.OTHER.value,
     ) and (intent_result.get("content") or "").startswith("无法识别对应的事件"):
-        return _finish_intent_response(
+        return await _finish_intent_response(
             _build_intent_response(intent_result),
             user_input=user_input,
             device_no=device_no,
+            model_config=model_config,
         )
 
     target_type = intent_result.get("target_type", TargetType.OTHER.value)
@@ -203,7 +245,7 @@ def _response_from_final_state(
         TargetType.UPDATE.value,
         TargetType.DELETE.value,
     ):
-        return _finish_intent_response(
+        return await _finish_intent_response(
             postprocess_feeding_result(
                 ir,
                 full_events=full_events,
@@ -215,6 +257,7 @@ def _response_from_final_state(
             ),
             user_input=user_input,
             device_no=device_no,
+            model_config=model_config,
         )
 
     # 查记录确认：R·record（含遗留 history）
@@ -222,7 +265,7 @@ def _response_from_final_state(
         target_type == TargetType.HISTORY.value
         or (target_type == TargetType.READ.value and read_source != "predict")
     ):
-        return _finish_intent_response(
+        return await _finish_intent_response(
             create_history_confirm_response(
                 ir,
                 full_events=full_events,
@@ -233,6 +276,7 @@ def _response_from_final_state(
             ),
             user_input=user_input,
             device_no=device_no,
+            model_config=model_config,
         )
 
     # 预测问答确认：R·predict（含遗留 predict）
@@ -240,7 +284,7 @@ def _response_from_final_state(
         target_type == TargetType.PREDICT.value
         or (target_type == TargetType.READ.value and read_source == "predict")
     ):
-        return _finish_intent_response(
+        return await _finish_intent_response(
             create_predict_confirm_response(
                 ir,
                 full_events=full_events,
@@ -251,14 +295,18 @@ def _response_from_final_state(
             ),
             user_input=user_input,
             device_no=device_no,
+            model_config=model_config,
         )
 
     response = _build_intent_response(intent_result)
     llm_response = st.response or ""
     if llm_response and not response.content:
         response.content = llm_response
-    return _finish_intent_response(
-        response, user_input=user_input, device_no=device_no
+    return await _finish_intent_response(
+        response,
+        user_input=user_input,
+        device_no=device_no,
+        model_config=model_config,
     )
 
 
@@ -619,7 +667,7 @@ async def _iter_cold_thinking(
         elif kind == "final":
             final_state = payload
 
-    response = _response_from_final_state(
+    response = await _response_from_final_state(
         final_state,
         full_events=full_events,
         user_input=text,
