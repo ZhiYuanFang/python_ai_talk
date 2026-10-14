@@ -143,8 +143,9 @@ async def resolve_time(
     时间维（规则已 miss 后）：飞轮物化 → TIME LLM → 合法配方回写。
 
     业务说明：
-    调用方须先跑本地规则；本函数不重复规则。
-    allow_flywheel=False 时（如 read 轨）跳过飞轮读写，仍可 LLM + rule_gap。
+    调用方须先跑本地日词/钟点规则；本函数不重复规则。
+    默认 allow_flywheel=True（各 CRUD 轨均可读写相对配方飞轮）；
+    显式 False 时跳过飞轮，仍可 LLM + rule_gap。
 
     Returns:
         (start_unix, end_unix, source)；source 为 flywheel|llm|none

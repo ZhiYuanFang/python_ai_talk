@@ -21,6 +21,7 @@ from app.feeding.schemas.intent import IntentRequest, IntentResponse, IntentStre
 from app.feeding.schemas.intent_result import coerce_intent_result
 from app.feeding.services.clarification import clarification_store
 from app.feeding.services.event_cache import event_cache
+from app.feeding.services.agent_miss_record import maybe_record_agent_miss
 from app.feeding.services.intent_pipeline import (
     build_intent_response_from_fields,
     create_history_confirm_response,
@@ -38,6 +39,35 @@ from app.shared.graphs.stream_graph import iter_graph_custom_thinking
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analyze", tags=["意图分析"])
+
+
+def _finish_intent_response(
+    response: IntentResponse,
+    *,
+    user_input: str,
+    device_no: str,
+) -> IntentResponse:
+    """对外返回前：终局失败则写入覆盖缺口（确认中跳过）。"""
+    try:
+        maybe_record_agent_miss(
+            {
+                "content": response.content or "",
+                "target_type": response.target_type or "",
+                "need_confirm": bool(response.need_confirm),
+                "confirm_type": getattr(response, "confirm_type", None) or "",
+                "options": list(response.options or []),
+                "conversation_id": getattr(response, "conversation_id", None) or "",
+                "utterance": user_input,
+            },
+            user_input=user_input,
+            device_no=device_no,
+            conversation_id=str(
+                getattr(response, "conversation_id", None) or ""
+            ),
+        )
+    except Exception as exc:
+        logger.warning("覆盖缺口挂钩失败: %s", exc)
+    return response
 
 
 def _run_config(thread_id: str) -> Dict[str, Any]:
@@ -137,7 +167,11 @@ def _response_from_final_state(
         if st.conversation_id:
             intent_result["conversation_id"] = st.conversation_id
         intent_result["need_confirm"] = True
-        return _build_intent_response(intent_result)
+        return _finish_intent_response(
+            _build_intent_response(intent_result),
+            user_input=user_input,
+            device_no=device_no,
+        )
 
     # 零命中无法识别：other 短回复，不进确认
     tt0 = str(intent_result.get("target_type") or "")
@@ -145,7 +179,11 @@ def _response_from_final_state(
         TargetType.CONVERSATION.value,
         TargetType.OTHER.value,
     ) and (intent_result.get("content") or "").startswith("无法识别对应的事件"):
-        return _build_intent_response(intent_result)
+        return _finish_intent_response(
+            _build_intent_response(intent_result),
+            user_input=user_input,
+            device_no=device_no,
+        )
 
     target_type = intent_result.get("target_type", TargetType.OTHER.value)
     read_source = str(intent_result.get("read_source") or "").strip().lower()
@@ -159,14 +197,18 @@ def _response_from_final_state(
         TargetType.UPDATE.value,
         TargetType.DELETE.value,
     ):
-        return postprocess_feeding_result(
-            ir,
-            full_events=full_events,
+        return _finish_intent_response(
+            postprocess_feeding_result(
+                ir,
+                full_events=full_events,
+                user_input=user_input,
+                device_no=device_no,
+                model_config=model_config,
+                need_confirm=need_confirm,
+                matched_vector_id=matched_vector_id,
+            ),
             user_input=user_input,
             device_no=device_no,
-            model_config=model_config,
-            need_confirm=need_confirm,
-            matched_vector_id=matched_vector_id,
         )
 
     # 查记录确认：R·record（含遗留 history）
@@ -174,13 +216,17 @@ def _response_from_final_state(
         target_type == TargetType.HISTORY.value
         or (target_type == TargetType.READ.value and read_source != "predict")
     ):
-        return create_history_confirm_response(
-            ir,
-            full_events=full_events,
+        return _finish_intent_response(
+            create_history_confirm_response(
+                ir,
+                full_events=full_events,
+                user_input=user_input,
+                device_no=device_no,
+                model_config=model_config,
+                match_source=str(match_source or ""),
+            ),
             user_input=user_input,
             device_no=device_no,
-            model_config=model_config,
-            match_source=str(match_source or ""),
         )
 
     # 预测问答确认：R·predict（含遗留 predict）
@@ -188,20 +234,26 @@ def _response_from_final_state(
         target_type == TargetType.PREDICT.value
         or (target_type == TargetType.READ.value and read_source == "predict")
     ):
-        return create_predict_confirm_response(
-            ir,
-            full_events=full_events,
+        return _finish_intent_response(
+            create_predict_confirm_response(
+                ir,
+                full_events=full_events,
+                user_input=user_input,
+                device_no=device_no,
+                model_config=model_config,
+                match_source=str(match_source or ""),
+            ),
             user_input=user_input,
             device_no=device_no,
-            model_config=model_config,
-            match_source=str(match_source or ""),
         )
 
     response = _build_intent_response(intent_result)
     llm_response = st.response or ""
     if llm_response and not response.content:
         response.content = llm_response
-    return response
+    return _finish_intent_response(
+        response, user_input=user_input, device_no=device_no
+    )
 
 
 @router.post("/intent", response_model=IntentResponse, summary="意图分析")

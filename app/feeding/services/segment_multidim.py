@@ -5,7 +5,7 @@
 顺序 OP(轨) → EVENT → REMARK(明细) → QTY → TIME（SHAPE 并入 OP）。
 OP：整段飞轮 → 小 LLM；短关键词 TYPE 飞轮已停用热路径。
 事件维阶梯：词典名 → extra_names → 向量 0.72 → Go 备注反查 → 事件小 LLM。
-TIME：规则优先 → 相对配方飞轮物化 → TIME LLM → 合法配方回写（仍写 rule_gap）。
+TIME：仅日词本地窗 → 规则钟点 → 全轨相对配方飞轮 → TIME LLM → 合法配方回写。
 QTY：本地规则 → 整段飞轮 →（真线索）小 LLM → 回写。
 REMARK：别名已有可跳过；否则飞轮 → 明细 LLM → 回写（read 轨整维跳过）。
 """
@@ -33,6 +33,7 @@ from app.feeding.services.dim_resolve import (
     resolve_read_source,
     resolve_time,
 )
+from app.shared.history_window import parse_day_word_window
 from app.feeding.services.op_cue_store import op_cue_store
 from app.feeding.services.predict_cue_store import predict_cue_store
 from app.feeding.services.qty_cue_store import qty_cue_store
@@ -55,6 +56,7 @@ from app.feeding.services.segment_remark import (
     merge_remarks,
     remark_keyword_from_segment,
     resolve_remark_leaves_cached,
+    soft_event_phrase_from_segment,
 )
 from app.feeding.utils.quantity_extractor import extract_quantity_from_text
 from app.feeding.utils.time_slot_extractor import (
@@ -356,33 +358,32 @@ async def resolve_event(
             keyword,
         )
 
-    # 5) 事件小 LLM（表内对齐；专名无把握须空）
+    # 5) 事件小 LLM：表内软候选（须确认/消歧；未确认不写飞轮）
     try:
-        ev_llm, summary = await llm_resolve_event(
+        cands, summary = await llm_resolve_event(
             segment, full_events, llm_model or {}
         )
     except Exception as exc:
         logger.warning("EVENT 小 LLM 失败: %s", exc)
-        ev_llm, summary = None, str(exc)[:200]
-    if ev_llm is not None:
-        # 冷路径成功：整段回写事件飞轮（与 OP/qty 同构）
-        eid = str(ev_llm.get("event_id") or "").strip()
-        ename = str(ev_llm.get("event_name") or "").strip()
-        if eid and (segment or "").strip():
-            intent_cache_store.add_event_phrase(
-                (segment or "").strip(),
-                event_id=eid,
-                event_name=ename,
-                kind="leaf",
-            )
+        cands, summary = [], str(exc)[:200]
+    if cands:
+        phrase_kw = soft_event_phrase_from_segment(segment) or keyword or (
+            (segment or "").strip()[:12]
+        )
+        logger.info(
+            "EVENT 软候选: n=%s phrase=%s summary=%s",
+            len(cands),
+            phrase_kw,
+            (summary or "")[:160],
+        )
         return (
-            ev_llm,
+            None,
             MatchSource.LLM.value,
-            1.0,
-            "",
-            "",
-            [],
-            "",
+            0.0,
+            "event_soft_candidate",
+            phrase_kw,
+            cands,
+            phrase_kw,
         )
 
     return None, MatchSource.NAME.value, 0.0, "event_unresolved", "", [], ""
@@ -400,6 +401,41 @@ def resolve_shape(
     return IntentAction.ONE.value, et
 
 
+def _try_apply_day_word_window(draft: SegmentDraft) -> bool:
+    """
+    仅日词无钟点：本地填上海日历整日/约定窗。
+
+    有钟点线索时返回 False，避免整日短路盖掉「昨天晚上八点」。
+    成功则写 draft.start/end，且不调 TIME LLM、不写 time rule_gap。
+    """
+    text = (draft.text or "").strip()
+    if not text:
+        return False
+    clocks = extract_clocks_from_text(text)
+    if clocks:
+        return False
+    filled = parse_day_word_window(text)
+    if filled is None:
+        return False
+    st, et = filled
+    if not st or st <= 0:
+        return False
+    draft.start_time = int(st)
+    draft.end_time = int(et if et and et > 0 else st)
+    if (
+        draft.event_type == "time"
+        and draft.end_time > draft.start_time
+    ):
+        draft.action = IntentAction.ONE.value
+    logger.info(
+        "TIME 日词本地窗: start=%s end=%s text=%s",
+        draft.start_time,
+        draft.end_time,
+        text[:40],
+    )
+    return True
+
+
 async def _apply_time_resolve(
     draft: SegmentDraft,
     *,
@@ -407,9 +443,14 @@ async def _apply_time_resolve(
     device_no: str,
     llm_model: Dict[str, Any],
     reason: str,
-    allow_flywheel: bool,
+    allow_flywheel: bool = True,
 ) -> None:
-    """规则 miss 后：时间飞轮物化 → TIME LLM → 合法配方回写。"""
+    """
+    规则 miss 后：全轨时间飞轮物化 → TIME LLM → 合法配方回写。
+
+    业务说明：
+    allow_flywheel 默认 True（含 read）；仅 Unix 仍不进飞轮（resolve_time 内门禁）。
+    """
     draft.start_time = 0
     draft.end_time = 0
     st, et, _src = await resolve_time(
@@ -604,29 +645,30 @@ async def resolve_segment(
         # 无量线索：缺量追问；不写数量飞轮
         draft.missing_quantity = True
 
-    # TIME：规则 →（非 read）相对配方飞轮 → LLM；read 不读写时间飞轮
+    # TIME：点查跳过窗 → 仅日词本地窗 → 规则钟点 → 全轨飞轮 → LLM
     if _is_read_record(tt, draft.read_source) or op == IntentOp.READ.value:
         if hm == "point":
             draft.ignore_time_range = True
-        clocks = extract_clocks_from_text(draft.text)
-        if clocks and has_unconsumed_temporal_residual(draft.text, clocks):
-            await _apply_time_resolve(
-                draft,
-                utterance=utterance,
-                device_no=device_no,
-                llm_model=model,
-                reason="time_partial_llm",
-                allow_flywheel=False,
-            )
-        elif _TEMPORAL_HINT.search(draft.text) and not clocks and hm != "point":
-            await _apply_time_resolve(
-                draft,
-                utterance=utterance,
-                device_no=device_no,
-                llm_model=model,
-                reason="time_hint_no_clock_llm",
-                allow_flywheel=False,
-            )
+        elif not _try_apply_day_word_window(draft):
+            clocks = extract_clocks_from_text(draft.text)
+            if clocks and has_unconsumed_temporal_residual(draft.text, clocks):
+                await _apply_time_resolve(
+                    draft,
+                    utterance=utterance,
+                    device_no=device_no,
+                    llm_model=model,
+                    reason="time_partial_llm",
+                    allow_flywheel=True,
+                )
+            elif _TEMPORAL_HINT.search(draft.text) and not clocks:
+                await _apply_time_resolve(
+                    draft,
+                    utterance=utterance,
+                    device_no=device_no,
+                    llm_model=model,
+                    reason="time_hint_no_clock_llm",
+                    allow_flywheel=True,
+                )
     else:
         ev_body = {
             "op": op if op != "end" else "end",
@@ -637,34 +679,40 @@ async def resolve_segment(
             "start_time": 0,
             "end_time": 0,
         }
-        clocks = extract_clocks_from_text(draft.text)
-        if clocks and has_unconsumed_temporal_residual(draft.text, clocks):
-            await _apply_time_resolve(
-                draft,
-                utterance=utterance,
-                device_no=device_no,
-                llm_model=model,
-                reason="time_partial_llm",
-                allow_flywheel=not is_read_rail,
-            )
+        if _try_apply_day_word_window(draft):
+            pass
         else:
-            new_evs, changed = apply_time_slots_to_events(draft.text, [ev_body])
-            if changed and new_evs:
-                draft.start_time = int(new_evs[0].get("start_time") or 0)
-                draft.end_time = int(new_evs[0].get("end_time") or 0)
-                if new_evs[0].get("quantity") is not None:
-                    draft.quantity = new_evs[0].get("quantity")
-                if draft.event_type == "time" and draft.end_time > draft.start_time > 0:
-                    draft.action = IntentAction.ONE.value
-            elif _TEMPORAL_HINT.search(draft.text) and not clocks:
+            clocks = extract_clocks_from_text(draft.text)
+            if clocks and has_unconsumed_temporal_residual(draft.text, clocks):
                 await _apply_time_resolve(
                     draft,
                     utterance=utterance,
                     device_no=device_no,
                     llm_model=model,
-                    reason="time_hint_no_clock_llm",
-                    allow_flywheel=not is_read_rail,
+                    reason="time_partial_llm",
+                    allow_flywheel=True,
                 )
+            else:
+                new_evs, changed = apply_time_slots_to_events(draft.text, [ev_body])
+                if changed and new_evs:
+                    draft.start_time = int(new_evs[0].get("start_time") or 0)
+                    draft.end_time = int(new_evs[0].get("end_time") or 0)
+                    if new_evs[0].get("quantity") is not None:
+                        draft.quantity = new_evs[0].get("quantity")
+                    if (
+                        draft.event_type == "time"
+                        and draft.end_time > draft.start_time > 0
+                    ):
+                        draft.action = IntentAction.ONE.value
+                elif _TEMPORAL_HINT.search(draft.text) and not clocks:
+                    await _apply_time_resolve(
+                        draft,
+                        utterance=utterance,
+                        device_no=device_no,
+                        llm_model=model,
+                        reason="time_hint_no_clock_llm",
+                        allow_flywheel=True,
+                    )
 
     # create + time：仍无闭合起止则缺槽追问
     if (

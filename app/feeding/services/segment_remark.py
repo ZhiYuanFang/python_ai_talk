@@ -69,6 +69,35 @@ def remark_keyword_from_segment(segment: str) -> str:
     return core.strip() or text
 
 
+# 软候选飞轮 / 确认复述用：剥问法壳，留核词（如「午饭」）
+_SOFT_PHRASE_QUERY_RE = re.compile(
+    r"接下来|下面|待会|等会|几点钟?|什么时候|还有多久|还要多久|"
+    r"大概|预计|上次|上一次|最近一次"
+)
+
+
+def soft_event_phrase_from_segment(segment: str) -> str:
+    """
+    抽取 EVENT 软确认后写入飞轮的短核词。
+
+    业务说明：
+    在 remark 核词基础上再剥预测/查史问法壳，避免整句入飞轮。
+    """
+    kw = remark_keyword_from_segment(segment)
+    if not kw:
+        return ""
+    t = _SOFT_PHRASE_QUERY_RE.sub("", kw)
+    t = _VERB_STRIP_RE.sub("", t).strip()
+    if t.endswith("了") and len(t) > 1:
+        t = t[:-1]
+    t = t.strip()
+    if t and len(t) <= 12:
+        return t
+    if kw and len(kw) <= 12:
+        return kw
+    return (t or kw)[:12]
+
+
 def merge_remarks(existing: str, llm_remark: str) -> str:
     """
     合并别名/反查备注与 LLM 明细。

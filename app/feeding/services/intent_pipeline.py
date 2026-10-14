@@ -436,6 +436,43 @@ async def try_handle_pending(
                 fields["predict_channel"] = mc.get("_type_predict_channel")
             if mc.get("_type_time_answer") is not None:
                 fields["time_answer"] = mc.get("_type_time_answer")
+            if mc.get("_type_read_source") is not None:
+                fields["read_source"] = mc.get("_type_read_source")
+            # EVENT 软候选确认：把选定叶写回 events，并写核词短说法飞轮
+            if mc.get("_event_soft_confirm"):
+                leaf_id = str(leaf.get("event_id") or "").strip()
+                leaf_name = str(leaf.get("event_name") or "").strip()
+                fields["event_id"] = leaf_id
+                fields["event_name"] = leaf_name
+                if leaf_id:
+                    fields["event_ids"] = [leaf_id]
+                patched_evs: List[Dict[str, Any]] = []
+                for e in fields.get("events") or []:
+                    if not isinstance(e, dict):
+                        continue
+                    e2 = dict(e)
+                    e2["event_id"] = leaf_id
+                    e2["event_name"] = leaf_name
+                    patched_evs.append(e2)
+                if patched_evs:
+                    fields["events"] = patched_evs
+                phrase = str(mc.get("_event_soft_phrase") or "").strip()
+                if phrase and leaf_id:
+                    from app.feeding.services.intent_cache_store import (
+                        intent_cache_store,
+                    )
+
+                    intent_cache_store.add_event_phrase(
+                        phrase,
+                        event_id=leaf_id,
+                        event_name=leaf_name,
+                        kind="leaf",
+                    )
+                    logger.info(
+                        "EVENT 软确认写短说法: phrase=%s event_id=%s",
+                        phrase,
+                        leaf_id,
+                    )
         executed = await _execute_after_confirm(
             fields,
             device_no=pending.device_no,

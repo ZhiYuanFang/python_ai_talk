@@ -19,6 +19,7 @@
 - /admin/locate-cache：U/D 定位策略飞轮管理（Hub）
 - /admin/history-speak-cache：查史播报整段飞轮管理（Hub）
 - /admin/rule-gaps：规则缺口收件箱（Hub）
+- /admin/miss-inbox：覆盖缺口（答不出）收件箱（Hub）
 - /clinic：智能陪伴（非流式）
 - /clinic/stream：智能陪伴续聊（流式）
 - /care-alert/analyze：护理留意日分析（Go 内调）
@@ -44,6 +45,7 @@ from app.api.routes.history_speak_cache_admin import (
     router as history_speak_cache_admin_router,
 )
 from app.api.routes.rule_gaps_admin import router as rule_gaps_admin_router
+from app.api.routes.miss_inbox_admin import router as miss_inbox_admin_router
 from app.api.routes.clinic import router as clinic_router
 from app.api.routes.care_alert import router as care_alert_router
 from app.api.routes.growth_trajectory import router as growth_trajectory_router
@@ -65,6 +67,7 @@ router.include_router(predict_cache_admin_router)
 router.include_router(locate_cache_admin_router)
 router.include_router(history_speak_cache_admin_router)
 router.include_router(rule_gaps_admin_router)
+router.include_router(miss_inbox_admin_router)
 router.include_router(clinic_router)
 router.include_router(care_alert_router)
 router.include_router(growth_trajectory_router)

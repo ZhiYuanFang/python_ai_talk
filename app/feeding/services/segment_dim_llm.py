@@ -231,16 +231,42 @@ async def llm_resolve_type(
     return tt, op, hm, pc, ta, need_confirm, keywords, summary, rs
 
 
+# EVENT 软候选上限（与 design K≤3 一致）
+_EVENT_SOFT_CANDIDATE_MAX = 3
+
+
+def _lookup_table_leaf(
+    eid: str,
+    ename: str,
+    full_events: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """按 id 或叶子名解析表内事件；非表内返回 None。"""
+    eid = (eid or "").strip()
+    ename = (ename or "").strip()
+    if eid:
+        for ev in full_events or []:
+            if str(ev.get("event_id") or "") == eid:
+                return ev
+    if ename:
+        for ev in get_leaf_events(full_events or []):
+            if str(ev.get("event_name") or "") == ename:
+                return ev
+    return None
+
+
 async def llm_resolve_event(
     segment: str,
     full_events: List[Dict[str, Any]],
     llm_model: Dict[str, Any],
-) -> Tuple[Optional[Dict[str, Any]], str]:
+) -> Tuple[List[Dict[str, Any]], str]:
     """
-    EVENT 小 LLM：表内对齐；不确定返回 None。
+    EVENT 小 LLM：表内软候选（0..3）；供确认/消歧，禁止静默落库。
+
+    业务说明：
+    兼容旧单字段 event_id/event_name；非法 id 过滤；按 id 去重截断。
 
     Returns:
-        (event_dict_or_none, raw_summary)
+        (candidates_leaf_dicts, raw_summary)
     """
     table = _format_leaf_table(full_events)
     cfg = llm_model_config_from_mapping(llm_model or {})
@@ -255,25 +281,46 @@ async def llm_resolve_event(
         node_name="segment_event_llm",
     )
     data = _parse_json_obj(content or "")
-    eid = str(data.get("event_id") or "").strip()
-    ename = str(data.get("event_name") or "").strip()
+    raw_cands = data.get("candidates")
+    # 兼容旧契约：单 event_id / event_name
+    if not isinstance(raw_cands, list):
+        eid = str(data.get("event_id") or "").strip()
+        ename = str(data.get("event_name") or "").strip()
+        raw_cands = [{"event_id": eid, "event_name": ename}] if eid or ename else []
+
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw_cands:
+        if not isinstance(item, dict):
+            continue
+        eid = str(item.get("event_id") or "").strip()
+        ename = str(item.get("event_name") or "").strip()
+        leaf = _lookup_table_leaf(eid, ename, full_events)
+        if leaf is None:
+            continue
+        lid = str(leaf.get("event_id") or "").strip()
+        if not lid or lid in seen:
+            continue
+        seen.add(lid)
+        out.append(leaf)
+        if len(out) >= _EVENT_SOFT_CANDIDATE_MAX:
+            break
+
     summary = json.dumps(
-        {"event_id": eid, "event_name": ename},
+        {
+            "candidates": [
+                {
+                    "event_id": str(c.get("event_id") or ""),
+                    "event_name": str(c.get("event_name") or ""),
+                }
+                for c in out
+            ]
+        },
         ensure_ascii=False,
     )
-    if not eid:
-        return None, summary
-    # 必须落在表内
-    for ev in full_events or []:
-        if str(ev.get("event_id") or "") == eid:
-            return ev, summary
-    # id 对不上时尝试按名精确匹配叶子
-    if ename:
-        for ev in get_leaf_events(full_events or []):
-            if str(ev.get("event_name") or "") == ename:
-                return ev, summary
-    logger.info("EVENT LLM 返回非表内 id，弃用: %s", summary)
-    return None, summary
+    if not out:
+        logger.info("EVENT LLM 无合法表内候选: %s", (content or "")[:200])
+    return out, summary
 
 
 async def llm_resolve_time(
