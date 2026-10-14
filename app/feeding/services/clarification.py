@@ -1109,7 +1109,8 @@ def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
         "keywords": [],
         "content": pending.clarify_message,
         "events": events,
-        "remark": pending.remark or None,
+        # IntentResult.remark 为 str，空备注必须是 "" 而非 None（软候选多消歧常 remark=""）
+        "remark": pending.remark or "",
         "match_confidence": None,
         "match_source": pending.match_source,
         "need_confirm": True,
