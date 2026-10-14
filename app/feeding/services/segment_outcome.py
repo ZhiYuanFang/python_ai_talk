@@ -43,4 +43,4 @@ def summarize_segment_outcomes(outcomes: List[SegmentOutcome]) -> str:
     return "。".join(parts) + "。"
 
 
-OTHER_UNSUPPORTED_MSG = "这类问题暂不支持，你可以再说喂养记录或查询相关的内容"
+OTHER_UNSUPPORTED_MSG = "，你可以再说喂养记录或查询相关的内容"
