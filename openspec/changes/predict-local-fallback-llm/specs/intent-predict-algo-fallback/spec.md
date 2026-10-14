@@ -1,0 +1,73 @@
+## ADDED Requirements
+
+### Requirement: Predict cold path SHALL use fixed seven-day history for local algorithm
+
+When the predict speak path cannot answer from Go active-eta or imminent anchors, for a non-appointment event the system SHALL load approximately the last seven Shanghai calendar days of history (aligned with Flutter prediction range) and run a local prediction tool whose outputs MAY include median interval, nextAt, expected duration, and expected amount. The algorithm window MUST NOT be driven by the user utterance TIME resolution. User TIME MUST NOT change the seven-day algorithm bounds.
+
+#### Scenario: Algorithm ignores utterance day words
+
+- **WHEN** 用户问「这两天大概隔多久喂一次」且进入算法兜底且事件非预约
+- **THEN** 系统 SHALL 以近 7 日史为算法输入
+- **AND** MUST NOT 仅用「这两天」物化窗作为算法拉史上界
+
+### Requirement: Predict cold path SHALL inject context history via shared compact builder
+
+On the same cold path, the system SHALL resolve a context time window using the same TIME methods as read-record (day-word rules, relative time flywheel, TIME small LLM as applicable), fetch history for that window, and format it with the shared `build_feeding_history_prompt_blocks` (or equivalent shared compact API). That compact history MUST be available to the answering LLM together with the user utterance and algorithm (or appointment) JSON. When the utterance has no usable time clue, the context history window MAY default to the same seven-day range as the algorithm.
+
+#### Scenario: Context window feeds LLM not algorithm
+
+- **WHEN** 用户原话含可解析相对时间且进入预测兜底
+- **THEN** 系统 SHALL 用与查史相同的 TIME 路径得到语境窗并拉史
+- **AND** SHALL 以共享紧凑史拼法注入 LLM 提示
+- **AND** 算法轨仍 MUST 使用固定近 7 日（非预约）
+
+### Requirement: Cold-path final answer SHALL be LLM grounded on tools and history
+
+When algorithm or appointment outputs are sufficient, the cold-path user-facing answer MUST be produced by an LLM call that receives the original utterance, the compact context history, and the tool/appointment JSON. The system prompt MUST require Chinese reasoning and MUST forbid inventing numeric predictions not present in the injected tool or history evidence. On intent SSE paths the LLM call MUST use `stream(thinking_enabled=True)`.
+
+#### Scenario: Grounded interval answer
+
+- **WHEN** 工具给出合法 interval/nextAt 且样本足够
+- **THEN** 终答 MUST 经 LLM 结合原话与注入块生成
+- **AND** MUST NOT 在无工具/史证据时编造具体间隔分钟数
+
+### Requirement: Insufficient samples or missing appointment MUST degrade without inventing
+
+For non-appointment events, when the local tool lacks sufficient samples (aligned with Flutter minimum sample rules), the system MUST return a Chinese message that data is too little to predict and MUST NOT call the answering LLM solely to invent numbers. For appointment roots, when nextAt is missing or unusable, the system MUST return a clear no-appointment-time style message and MUST NOT fabricate nextAt via interval algorithm.
+
+#### Scenario: Too few samples
+
+- **WHEN** 近 7 日有效间隔样本不足算法门槛
+- **THEN** 系统 MUST 直接表达数据量太少无法预测
+- **AND** MUST NOT 为此编造间隔或 nextAt
+
+#### Scenario: Appointment without nextAt
+
+- **WHEN** 事件为预约根且约定 nextAt 无效（如 0）
+- **THEN** 系统 MUST 明确无下次约定类语义
+- **AND** MUST NOT 用喂养间隔算法冒充预约时间
+
+### Requirement: Appointment roots SHALL bypass interval algorithm
+
+When the spoken event’s catalog root is marked appointment (`isAppointment`), the cold path MUST obtain nextAt from the device appointment-next API (twin internal GET aligned with App appointment/next) and MUST NOT compute nextAt from seven-day interval medians. Appointment results MAY be included in the device algorithm snapshot cache.
+
+#### Scenario: Vaccine next time uses appointment nextAt
+
+- **WHEN** 用户询问预约类事件下次时间且目录根为预约
+- **THEN** 系统 SHALL 使用 appointment nextAt 作为工具侧锚点
+- **AND** MUST NOT 仅用近 7 日历史间隔推算该预约 nextAt
+
+### Requirement: Algorithm snapshot SHALL use Redis with TTL and CUD invalidation
+
+The system SHALL cache per-device local algorithm (and appointment) tool snapshots in Redis with TTL of 10 minutes. On successful create/update/delete (and history-mutating end) persistence for that device, the system MUST delete the device snapshot key. Snapshot hits MUST skip re-fetching seven-day history for recomputation and MUST skip re-running the interval tool, but MUST NOT skip the answering LLM when a cold-path LLM answer is required. The snapshot MUST NOT be written into intent or TIME classification flywheels.
+
+#### Scenario: Repeat predict reuses snapshot
+
+- **WHEN** 同一 device 在 TTL 内连续进入算法兜底且无 CUD 落库
+- **THEN** 系统 SHALL 可复用 Redis 快照中的工具数字
+- **AND** MUST NOT 仅为重复问题再次拉取近 7 日并重算间隔
+
+#### Scenario: CUD clears snapshot
+
+- **WHEN** 该 device 意图 create/update/delete（或改史 end）落库成功
+- **THEN** 系统 MUST 删除该 device 的预测算法 Redis 快照

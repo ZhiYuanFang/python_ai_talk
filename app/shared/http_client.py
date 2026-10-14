@@ -168,6 +168,10 @@ class HttpClient:
             # event_id / parent_id 强制为 str，避免 JSON number 造成下游 int/str 漂移
             result = []
             for item in raw_list:
+                # 预约标志：与 Flutter isAppointment 对齐，供预测旁路
+                is_appt = item.get("isAppointment")
+                if is_appt is None:
+                    is_appt = item.get("is_appointment")
                 result.append({
                     "event_id": _to_str_id(item.get("id")),
                     "event_name": item.get("name"),
@@ -175,6 +179,7 @@ class HttpClient:
                     "unit": item.get("unit"),
                     "extra_names": item.get("extraNames"),
                     "parent_id": _to_str_id(item.get("parentId")),
+                    "is_appointment": is_appt,
                 })
 
             return result
@@ -482,6 +487,70 @@ class HttpClient:
         except httpx.HTTPError as e:
             logger.error(f"imminent pending 拉取失败: device_no={dn}, error={str(e)}")
             raise
+
+    async def get_appointment_next(
+        self, device_no: str, event_id: str
+    ) -> int:
+        """
+        拉取预约事件下次约定（device internal）。
+
+        业务逻辑：
+        1. GET {device}/device/internal/api/appointment/next?deviceNo=&eventId=
+        2. 头 X-Device-Gateway-Internal-Secret
+        3. 解包 data.nextAt；无行/失败返回 0（由调用方降级）
+
+        Args:
+            device_no: 设备号
+            event_id: 事件字典 id（调用方宜已归根）
+
+        Returns:
+            nextAt unix 秒；无效时 0
+        """
+        self._ensure_initialized()
+        dn = str(device_no or "").strip()
+        eid = str(event_id or "").strip()
+        base = str(settings.device_service_url or "").strip().rstrip("/")
+        secret = str(settings.device_gateway_internal_secret or "").strip()
+        if not dn or not eid or not base or not secret:
+            logger.warning(
+                "跳过预约 next：参数/device_url/密钥缺失 "
+                f"deviceNo={dn} eventId={eid} hasDevice={bool(base)} hasSecret={bool(secret)}"
+            )
+            return 0
+        try:
+            event_id_int = int(eid)
+        except ValueError:
+            logger.warning("预约 next eventId 非数字: %s", eid)
+            return 0
+        if event_id_int < 1:
+            return 0
+
+        url = f"{base}/device/internal/api/appointment/next"
+        headers = {"X-Device-Gateway-Internal-Secret": secret}
+        params = {"deviceNo": dn, "eventId": event_id_int}
+        try:
+            logger.info("预约 next GET: %s deviceNo=%s eventId=%s", url, dn, event_id_int)
+            response = await self._client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            payload = self._unwrap_go_data(response.json())
+            if isinstance(payload, dict):
+                raw = payload.get("nextAt")
+                if raw is None:
+                    raw = payload.get("next_at")
+                try:
+                    sec = int(raw or 0)
+                except (TypeError, ValueError):
+                    sec = 0
+                return sec if sec > 0 else 0
+            return 0
+        except httpx.HTTPError as e:
+            logger.error(
+                "预约 next 拉取失败: device_no=%s event_id=%s error=%s",
+                dn,
+                eid,
+                e,
+            )
+            return 0
 
     async def get_baby_profile(self, device_no: str) -> Optional[Dict[str, Any]]:
         """

@@ -163,6 +163,13 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
             intent_cache_store.add_event_phrase(
                 doc, event_id=eid, event_name=ename, kind=kind
             )
+        # 史已变：清除预测算法 Redis 快照，避免连续兜底用旧间隔
+        try:
+            from app.feeding.services.predict_algo_cache import predict_algo_cache
+
+            await predict_algo_cache.delete(device_no)
+        except Exception as exc:
+            logger.warning("清除预测算法快照失败: %s", exc)
     logger.info(f"落库回执: {content}")
     return {"intent_result": IntentResult.model_validate(intent), "response": content}
 
