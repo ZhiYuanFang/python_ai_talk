@@ -37,7 +37,7 @@ Python `feeding` 内移植场景核：occurrence 序列 → TOD+半衰期加权�
 
 ### D3：预约
 
-目录 `isAppointment`；孪生 internal GET 对齐 App `GET .../appointment/next`（deviceNo+eventId → nextAt）。无约定或过期：明确降级文案，不跑间隔算法冒充。
+对齐 Go：`event.is_appointment` → JSON `isAppointment`，**仅看命中事件自身**（默认 0；与 eventType 正交）。禁止「根或子树任一为真则整根预约」聚合。孪生 internal GET 对齐 App `GET .../appointment/next`（deviceNo+**该 eventId** → nextAt）。无约定或过期：明确降级文案，不跑间隔算法冒充。
 
 ### D4：Redis 快照
 

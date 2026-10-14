@@ -43,19 +43,25 @@ For non-appointment events, when the local tool lacks sufficient samples (aligne
 
 #### Scenario: Appointment without nextAt
 
-- **WHEN** 事件为预约根且约定 nextAt 无效（如 0）
+- **WHEN** 命中事件 `isAppointment=true` 且约定 nextAt 无效（如 0）
 - **THEN** 系统 MUST 明确无下次约定类语义
 - **AND** MUST NOT 用喂养间隔算法冒充预约时间
 
-### Requirement: Appointment roots SHALL bypass interval algorithm
+### Requirement: Appointment events SHALL bypass interval algorithm by event field
 
-When the spoken event’s catalog root is marked appointment (`isAppointment`), the cold path MUST obtain nextAt from the device appointment-next API (twin internal GET aligned with App appointment/next) and MUST NOT compute nextAt from seven-day interval medians. Appointment results MAY be included in the device algorithm snapshot cache.
+When the spoken/matched catalog event itself is marked appointment (`isAppointment` / Go `event.is_appointment` = 1), the cold path MUST obtain nextAt from the device appointment-next API with that **same eventId** (twin internal GET aligned with App appointment/next) and MUST NOT compute nextAt from seven-day interval medians. The system MUST NOT treat a non-appointment event as appointment merely because its catalog root or a sibling under the same root is marked appointment. Appointment results MAY be included in the device algorithm snapshot cache keyed by that eventId.
 
 #### Scenario: Vaccine next time uses appointment nextAt
 
-- **WHEN** 用户询问预约类事件下次时间且目录根为预约
-- **THEN** 系统 SHALL 使用 appointment nextAt 作为工具侧锚点
+- **WHEN** 用户询问预约类事件下次时间且该事件 `isAppointment=true`
+- **THEN** 系统 SHALL 使用 appointment nextAt（eventId=该事件）作为工具侧锚点
 - **AND** MUST NOT 仅用近 7 日历史间隔推算该预约 nextAt
+
+#### Scenario: Non-appointment leaf under shared root uses interval path
+
+- **WHEN** 用户询问日常事件（如配方奶）且该事件 `isAppointment=false`，即使同根下另有预约叶
+- **THEN** 系统 MUST NOT 走预约约定降级文案
+- **AND** SHALL 按非预约冷路径（Go miss 后近 7 日算法 ± LLM）处理
 
 ### Requirement: Algorithm snapshot SHALL use Redis with TTL and CUD invalidation
 

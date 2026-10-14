@@ -1,23 +1,23 @@
 """
-预约事件判定（对齐 Flutter appointment_event）
+预约事件判定（对齐 Go event.is_appointment）
 
 业务说明：
-目录根或其子树任一节点 is_appointment 为真时，该根按预约处理：
-不走间隔算法，只用 appointment/next 约定 nextAt。
+字典每条事件自带 isAppointment（DB is_appointment，默认 0）。
+是否走预约约定 API，只看**命中事件自身**该字段；禁止按根/子树聚合误伤同根日常事件。
+与 eventType（number|time|one）正交。
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from app.feeding.services.event_hierarchy import get_root_event_id
-
 
 def parse_is_appointment_flag(raw: Any) -> bool:
     """
     解析 isAppointment / is_appointment 标志。
 
-    业务逻辑：1/true/"1"/"true" 为真；缺省 false。
+    业务逻辑：
+    对齐 Go normalizeIsAppointment：仅 1/true/"1"/"true" 等为真；0/缺省/其它为假。
     """
     if raw is True:
         return True
@@ -26,65 +26,44 @@ def parse_is_appointment_flag(raw: Any) -> bool:
     if isinstance(raw, (int, float)):
         return int(raw) == 1
     s = str(raw).strip().lower()
-    return s in ("1", "true", "yes", "y")
+    return s in ("1", "true", "yes", "y", "on")
 
 
 def event_is_appointment_flag(ev: Dict[str, Any]) -> bool:
     """单条目录项是否标预约。"""
     if not isinstance(ev, dict):
         return False
-    return parse_is_appointment_flag(
-        ev.get("is_appointment")
-        if "is_appointment" in ev
-        else ev.get("isAppointment")
-    )
+    if "is_appointment" in ev:
+        return parse_is_appointment_flag(ev.get("is_appointment"))
+    return parse_is_appointment_flag(ev.get("isAppointment"))
 
 
-def catalog_root_is_appointment(
-    root_event_id: str,
+def find_catalog_event(
+    event_id: str,
     catalog: List[Dict[str, Any]],
-) -> bool:
-    """
-    某根（或其子树任一节点标了预约）是否按预约事件处理。
-
-    对齐 Flutter catalogRootIsAppointment。
-    """
-    root = str(root_event_id or "").strip()
-    if not root or not catalog:
-        return False
-    id_to: Dict[str, Dict[str, Any]] = {}
+) -> Optional[Dict[str, Any]]:
+    """按 event_id 查目录项。"""
+    eid = str(event_id or "").strip()
+    if not eid or not catalog:
+        return None
     for e in catalog:
         if not isinstance(e, dict):
             continue
-        eid = str(e.get("event_id") or e.get("id") or "").strip()
-        if eid:
-            id_to[eid] = e
-    root_def = id_to.get(root)
-    if root_def and event_is_appointment_flag(root_def):
-        return True
-    for e in catalog:
-        if not isinstance(e, dict) or not event_is_appointment_flag(e):
-            continue
-        eid = str(e.get("event_id") or e.get("id") or "").strip()
-        if not eid:
-            continue
-        r = get_root_event_id(eid, catalog) or eid
-        if r == root:
-            return True
-    return False
+        if str(e.get("event_id") or e.get("id") or "").strip() == eid:
+            return e
+    return None
 
 
-def appointment_root_for_event(
+def catalog_event_is_appointment(
     event_id: str,
     catalog: List[Dict[str, Any]],
-) -> Optional[str]:
+) -> bool:
     """
-    若事件所属根为预约，返回根 id；否则 None。
+    命中事件是否为预约（仅看该行 isAppointment）。
+
+    对齐 Go entity.Event.IsAppointment；缺项或缺字段视为非预约。
     """
-    eid = str(event_id or "").strip()
-    if not eid:
-        return None
-    root = get_root_event_id(eid, catalog) or eid
-    if catalog_root_is_appointment(root, catalog):
-        return root
-    return None
+    ev = find_catalog_event(event_id, catalog)
+    if not ev:
+        return False
+    return event_is_appointment_flag(ev)

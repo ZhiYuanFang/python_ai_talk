@@ -3,7 +3,8 @@
 
 业务说明：
 Go active-eta / imminent 命中 → 保留模板 clock/remain。
-miss 或预约根 → 冷路径：固定近 7 日算法（或预约约定）+ 语境史 compact + LLM；
+miss 或命中事件 isAppointment → 冷路径：近 7 日算法（或预约约定）+ 语境史 compact + LLM；
+预约仅看该事件自身字段（对齐 Go），不按根/子树聚合；
 算法结果 Redis 快照 TTL 10min；样本不足/无约定直接降级，禁止编造与查史用时回落。
 """
 
@@ -17,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.feeding.graphs.nodes.prompts.system import PREDICT_FALLBACK_SYSTEM_PROMPT
 from app.feeding.schemas.intent_result import IntentResult, coerce_intent_result
-from app.feeding.services.appointment_event import catalog_root_is_appointment
+from app.feeding.services.appointment_event import catalog_event_is_appointment
 from app.feeding.services.dim_resolve import resolve_time
 from app.feeding.services.event_hierarchy import (
     get_descendant_leaves,
@@ -140,7 +141,8 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
                 break
 
     root_id = get_root_event_id(eid, full_events) or eid
-    is_appt = catalog_root_is_appointment(root_id, full_events)
+    # 仅命中事件自身 isAppointment（对齐 Go）；不按根/子树聚合
+    is_appt = catalog_event_is_appointment(eid, full_events)
 
     # 预约不走 Go predict Redis；非预约先试 Go 模板热路径
     if (
@@ -211,6 +213,7 @@ async def _cold_path_answer(
     """算法/预约 + 语境史 + LLM（或样本不足直接降级）。"""
     tool = await _resolve_tool_result(
         device_no=device_no,
+        event_id=event_id,
         root_id=root_id,
         event_name=event_name,
         full_events=full_events,
@@ -240,17 +243,22 @@ async def _cold_path_answer(
 async def _resolve_tool_result(
     *,
     device_no: str,
+    event_id: str,
     root_id: str,
     event_name: str,
     full_events: List[Dict[str, Any]],
     is_appointment: bool,
 ) -> PredictToolResult:
-    """快照优先；预约读约定；否则近 7 日算法。"""
-    cached = await predict_algo_cache.get_root(device_no, root_id)
+    """
+    快照优先；预约按命中 eventId 读约定；否则近 7 日算法（按根拉史）。
+    """
+    # 预约缓存键用事件自身 id；间隔算法仍按根
+    cache_key = event_id if is_appointment else root_id
+    cached = await predict_algo_cache.get_root(device_no, cache_key)
     if cached and str(cached.get("status") or "") == "ok":
         try:
             return PredictToolResult(
-                event_id=str(cached.get("event_id") or root_id),
+                event_id=str(cached.get("event_id") or cache_key),
                 event_name=str(cached.get("event_name") or event_name),
                 status="ok",
                 last_at=cached.get("last_at"),
@@ -269,12 +277,15 @@ async def _resolve_tool_result(
             logger.warning("快照还原失败，重算: %s", exc)
 
     if is_appointment:
-        next_at = await http_client.get_appointment_next(device_no, root_id)
+        # Go appointment_next 按事件 id，不用根聚合
+        next_at = await http_client.get_appointment_next(device_no, event_id)
         tool = appointment_tool_result(
-            event_id=root_id, event_name=event_name, next_at=next_at
+            event_id=event_id, event_name=event_name, next_at=next_at
         )
         if tool.status == "ok":
-            await predict_algo_cache.put_root(device_no, root_id, tool.to_prompt_dict())
+            await predict_algo_cache.put_root(
+                device_no, event_id, tool.to_prompt_dict()
+            )
         return tool
 
     start_u, end_u = prediction_seven_day_unix_bounds()

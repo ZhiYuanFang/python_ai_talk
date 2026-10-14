@@ -1,13 +1,13 @@
 ## 1. 孪生与目录
 
 - [x] 1.1 孪生 Go：device internal GET 对齐 App `appointment/next`（deviceNo+eventId→nextAt；密钥中间件；无行 0）
-- [x] 1.2 Python：事件目录可读 `isAppointment`（options），实现预约根判定（对齐 Flutter catalogRootIsAppointment）
+- [x] 1.2 Python：事件目录可读 `isAppointment`（options）；按**命中事件自身**字段判定（对齐 Go `event.is_appointment`，不按根/子树聚合）
 - [x] 1.3 `http_client`：预约 next internal GET；中文注释
 
 ## 2. 本地预测工具
 
 - [x] 2.1 按 Flutter `event_next_predictor` 场景封装：近 7 日窗、加权中位间隔、nextAt、expect 用量/时长；中文注释
-- [x] 2.2 预约根旁路间隔，仅用 appointment nextAt；无约定明确降级
+- [x] 2.2 命中事件 `isAppointment` 旁路间隔，用该 eventId 调 appointment nextAt；无约定明确降级
 - [x] 2.3 样本不足返回可区分结果（供上层直接「数据量太少，无法预测」）
 
 ## 3. Redis 算法快照
