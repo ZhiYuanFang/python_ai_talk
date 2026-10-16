@@ -182,7 +182,7 @@ async def _rewrite_end_without_open(
     full_events: list,
 ) -> tuple:
     """
-    U·end 无 open → 转 C。
+    计时 U·end 无进行中 → 转补记。非计时不查进行中、不改成新建。
 
     Returns:
         (intent, clarify_message|None)
@@ -193,8 +193,23 @@ async def _rewrite_end_without_open(
     from app.shared.history_window import enum_to_unix
     from app.shared.http_client import http_client
 
+    def _event_type(item: Dict[str, Any]) -> str:
+        eid = str(item.get("event_id") or "").strip()
+        leaf = get_event_by_id(eid, full_events) if eid else None
+        return str(
+            (leaf or {}).get("event_type")
+            or (leaf or {}).get("type")
+            or item.get("event_type")
+            or "one"
+        ).lower()
+
     events = [e for e in (intent.get("events") or []) if isinstance(e, dict)]
-    if not any(str(e.get("op") or "").lower() == "end" for e in events):
+    timer_ends = [
+        e
+        for e in events
+        if str(e.get("op") or "").lower() == "end" and _event_type(e) == "time"
+    ]
+    if not timer_ends:
         return intent, None
     start_time, end_time = enum_to_unix("last_30_days")
     try:
@@ -217,24 +232,24 @@ async def _rewrite_end_without_open(
             open_by_eid.add(eid)
     rewritten: list = []
     clarify_parts: list = []
+    rewrote = False
     for ev in events:
         item = dict(ev)
         if str(item.get("op") or "").lower() != "end":
+            rewritten.append(item)
+            continue
+        et = _event_type(item)
+        if et != "time":
+            # 非计时保持原操作，不因没有进行中改成新建
             rewritten.append(item)
             continue
         eid = str(item.get("event_id") or "").strip()
         if eid and eid in open_by_eid:
             rewritten.append(item)
             continue
-        # 无进行中 → 转 C
-        leaf = get_event_by_id(eid, full_events) if eid else None
-        et = str(
-            (leaf or {}).get("event_type")
-            or (leaf or {}).get("type")
-            or item.get("event_type")
-            or "one"
-        ).lower()
+        # 计时无进行中 → 转补记
         item["op"] = IntentOp.CREATE.value
+        rewrote = True
         try:
             st = int(item.get("start_time") or 0)
             etm = int(item.get("end_time") or 0)
@@ -248,18 +263,12 @@ async def _rewrite_end_without_open(
                 clarify_parts.append(f"{name}需要补充开始和结束时间")
                 rewritten.append(item)
                 continue
-        elif et == "number":
-            item["action"] = IntentAction.ONE.value
-            if item.get("quantity") is None:
-                name = str(item.get("event_name") or "该事件")
-                clarify_parts.append(f"{name}需要补充数量")
-        else:
-            item["action"] = IntentAction.ONE.value
         rewritten.append(item)
-        logger.info("U·end 无进行中，转 C: event_id=%s type=%s", eid, et)
+        logger.info("计时 end 无进行中，转补记: event_id=%s", eid)
     out = dict(intent)
     out["events"] = rewritten
-    out["target_type"] = TargetType.CREATE.value
+    if rewrote:
+        out["target_type"] = TargetType.CREATE.value
     if clarify_parts:
         return out, "。".join(clarify_parts) + "。"
     return out, None

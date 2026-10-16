@@ -666,6 +666,16 @@ async def resolve_segment(
     draft.event_type = et
     if et == "time" and op == "end":
         draft.action = IntentAction.END.value
+    elif tt == TargetType.UPDATE.value and op == "end" and et != "time":
+        # 非计时没有开表。轨已是更新时，结束词不得把子操作留成 end。
+        op = IntentOp.UPDATE.value
+        draft.op = op
+        draft.action = IntentAction.ONE.value
+        logger.info(
+            "非计时更新收回 end: event=%s type=%s",
+            draft.event_name,
+            et,
+        )
     # create + time 无闭合起止 → 追问（U·end 转 C 时同样适用）
     if (
         tt == TargetType.CREATE.value

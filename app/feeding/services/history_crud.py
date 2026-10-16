@@ -132,8 +132,10 @@ def collect_event_items(
         ):
             action = IntentAction.ONE.value
         if item_op == "end" and not is_timer:
-            item_op = IntentOp.CREATE.value
-            action = IntentAction.ONE.value
+            # 非计时的 end 是更新轨误标，改回修改，不新建一条。
+            item_op = IntentOp.UPDATE.value
+            if action == IntentAction.END.value:
+                action = ""
         qty = ev.get("quantity")
         if qty is None:
             qty = data.get("quantity")

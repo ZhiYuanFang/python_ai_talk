@@ -65,8 +65,23 @@ async def soft_reply_for_miss(
     except Exception as exc:
         logger.debug("miss 软回复读画像跳过: %s", exc)
 
+    # 近况是本轮之前的来回；本轮原话单独一行，回答落定后再写入
+    recent_block = ""
+    try:
+        from app.feeding.services.intent_recent_talk import intent_recent_talk_store
+
+        recent_block = await intent_recent_talk_store.prompt_block(device_no)
+    except Exception as exc:
+        logger.debug("miss 软回复读近况跳过: %s", exc)
+    recent_section = (
+        f"近十分钟对话（只作背景，不是喂养记录）：\n{recent_block}\n"
+        if recent_block
+        else ""
+    )
+
     user_payload = (
         f"用户原话：{(utterance or '').strip() or '（空）'}\n"
+        f"{recent_section}"
         f"预测算法快照：{snap_block}\n"
         f"{baby_block}\n"
         "请直接回答用户原话。"

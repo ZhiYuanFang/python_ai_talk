@@ -66,10 +66,10 @@ def derive_item_op(
     action = str(ev.get("action") or "").strip().lower()
     is_timer = _is_timer_leaf(leaf)
     if action == IntentAction.END.value:
-        # 无字典时仍按 end；有字典且非计时则降为 create（由 collect 再盖）
+        # 无字典或计时仍按 end。非计时没有开表，动作是结束时保持更新，不改成新建。
         if leaf is None or is_timer:
             return "end"
-        return IntentOp.CREATE.value
+        return IntentOp.UPDATE.value
     if action in (
         IntentAction.START.value,
         IntentAction.ONE.value,

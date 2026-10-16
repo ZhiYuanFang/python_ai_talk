@@ -61,59 +61,76 @@ async def _finish_intent_response(
     """
     对外返回前：终局 miss 先硬文案落库，再 LLM 软回复替换 content。
 
-    确认/消歧跳过。软回复失败回退硬文案。barge 认 miss_canonical_content。
+    确认/消歧也记下对外句子。软回复失败回退硬文案。barge 认 miss_canonical_content。
+    近况在软回复之前读取，本函数返回前再写入本轮听到的句子。
     """
+    from app.feeding.services.intent_recent_talk import intent_recent_talk_store
+
     hard = str(response.content or "")
     need_confirm = bool(response.need_confirm)
     confirm_type = str(getattr(response, "confirm_type", None) or "").strip()
     options = list(response.options or [])
-    # 确认中不记、不润色
-    if need_confirm or confirm_type or options:
-        return response
-
-    kind = infer_miss_fail_kind(
-        content=hard,
-        target_type=str(response.target_type or ""),
-        need_confirm=False,
-    )
-    if not kind:
-        return response
-
+    spoken = ""
     try:
-        maybe_record_agent_miss(
-            {
-                "content": hard,
-                "target_type": response.target_type or "",
-                "need_confirm": False,
-                "confirm_type": "",
-                "options": [],
-                "conversation_id": getattr(response, "conversation_id", None) or "",
-                "utterance": user_input,
-            },
-            user_input=user_input,
-            device_no=device_no,
-            conversation_id=str(
-                getattr(response, "conversation_id", None) or ""
-            ),
-        )
-    except Exception as exc:
-        logger.warning("覆盖缺口挂钩失败: %s", exc)
+        # 确认中不润色，但确认句本身要留给下一轮近况
+        if need_confirm or confirm_type or options:
+            spoken = str(getattr(response, "confirm_message", None) or hard).strip()
+            return response
 
-    response.miss_canonical_content = hard
-    response.miss_fail_kind = kind
-    try:
-        soft = await soft_reply_for_miss(
-            utterance=user_input,
-            hard_content=hard,
-            fail_kind=kind,
-            device_no=device_no,
-            llm_model=model_config,
+        kind = infer_miss_fail_kind(
+            content=hard,
+            target_type=str(response.target_type or ""),
+            need_confirm=False,
         )
-        if soft:
-            response.content = soft
-    except Exception as exc:
-        logger.warning("miss 软回复失败，保留硬文案: %s", exc)
-    return response
+        if not kind:
+            spoken = hard.strip()
+            return response
+
+        try:
+            maybe_record_agent_miss(
+                {
+                    "content": hard,
+                    "target_type": response.target_type or "",
+                    "need_confirm": False,
+                    "confirm_type": "",
+                    "options": [],
+                    "conversation_id": getattr(response, "conversation_id", None) or "",
+                    "utterance": user_input,
+                },
+                user_input=user_input,
+                device_no=device_no,
+                conversation_id=str(
+                    getattr(response, "conversation_id", None) or ""
+                ),
+            )
+        except Exception as exc:
+            logger.warning("覆盖缺口挂钩失败: %s", exc)
+
+        response.miss_canonical_content = hard
+        response.miss_fail_kind = kind
+        try:
+            soft = await soft_reply_for_miss(
+                utterance=user_input,
+                hard_content=hard,
+                fail_kind=kind,
+                device_no=device_no,
+                llm_model=model_config,
+            )
+            if soft:
+                response.content = soft
+        except Exception as exc:
+            logger.warning("miss 软回复失败，保留硬文案: %s", exc)
+        spoken = str(response.content or "").strip()
+        return response
+    finally:
+        try:
+            await intent_recent_talk_store.append_turn(
+                device_no,
+                user=user_input,
+                assistant=spoken,
+            )
+        except Exception as exc:
+            logger.warning("记录意图近况失败: %s", exc)
 
 
 def _run_config(thread_id: str) -> Dict[str, Any]:
