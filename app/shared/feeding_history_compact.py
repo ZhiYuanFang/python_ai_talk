@@ -4,7 +4,7 @@
 业务说明：
 将上游已拉取的喂养史按「日历日 × 事件名」聚合成短行，并单独给出 eventName=eventId 对照表；
 流水时刻可挂备注；history_text 前缀拼本地「相邻日链式增减」摘要，供多 Agent 共用。
-行格式：{日历日}·{eventName}·{HH:MM(备注)/...}·{总量段}；日标签同年 MM-DD、跨年 YYYY-MM-DD。
+行格式：{日历日}·{eventName}·{HH:MM(备注)/...}·{总量段}；日标签同年为 M月D日、跨年为 YYYY年M月D日。
 拉取窗口由调用方决定，本模块不再二次截断。
 """
 
@@ -143,11 +143,13 @@ def _parse_anchor_date(
 
 def _format_day_label(event_day: date, anchor: date) -> str:
     """
-    日历日标签：与锚点同年 → MM-DD；跨年 → YYYY-MM-DD。
+    日历日标签：与锚点同年为 M月D日；跨年为 YYYY年M月D日。
+
+    不使用 10-15 这类连字符，避免兜底汇总照抄。
     """
     if event_day.year == anchor.year:
-        return f"{event_day.month:02d}-{event_day.day:02d}"
-    return event_day.isoformat()
+        return f"{event_day.month}月{event_day.day}日"
+    return f"{event_day.year}年{event_day.month}月{event_day.day}日"
 
 
 def _clock_hm_with_ongoing(raw: Dict[str, Any]) -> Tuple[str, bool]:
