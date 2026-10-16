@@ -1,9 +1,10 @@
 """
-覆盖缺口对外软回复
+覆盖缺口对外回答
 
 业务说明：
-miss 已用硬文案落库后，可选注入预测快照与宝宝画像，经 LLM 生成更自然的对外 content。
-无快照不重算；LLM 失败回退硬文案。不影响 fail_kind / 统计。
+miss 已用硬文案落库。对外不再复述失败，只把宝宝画像和已有预测快照交给模型直接答。
+快照没有对应事件时允许按快照猜测。无快照不重算。模型失败才回退硬文案。
+不影响 fail_kind 与统计。
 """
 
 from __future__ import annotations
@@ -21,14 +22,6 @@ from app.shared.llm_client import llm_model_config_from_mapping
 
 logger = logging.getLogger(__name__)
 
-_FAIL_KIND_ZH = {
-    "event_unresolved": "无法识别对应事件",
-    "other_unsupported": "暂不支持该类请求",
-    "predict_uncertain": "暂时无法可靠预估时间",
-    "segment_unclear": "未听清或需再说一遍",
-}
-
-
 def _baby_profile_brief(profile: Optional[Dict[str, Any]]) -> str:
     """与诊疗同一套名字、性别、月龄；没有画像则空串。"""
     return format_baby_profile_prompt(profile)
@@ -43,11 +36,14 @@ async def soft_reply_for_miss(
     llm_model: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
-    生成 miss 对外软回复；失败返回 hard_content。
+    用画像和预测快照生成对外回答；模型失败才返回 hard_content。
+
+    fail_kind 只留给上游统计，不写入提示词。
 
     Side Effects:
         只读 Redis 预测快照、只读宝宝画像；可能调用 LLM stream。
     """
+    del fail_kind
     hard = (hard_content or "").strip()
     if not hard:
         return hard_content or ""
@@ -69,16 +65,11 @@ async def soft_reply_for_miss(
     except Exception as exc:
         logger.debug("miss 软回复读画像跳过: %s", exc)
 
-    kind_zh = _FAIL_KIND_ZH.get(fail_kind, fail_kind or "未能完成意图")
     user_payload = (
         f"用户原话：{(utterance or '').strip() or '（空）'}\n"
-        f"失败类别：{fail_kind}（{kind_zh}）\n"
-        f"规范失败文案：{hard}\n"
         f"预测算法快照：{snap_block}\n"
-        f"宝宝基础信息：{baby_block}\n"
-        "请生成一句给家长的简短口语回复（说明这次没能可靠完成该意图，"
-        "可温和引导换种说法或稍后再试；有快照数字时仅可作不确定参考，"
-        "不得假装已给出权威预约/下次时间）。"
+        f"{baby_block}\n"
+        "请直接回答用户原话。"
     )
     cfg = llm_model_config_from_mapping(llm_model or {})
     try:
