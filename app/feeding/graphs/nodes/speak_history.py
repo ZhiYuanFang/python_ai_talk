@@ -3,9 +3,12 @@
 
 业务说明：
 按已定 event_ids + unix 窗 + 可选 remark 拉史，用模板填 content。
-父 id 递归展开为叶子再拉史；来自父则塌成最近一条并点出父名与叶子名。
+先查口头说的事件；父无记录才改用最近有记录的子，子无记录只再试父一次。
 点查选行/进行中话术服从查史播报飞轮两维（point_pick / open_speak）；
-缺维走小 LLM，禁止静默优先已完成。日汇总走共享紧凑聚合。
+缺维走小 LLM，禁止静默优先已完成。
+日汇总非次数问按语境短答，未覆盖走模型并记规则缺口。
+无事件编号不追问，按窗或点查最近全量后二十字猜测。
+父无记录则只用最近有记录的子事件；子无记录则再试父一次。
 """
 
 from __future__ import annotations
@@ -21,6 +24,12 @@ from app.feeding.services.event_hierarchy import (
     get_descendant_leaves,
     get_event_by_id,
     is_parent_event,
+)
+from app.feeding.services.history_daily_context import (
+    daily_context_kind,
+    llm_daily_uncovered,
+    llm_missing_event_guess,
+    rule_answer_for_kind,
 )
 from app.feeding.services.history_mode_cues import (
     day_phrase_for_speak,
@@ -38,7 +47,6 @@ from app.shared.history_prompt_fields import (
     _parse_epoch,
     format_history_time,
 )
-from app.shared.feeding_history_compact import build_feeding_history_prompt_blocks
 from app.shared.history_window import (
     enum_to_unix,
     parse_day_word_window,
@@ -375,6 +383,125 @@ def _expand_query_ids(
     return query_ids, parent_ids
 
 
+def _latest_single_event_rows(
+    rows: List[Dict[str, Any]],
+    full_events: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    多子事件混在一起时，只留时间最近的那一个事件的行。
+
+    Returns:
+        (该事件的行, 事件名)
+    """
+    best_id = ""
+    best_ts = -1.0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        rid = _row_id(row)
+        ts = _row_start_ts(row)
+        if rid and ts >= best_ts:
+            best_ts = ts
+            best_id = rid
+    if not best_id:
+        return [], ""
+    scoped = [r for r in rows if isinstance(r, dict) and _row_id(r) == best_id]
+    found = get_event_by_id(best_id, full_events)
+    name = str((found or {}).get("event_name") or "").strip()
+    return scoped, name
+
+
+async def _fetch_history_ids(
+    *,
+    device_no: str,
+    event_ids: Optional[List[str]],
+    mode: str,
+    start_time: Optional[int],
+    end_time: Optional[int],
+    limit: int,
+    remark: Optional[str],
+    ignore_time: bool,
+) -> List[Dict[str, Any]]:
+    """按模式拉史：日汇总带窗，点查忽略时间窗。"""
+    if mode == "daily" and not ignore_time:
+        return await http_client.get_filtered_history_events(
+            device_no=device_no,
+            event_ids=event_ids,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            remark=remark,
+            ignore_time_range=False,
+        )
+    return await http_client.get_filtered_history_events(
+        device_no=device_no,
+        event_ids=event_ids,
+        limit=limit,
+        remark=remark,
+        ignore_time_range=True,
+    )
+
+
+async def _kin_retry_rows(
+    *,
+    device_no: str,
+    event_id: str,
+    full_events: List[Dict[str, Any]],
+    mode: str,
+    start_time: Optional[int],
+    end_time: Optional[int],
+    limit: int,
+    remark: Optional[str],
+    ignore_time: bool,
+) -> Tuple[List[Dict[str, Any]], str, bool]:
+    """
+    口头父子对不齐时再试一次。
+
+    父无记录：拉全部子孙后只留最近有记录的一个子。
+    子无记录：只再查父 id，不扫兄弟。
+
+    Returns:
+        (行, 用来播报的名字, 是否改用了子事件)
+    """
+    if is_parent_event(event_id, full_events):
+        leaf_ids = [
+            str(leaf.get("event_id") or "").strip()
+            for leaf in get_descendant_leaves(event_id, full_events)
+        ]
+        leaf_ids = [x for x in leaf_ids if x]
+        if not leaf_ids:
+            return [], "", False
+        rows = await _fetch_history_ids(
+            device_no=device_no,
+            event_ids=leaf_ids,
+            mode=mode,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            remark=remark,
+            ignore_time=ignore_time,
+        )
+        scoped, name = _latest_single_event_rows(rows, full_events)
+        return scoped, name, bool(scoped)
+    found = get_event_by_id(event_id, full_events)
+    parent_id = str((found or {}).get("parent_id") or "").strip()
+    if not parent_id or parent_id in ("0", "None"):
+        return [], "", False
+    rows = await _fetch_history_ids(
+        device_no=device_no,
+        event_ids=[parent_id],
+        mode=mode,
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+        remark=remark,
+        ignore_time=ignore_time,
+    )
+    parent = get_event_by_id(parent_id, full_events)
+    name = str((parent or {}).get("event_name") or "").strip()
+    return rows or [], name, False
+
+
 def _template_point(
     rows: List[Dict[str, Any]],
     event_names: List[str],
@@ -468,6 +595,67 @@ def _template_parent_latest(
     )
 
 
+async def _answer_without_event(
+    state: Any,
+    intent: Dict[str, Any],
+    full_events: List[Dict[str, Any]],
+    mode: str,
+) -> str:
+    """
+    整段没有事件编号：按已解析窗拉全类型，二十字内猜测。
+
+    点查或窗无效时只取最近若干条，避免无界全量。
+    不写事件说法飞轮。
+    """
+    del full_events
+    device_no = state_get(state, "device_no") or ""
+    user_text = state_get(state, "user_input") or ""
+    llm_model = (
+        state_get(state, "llm_model") or state_get(state, "model_config") or {}
+    )
+    if not isinstance(llm_model, dict):
+        llm_model = {}
+    req = {
+        "start_time": intent.get("start_time") or intent.get("startTime"),
+        "end_time": intent.get("end_time") or intent.get("endTime"),
+        "time_range": intent.get("time_range"),
+    }
+    start_time, end_time = resolve_window(req)
+    ignore_time = coerce_ignore_time_range(intent.get("ignore_time_range"))
+    if (
+        mode == "daily"
+        and not ignore_time
+        and start_time is None
+        and end_time is None
+    ):
+        filled = parse_day_word_window(user_text)
+        if filled is None and is_count_query(user_text):
+            filled = enum_to_unix("today")
+        if filled is not None:
+            start_time, end_time = filled
+    bounded = mode == "daily" and not ignore_time and start_time is not None
+    try:
+        rows = await _fetch_history_ids(
+            device_no=device_no,
+            event_ids=None,
+            mode=mode,
+            start_time=start_time,
+            end_time=end_time,
+            limit=50 if bounded else 20,
+            remark=None,
+            ignore_time=not bounded,
+        )
+    except Exception as exc:
+        logger.error("无事件拉史失败: %s", exc, exc_info=True)
+        rows = []
+    return await llm_missing_event_guess(
+        utterance=str(user_text),
+        rows=rows or [],
+        device_no=device_no,
+        llm_model=llm_model,
+    )
+
+
 async def speak_history(state: Any) -> Dict[str, Any]:
     """按 events[].op=read 各自时间窗拉史并模板播报。"""
     from app.feeding.services.intent_events import (
@@ -515,7 +703,13 @@ async def speak_history(state: Any) -> Dict[str, Any]:
                 }
             )
     if not read_items:
-        content = "请先说明要查哪个事件，我不会一次拉取全部记录。"
+        # 无事件：按已解析窗拉全量；点查或无界则最近若干条，禁止无条件全量
+        content = await _answer_without_event(
+            state,
+            intent,
+            full_events,
+            mode=(intent.get("history_mode") or "point").strip().lower(),
+        )
         intent["content"] = content
         return {
             "intent_result": IntentResult.model_validate(intent),
@@ -524,17 +718,17 @@ async def speak_history(state: Any) -> Dict[str, Any]:
 
     user_text = state_get(state, "user_input") or ""
     mode = (intent.get("history_mode") or "point").strip().lower()
-    # 点查策略两维：飞轮或 LLM；daily 不需要
+    # 点查策略两维：飞轮或 LLM；日汇总未覆盖语境也要用同一模型配置
     point_pick = ""
     open_speak = ""
+    llm_model = (
+        state_get(state, "llm_model")
+        or state_get(state, "model_config")
+        or {}
+    )
+    if not isinstance(llm_model, dict):
+        llm_model = {}
     if mode != "daily":
-        llm_model = (
-            state_get(state, "llm_model")
-            or state_get(state, "model_config")
-            or {}
-        )
-        if not isinstance(llm_model, dict):
-            llm_model = {}
         policy = await resolve_history_speak_policy(str(user_text), llm_model)
         if policy is None:
             content = HISTORY_SPEAK_DEGRADE
@@ -619,10 +813,34 @@ async def speak_history(state: Any) -> Dict[str, Any]:
                 )
         original_ids = [eid] if eid else []
         if not original_ids:
-            parts.append("请先说明要查哪个事件。")
+            # 无事件编号：按窗拉全类型；点查或无界只取最近若干条
+            try:
+                rows = await _fetch_history_ids(
+                    device_no=device_no,
+                    event_ids=None,
+                    mode=mode,
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=50 if mode == "daily" and start_time is not None else 20,
+                    remark=remark or None,
+                    ignore_time=ignore_time
+                    or mode != "daily"
+                    or start_time is None,
+                )
+            except Exception as exc:
+                logger.error(f"无事件拉史失败: {exc}", exc_info=True)
+                rows = []
+            parts.append(
+                await llm_missing_event_guess(
+                    utterance=user_text,
+                    rows=rows or [],
+                    device_no=device_no,
+                    llm_model=llm_model,
+                )
+            )
             continue
-        query_ids, parent_ids = _expand_query_ids(original_ids, full_events)
-        fetch_ids = query_ids or original_ids
+        # 先只查口头说的 id，空了再做亲属再试
+        fetch_ids = [eid]
         # daily 区段默认提高 limit，降低一周/多日被 20 条截断
         _DAILY_DEFAULT_LIMIT = 50
         if intent.get("limit") not in (None, "", 0, "0"):
@@ -633,23 +851,45 @@ async def speak_history(state: Any) -> Dict[str, Any]:
         else:
             fetch_limit = _DAILY_DEFAULT_LIMIT if mode == "daily" else 20
         try:
-            rows = await http_client.get_filtered_history_events(
+            rows = await _fetch_history_ids(
                 device_no=device_no,
                 event_ids=fetch_ids,
+                mode=mode,
                 start_time=start_time,
                 end_time=end_time,
                 limit=fetch_limit,
                 remark=remark or None,
-                ignore_time_range=ignore_time,
+                ignore_time=ignore_time,
             )
         except Exception as exc:
             logger.error(f"查记录拉史失败: {exc}", exc_info=True)
             parts.append(f"{name or '该事件'}暂时没查到，请稍后再试。")
             continue
+        collapse_parent = is_parent_event(eid, full_events)
+        if not rows:
+            try:
+                kin_rows, kin_name, used_child = await _kin_retry_rows(
+                    device_no=device_no,
+                    event_id=eid,
+                    full_events=full_events,
+                    mode=mode,
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=fetch_limit,
+                    remark=remark or None,
+                    ignore_time=ignore_time,
+                )
+            except Exception as exc:
+                logger.warning("亲属再试拉史失败: %s", exc)
+                kin_rows, kin_name, used_child = [], "", False
+            if kin_rows:
+                rows = kin_rows
+                if kin_name:
+                    name = kin_name
+                if used_child:
+                    collapse_parent = False
         all_rows.extend(rows or [])
-        collapse_parent = bool(parent_ids) and all(
-            is_parent_event(x, full_events) for x in original_ids
-        )
+        parent_ids = [eid] if collapse_parent else []
         if mode == "daily":
             # 次数问：显式 N 次（number 叶不得只报总量）
             if is_count_query(user_text):
@@ -661,12 +901,19 @@ async def speak_history(state: Any) -> Dict[str, Any]:
                 else:
                     chunk = f"{day_zh}{ev}{n}次"
             else:
-                # 非次数：共享紧凑聚合；不向家长念 legend
-                history_text, _legend = build_feeding_history_prompt_blocks(rows)
-                if history_text and history_text.strip() != "（无）":
-                    chunk = history_text
-                else:
+                # 非次数：预设语境短答；对不上则模型并记规则缺口
+                kind = daily_context_kind(user_text)
+                if kind:
+                    chunk = rule_answer_for_kind(kind, rows or [], name)
+                elif not rows:
                     chunk = f"{name or '这段时间'}没有相关记录。"
+                else:
+                    chunk = await llm_daily_uncovered(
+                        utterance=user_text,
+                        rows=rows or [],
+                        device_no=device_no,
+                        llm_model=llm_model,
+                    )
         elif collapse_parent:
             parent_name = name or id_to_name.get(parent_ids[0], "") or "该分类"
             etas: Optional[List[Dict[str, Any]]] = None

@@ -142,17 +142,35 @@ def collect_event_items(
         except (TypeError, ValueError):
             number = 0
         # 业务说明：同 event_id 可出现多次（同叶多时刻 create），各自 start_time/quantity
-        start_time = int(ev.get("start_time") or now)
+        try:
+            raw_start = int(ev.get("start_time") or 0)
+        except (TypeError, ValueError):
+            raw_start = 0
+        start_time = raw_start or now
         if item_op == "end":
             hid_int = 0
             end_time = 0
+        elif not is_timer and item_op in (
+            IntentOp.CREATE.value,
+            IntentOp.UPDATE.value,
+        ):
+            # 非计时：开始与结束同一时刻；两者不同时以结束时间为准
+            hid = ev.get("history_id")
+            try:
+                hid_int = (
+                    int(hid)
+                    if item_op == IntentOp.UPDATE.value and hid not in (None, "")
+                    else 0
+                )
+            except (TypeError, ValueError):
+                hid_int = 0
+            instant = explicit_end if explicit_end > 0 else start_time
+            start_time = instant
+            end_time = instant
         elif item_op == IntentOp.CREATE.value:
             hid_int = 0
-            if is_timer:
-                # 尊重显式闭合 end；否则开表 end=0
-                end_time = explicit_end if explicit_end > 0 else 0
-            else:
-                end_time = explicit_end if explicit_end > 0 else start_time
+            # 计时：尊重显式闭合 end；否则开表 end=0
+            end_time = explicit_end if explicit_end > 0 else 0
         else:
             hid = ev.get("history_id")
             try:

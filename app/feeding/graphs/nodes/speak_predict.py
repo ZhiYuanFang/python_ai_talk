@@ -6,6 +6,7 @@ Go active-eta / imminent 命中 → 保留模板 clock/remain。
 miss 或命中事件 isAppointment → 冷路径：近 7 日算法（或预约约定）+ 语境史 compact + LLM；
 预约仅看该事件自身字段（对齐 Go），不按根/子树聚合；
 算法结果 Redis 快照 TTL 10min；样本不足/无约定直接降级，禁止编造与查史用时回落。
+热路径未命中时：父则改用最近有锚点的子；子则再试父一次。预约无约定时同样再试父一次。
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from app.feeding.services.appointment_event import catalog_event_is_appointment
 from app.feeding.services.dim_resolve import resolve_time
 from app.feeding.services.event_hierarchy import (
     get_descendant_leaves,
+    get_event_by_id,
     get_root_event_id,
     is_parent_event,
 )
@@ -111,6 +113,80 @@ def _first_event_ids(intent: Dict[str, Any]) -> List[Dict[str, str]]:
     return out
 
 
+def _catalog_parent_id(event_id: str, full_events: List[Dict[str, Any]]) -> str:
+    """目录上的父 id；根或缺失则空。"""
+    found = get_event_by_id(event_id, full_events)
+    parent_id = str((found or {}).get("parent_id") or "").strip()
+    if parent_id in ("", "0", "None"):
+        return ""
+    return parent_id
+
+
+def _match_predict_anchor(
+    event_id: str,
+    *,
+    channel: str,
+    full_events: List[Dict[str, Any]],
+    eta_items: Optional[List[Dict[str, Any]]],
+    pending: Optional[List[Dict[str, Any]]],
+) -> Optional[int]:
+    """在已拉到的热路径列表里匹配一个事件。"""
+    if not event_id:
+        return None
+    if channel == "active":
+        return match_active_expect_end(event_id, eta_items or [], full_events)
+    return match_imminent_next_at(event_id, pending or [], full_events)
+
+
+def _kin_predict_anchor(
+    *,
+    event_id: str,
+    full_events: List[Dict[str, Any]],
+    channel: str,
+    eta_items: Optional[List[Dict[str, Any]]],
+    pending: Optional[List[Dict[str, Any]]],
+) -> Tuple[Optional[int], str]:
+    """
+    热路径未命中时的亲属再试。
+
+    父：在子孙里取锚点时间最晚的一个。
+    子：只再匹配父 id 一次。
+    没有锚点不算有信息（样本不足文案不在这条热路径上）。
+    """
+    if is_parent_event(event_id, full_events):
+        best: Optional[int] = None
+        best_name = ""
+        for leaf in get_descendant_leaves(event_id, full_events):
+            lid = str(leaf.get("event_id") or "").strip()
+            anchor = _match_predict_anchor(
+                lid,
+                channel=channel,
+                full_events=full_events,
+                eta_items=eta_items,
+                pending=pending,
+            )
+            if anchor is None:
+                continue
+            if best is None or anchor >= best:
+                best = anchor
+                best_name = str(leaf.get("event_name") or "").strip()
+        return best, best_name
+    parent_id = _catalog_parent_id(event_id, full_events)
+    if not parent_id:
+        return None, ""
+    anchor = _match_predict_anchor(
+        parent_id,
+        channel=channel,
+        full_events=full_events,
+        eta_items=eta_items,
+        pending=pending,
+    )
+    if anchor is None:
+        return None, ""
+    parent = get_event_by_id(parent_id, full_events)
+    return anchor, str((parent or {}).get("event_name") or "").strip()
+
+
 def _guard_no_history_duration(content: str, fallback: str) -> str:
     """防御：降级文案不得带查史完成句特征。"""
     if "上一次" in content and "用时" in content:
@@ -175,6 +251,8 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
         and time_answer in ("clock", "remain")
     ):
         anchor: Optional[int] = None
+        eta_items: List[Dict[str, Any]] = []
+        pending: List[Dict[str, Any]] = []
         try:
             if channel == "active":
                 eta_items = await http_client.get_predict_active_eta(device_no)
@@ -190,6 +268,18 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
                 exc,
             )
             anchor = None
+        if anchor is None and channel in ("active", "next"):
+            kin_anchor, kin_name = _kin_predict_anchor(
+                event_id=eid,
+                full_events=full_events,
+                channel=channel,
+                eta_items=eta_items if channel == "active" else None,
+                pending=pending if channel != "active" else None,
+            )
+            if kin_anchor is not None:
+                anchor = kin_anchor
+                if kin_name:
+                    ename = kin_name
         if anchor is not None:
             content = format_predict_answer(
                 anchor_unix=anchor,
@@ -304,10 +394,25 @@ async def _resolve_tool_result(
             logger.warning("快照还原失败，重算: %s", exc)
 
     if is_appointment:
-        # Go appointment_next 按事件 id，不用根聚合
+        # Go appointment_next 按事件 id；无约定时父再试一次（子说父名对不齐）
         next_at = await http_client.get_appointment_next(device_no, event_id)
+        appt_id = event_id
+        appt_name = event_name
+        if not next_at or int(next_at) < 1:
+            parent_id = _catalog_parent_id(event_id, full_events)
+            if parent_id:
+                parent_next = await http_client.get_appointment_next(
+                    device_no, parent_id
+                )
+                if parent_next and int(parent_next) >= 1:
+                    next_at = parent_next
+                    appt_id = parent_id
+                    parent = get_event_by_id(parent_id, full_events)
+                    appt_name = str(
+                        (parent or {}).get("event_name") or event_name
+                    )
         tool = appointment_tool_result(
-            event_id=event_id, event_name=event_name, next_at=next_at
+            event_id=appt_id, event_name=appt_name, next_at=next_at
         )
         if tool.status == "ok":
             await predict_algo_cache.put_root(
