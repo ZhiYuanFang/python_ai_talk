@@ -130,13 +130,13 @@ def _format_leaf_table(full_events: List[Dict[str, Any]]) -> str:
 async def llm_resolve_type(
     segment: str,
     llm_model: Dict[str, Any],
-) -> Tuple[str, str, str, str, str, bool, List[str], str, str]:
+) -> Tuple[str, str, str, str, str, str, bool, List[str], str, str]:
     """
-    OP 轨小 LLM（六轨 + read_source + 预测两维）。
+    OP 轨小 LLM（六轨 + read_source + 预测三格）。
 
     Returns:
         (target_type, op, history_mode, predict_channel, time_answer,
-         need_confirm, keywords, raw_summary, read_source)
+         predict_aspect, need_confirm, keywords, raw_summary, read_source)
     """
     from app.shared.constants import TARGET_TYPE_RAILS, normalize_target_rail
 
@@ -171,6 +171,7 @@ async def llm_resolve_type(
     hm = str(data.get("history_mode") or "").strip().lower()
     pc = str(data.get("predict_channel") or "").strip().lower()
     ta = str(data.get("time_answer") or "").strip().lower()
+    aspect = str(data.get("predict_aspect") or "").strip().lower()
     need_confirm = bool(data.get("need_confirm"))
     raw_kws = data.get("keywords")
     keywords: List[str] = []
@@ -182,39 +183,43 @@ async def llm_resolve_type(
     if not tt:
         tt = "other"
         need_confirm = False
-        op, hm, pc, ta, rs = "", "", "", "", ""
+        op, hm, pc, ta, aspect, rs = "", "", "", "", "", ""
     if tt == "read":
         if rs not in ("record", "predict"):
-            # 有预测两维则判 predict，否则 record
-            if pc in ("active", "next") and ta in ("clock", "remain"):
+            # 有通道且（何时答法或用量/用时）则判 predict，否则 record
+            if pc in ("active", "next") and (
+                ta in ("clock", "remain") or aspect in ("amount", "duration")
+            ):
                 rs = "predict"
             else:
                 rs = "record"
         if rs == "predict":
+            from app.feeding.services.predict_qa import coerce_predict_dims
+
             op = ""
             hm = ""
-            if pc not in ("active", "next") or ta not in ("clock", "remain"):
-                pc, ta = "", ""
+            pc, ta, aspect, filled = coerce_predict_dims(pc, ta, aspect)
+            if not filled:
                 need_confirm = True
         else:
             op = "read"
             if hm not in ("point", "daily"):
                 hm = "point"
-            pc, ta = "", ""
+            pc, ta, aspect = "", "", ""
     elif tt == "create":
         if not op or op == "end":
             op = "create"
-        hm, pc, ta, rs = "", "", "", ""
+        hm, pc, ta, aspect, rs = "", "", "", "", ""
     elif tt == "update":
         if op not in ("update", "end"):
             op = "end" if op == "end" else "update"
-        hm, pc, ta, rs = "", "", "", ""
+        hm, pc, ta, aspect, rs = "", "", "", "", ""
     elif tt == "delete":
         op = "delete"
-        hm, pc, ta, rs = "", "", "", ""
+        hm, pc, ta, aspect, rs = "", "", "", "", ""
     else:
         # exit / other
-        op, hm, pc, ta, rs = "", "", "", "", ""
+        op, hm, pc, ta, aspect, rs = "", "", "", "", "", ""
     summary = json.dumps(
         {
             "target_type": tt,
@@ -223,12 +228,13 @@ async def llm_resolve_type(
             "history_mode": hm,
             "predict_channel": pc,
             "time_answer": ta,
+            "predict_aspect": aspect,
             "need_confirm": need_confirm,
             "keywords": keywords,
         },
         ensure_ascii=False,
     )
-    return tt, op, hm, pc, ta, need_confirm, keywords, summary, rs
+    return tt, op, hm, pc, ta, aspect, need_confirm, keywords, summary, rs
 
 
 # EVENT 软候选上限（与 design K≤3 一致）

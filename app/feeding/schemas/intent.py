@@ -119,7 +119,11 @@ class IntentResponse(BaseModel):
     )
     time_answer: Optional[str] = Field(
         default=None,
-        description="时间答法：clock|remain；非 predict 为空",
+        description="时间答法：clock|remain；仅 predict_aspect=when 时有值",
+    )
+    predict_aspect: Optional[str] = Field(
+        default=None,
+        description="预测问法：when|amount|duration；用量/用时时 time_answer 为空",
     )
     remark: Optional[str] = Field(
         default=None,

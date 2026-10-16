@@ -1095,12 +1095,14 @@ def pending_to_response_fields(pending: PendingClarification) -> Dict[str, Any]:
         target = TargetType.FEEDING.value
     pc = str(mc.get("_type_predict_channel") or "").strip().lower()
     ta = str(mc.get("_type_time_answer") or "").strip().lower()
+    aspect = str(mc.get("_type_predict_aspect") or "").strip().lower()
     if target != TargetType.PREDICT.value:
-        pc, ta = "", ""
+        pc, ta, aspect = "", "", ""
     return {
         "target_type": target,
         "predict_channel": pc or None,
         "time_answer": ta or None,
+        "predict_aspect": aspect or None,
         "event_name": pending.parent_name or (
             pending.options[0]["event_name"] if pending.options else ""
         ),

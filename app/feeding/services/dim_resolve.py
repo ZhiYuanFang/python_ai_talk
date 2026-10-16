@@ -80,54 +80,62 @@ async def resolve_predict_dims(
     segment: str,
     *,
     llm_model: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, str, bool]:
+) -> Tuple[str, str, str, bool]:
     """
-    R·predict 两维：整段飞轮 → 预测维小 LLM → 整段回写。
+    R·predict 三格：整段飞轮 → 预测维小 LLM → 整段回写。
 
     Returns:
-        (predict_channel, time_answer, need_confirm)
+        (predict_channel, time_answer, predict_aspect, need_confirm)
     """
     text = (segment or "").strip()
     if not text:
-        return "", "", True
+        return "", "", "", True
     hit = predict_cue_store.search_dims(text)
     if hit:
-        return hit[0], hit[1], False
+        return hit[0], hit[1], hit[2], False
 
     cfg = llm_model_config_from_mapping(llm_model or {})
-    # 复用 OP 提示中的预测两维约束，缩小 user 任务
     content = await stream_llm_collect(
         messages=[
             {
                 "role": "user",
                 "content": (
                     "本段已是预测问答。只输出 JSON："
-                    '{"predict_channel":"active|next","time_answer":"clock|remain",'
-                    '"need_confirm":false}\n'
+                    '{"predict_channel":"active|next","predict_aspect":"when|amount|duration",'
+                    '"time_answer":"clock|remain|","need_confirm":false}\n'
+                    "when 时 time_answer 必填 clock 或 remain；"
+                    "amount（预计用量，这次要吃多少）与 duration（预计持续多久）时 time_answer 必须为空。\n"
+                    "这次要吃多少/大概要喝多少 → next + amount；"
+                    "这次要吃多久/这次要睡多久 → next + duration；"
+                    "还有多久醒来/几点醒 → when + active + remain 或 clock；"
+                    "还有多久睡觉 → when + next。\n"
                     f"段原文：{text}"
                 ),
             }
         ],
         model_config=cfg,
         system_prompt=(
-            "你是宝宝照护记录「预测两维」助手。只输出 JSON，不要 markdown。\n"
+            "你是宝宝照护记录「预测问法」助手。只输出 JSON，不要 markdown。\n"
             "领域含喂养、睡眠、换尿布、营养品、疫苗等可落库事件（以事件表为准）。\n"
-            "predict_channel 只能 active|next；time_answer 只能 clock|remain。\n"
-            "还有多久醒来/几点醒 → active+remain 或 active+clock；"
-            "还有多久睡觉 → next+remain 或 next+clock。\n"
+            "predict_channel 只能 active|next；predict_aspect 只能 when|amount|duration。\n"
+            "when 才填 time_answer=clock|remain；用量和用时不要填 time_answer。\n"
+            "上次吃了多少、上次睡了多久不是本任务。\n"
             "内部思考（reasoning）须使用中文。"
         ),
         node_name="segment_predict_dims_llm",
     )
     data = _parse_json_obj(content or "")
-    pc = str(data.get("predict_channel") or "").strip().lower()
-    ta = str(data.get("time_answer") or "").strip().lower()
-    need_confirm = bool(data.get("need_confirm"))
-    if pc not in ("active", "next") or ta not in ("clock", "remain"):
-        return "", "", True
-    if not need_confirm:
-        predict_cue_store.add(text, pc, ta)
-    return pc, ta, need_confirm
+    from app.feeding.services.predict_qa import coerce_predict_dims
+
+    pc, ta, aspect, filled = coerce_predict_dims(
+        str(data.get("predict_channel") or ""),
+        str(data.get("time_answer") or ""),
+        str(data.get("predict_aspect") or ""),
+    )
+    need_confirm = bool(data.get("need_confirm")) or not filled
+    if filled and not need_confirm:
+        predict_cue_store.add(text, pc, ta, aspect)
+    return pc, ta, aspect, need_confirm
 
 
 async def resolve_time(

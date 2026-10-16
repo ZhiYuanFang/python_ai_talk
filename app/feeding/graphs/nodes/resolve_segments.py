@@ -144,6 +144,7 @@ def _soft_model_config(draft: SegmentDraft, phrase: str) -> Dict[str, Any]:
         mc["_type_target"] = TargetType.PREDICT.value
         mc["_type_predict_channel"] = draft.predict_channel or ""
         mc["_type_time_answer"] = draft.time_answer or ""
+        mc["_type_predict_aspect"] = draft.predict_aspect or "when"
         mc["_type_read_source"] = "predict"
     else:
         mc["_type_target"] = draft.target_type or ""

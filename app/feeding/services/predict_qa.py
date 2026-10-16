@@ -174,6 +174,57 @@ def format_predict_answer(
     return f"预计约 {hhmm} 开始（{name}）"
 
 
+def coerce_predict_dims(
+    channel: str,
+    time_answer: str,
+    aspect: str = "",
+) -> Tuple[str, str, str, bool]:
+    """
+    归一预测三格。
+
+    缺省 aspect 视为 when。amount / duration 清空 time_answer。
+    返回 (channel, time_answer, aspect, 是否填满)。
+    """
+    pc = (channel or "").strip().lower()
+    ta = (time_answer or "").strip().lower()
+    asp = (aspect or "").strip().lower()
+    if pc not in ("active", "next"):
+        pc = ""
+    if asp not in ("when", "amount", "duration"):
+        # 空串是旧载荷：按何时；非法词不算填满
+        if asp != "":
+            return pc, "", "", False
+        asp = "when"
+    if asp == "when":
+        if ta not in ("clock", "remain"):
+            return pc, "", "when", False
+        return pc, ta, "when", bool(pc)
+    return pc, "", asp, bool(pc)
+
+
+def predict_confirm_sentence(event_name: str, aspect: str, time_answer: str) -> str:
+    """没把握时的确认句：跟着用量 / 用时 / 何时，不把用量问成还要多久。"""
+    name = (event_name or "").strip() or "相关事件"
+    asp = (aspect or "").strip().lower() or "when"
+    ta = (time_answer or "").strip().lower()
+    if asp == "amount":
+        return f"您是要问「{name}」大概要多少吗？"
+    if asp == "duration":
+        return f"您是要问「{name}」大概要持续多久吗？"
+    if ta == "clock":
+        return f"您是要问「{name}」大概几点吗？"
+    return f"您是要问「{name}」大概还要多久吗？"
+
+
+def missing_aspect_message(event_name: str, aspect: str) -> str:
+    """所问的预计用量或用时没有数时的降级，不改念另一格。"""
+    name = (event_name or "").strip()
+    label = "用量" if (aspect or "").strip().lower() == "amount" else "用时"
+    if name:
+        return f"暂时估不准「{name}」的预计{label}，请稍后再问。"
+    return f"暂时估不准预计{label}，请稍后再问。"
+
+
 def uncertainty_message(event_name: str = "") -> str:
     """
     无预测数据时的降级文案。

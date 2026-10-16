@@ -3,7 +3,8 @@ R·predict 两维整段飞轮
 
 业务说明：
 Collection feeding_predict_cues，document 为段整句，
-payload 含 predict_channel + time_answer。与 OP / R·source 隔离。
+payload 含 predict_channel、time_answer、predict_aspect。与 OP / R·source 隔离。
+缺 predict_aspect 的旧载荷按 when 读。
 """
 
 from __future__ import annotations
@@ -33,13 +34,28 @@ PREDICT_CUE_THRESHOLD = 0.9
 
 
 def as_predict_payload(payload: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """合法三格才入库。没有 predict_aspect 的旧载荷按 when。"""
     if not isinstance(payload, dict):
         return None
-    pc = str(payload.get("predict_channel") or "").strip().lower()
-    ta = str(payload.get("time_answer") or "").strip().lower()
-    if pc not in ("active", "next") or ta not in ("clock", "remain"):
+    from app.feeding.services.predict_qa import coerce_predict_dims
+
+    # 键不存在才是旧数据；显式空串仍交给归一（按 when）
+    if "predict_aspect" not in payload:
+        aspect = ""
+    else:
+        aspect = str(payload.get("predict_aspect") or "")
+    pc, ta, aspect, filled = coerce_predict_dims(
+        str(payload.get("predict_channel") or ""),
+        str(payload.get("time_answer") or ""),
+        aspect,
+    )
+    if not filled:
         return None
-    return {"predict_channel": pc, "time_answer": ta}
+    return {
+        "predict_channel": pc,
+        "time_answer": ta,
+        "predict_aspect": aspect,
+    }
 
 
 class PredictCueStore:
@@ -124,8 +140,8 @@ class PredictCueStore:
             )
         return formatted
 
-    def search_dims(self, query: str) -> Optional[Tuple[str, str]]:
-        """热路径：返回 (channel, time_answer)。"""
+    def search_dims(self, query: str) -> Optional[Tuple[str, str, str]]:
+        """热路径：返回 (channel, time_answer, aspect)。旧载荷 aspect 为 when。"""
         hits = self.search(query, n_results=1)
         if not hits:
             return None
@@ -144,20 +160,33 @@ class PredictCueStore:
         if not clean:
             return None
         logger.info(
-            "预测飞轮命中: ch=%s ta=%s score=%s",
+            "预测飞轮命中: ch=%s ta=%s aspect=%s score=%s",
             clean["predict_channel"],
             clean["time_answer"],
+            clean["predict_aspect"],
             score,
         )
-        return clean["predict_channel"], clean["time_answer"]
+        return (
+            clean["predict_channel"],
+            clean["time_answer"],
+            clean["predict_aspect"],
+        )
 
     def add(
-        self, document: str, predict_channel: str, time_answer: str
+        self,
+        document: str,
+        predict_channel: str,
+        time_answer: str,
+        predict_aspect: str = "",
     ) -> Optional[str]:
         self._ensure_initialized()
         doc = self._document_key(document)
         clean = as_predict_payload(
-            {"predict_channel": predict_channel, "time_answer": time_answer}
+            {
+                "predict_channel": predict_channel,
+                "time_answer": time_answer,
+                "predict_aspect": predict_aspect or "when",
+            }
         )
         if not doc or _is_confirm_only(doc) or not clean or len(doc) < 4:
             return None
@@ -183,7 +212,12 @@ class PredictCueStore:
             documents=[doc],
             metadatas=[meta],
         )
-        logger.info("写入预测飞轮: id=%s ch=%s", vector_id, clean["predict_channel"])
+        logger.info(
+            "写入预测飞轮: id=%s ch=%s aspect=%s",
+            vector_id,
+            clean["predict_channel"],
+            clean["predict_aspect"],
+        )
         return vector_id
 
     def list_entries(
@@ -271,6 +305,7 @@ class PredictCueStore:
                 doc,
                 str(payload.get("predict_channel") or ""),
                 str(payload.get("time_answer") or ""),
+                str(payload.get("predict_aspect") or ""),
             )
             if not vid:
                 failed.append({"index": i, "reason": "写入失败或非法载荷"})

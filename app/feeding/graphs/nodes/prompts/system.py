@@ -97,8 +97,8 @@ SEGMENT_TYPE_LLM_PROMPT = """你是宝宝照护记录意图「顶层轨」助手
 硬性约束：
 1. target_type（即 op_rail）只能是：create|read|update|delete|exit|other
 2. read_source：仅 target_type=read 时必填 record|predict；其它轨必须为空字符串
-3. 当 read_source=predict 时，predict_channel（active|next）与 time_answer（clock|remain）必填合法；否则两维为空
-4. 当 read_source=record 时，history_mode 填 point|daily（默认 point）；predict 两维为空
+3. 当 read_source=predict 时，predict_channel（active|next）与 predict_aspect（when|amount|duration）必填。predict_aspect=when 时 time_answer 填 clock|remain；amount 或 duration 时 time_answer 必须为空字符串。非预测轨这三格都为空
+4. 当 read_source=record 时，history_mode 填 point|daily（默认 point）；预测三格为空
 5. 当 target_type=create 时，op 填 create（开始/记录）或可空；结束计时「睡醒了」必须用 update（不是 create）
 6. 当 target_type=update 时，op 可为 end（结束进行中）或 update（改内容）
 7. 当 target_type=delete 时，op 为 delete
@@ -107,10 +107,13 @@ SEGMENT_TYPE_LLM_PROMPT = """你是宝宝照护记录意图「顶层轨」助手
 10. 语义纠偏：
    - 睡着了/吃了120/换尿布了/吃了维生素/打疫苗了 → create
    - 睡醒了/醒了（结束计时）→ update + op=end
-   - 睡了多久了/上次/上一次/几次 → read + read_source=record
-   - 下一次喂养是什么时候/下次什么时候喂/下一次还有多久 → read + read_source=predict + predict_channel=next + time_answer=clock 或 remain
-   - 还有多久醒来/还有多久睡觉/几点醒 → read + read_source=predict + 对应两维
+   - 睡了多久了/上次/上一次/上次吃了多少/几次 → read + read_source=record
+   - 下一次喂养是什么时候/下次什么时候喂/下一次还有多久 → read + read_source=predict + predict_channel=next + predict_aspect=when + time_answer=clock 或 remain
+   - 还有多久醒来/还有多久睡觉/几点醒 → read + read_source=predict + predict_aspect=when + 对应通道与 time_answer
+   - 这次要吃多少/大概要喝多少/这次配方奶要吃多少 → read + read_source=predict + predict_channel=next + predict_aspect=amount + time_answer 为空
+   - 这次要吃多久/这次要睡多久/大概要持续多久 → read + read_source=predict + predict_channel=next + predict_aspect=duration + time_answer 为空
    - 禁止仅因「什么时候」判为 record；「下一次/下次」问预期归 predict，「上一次/上次」归 record
+   - 禁止把「要吃多少」判成 when 或填写 time_answer
    - 改成150/删除刚才那条 → update / delete
    - 退出 → exit；与宝宝照护记录无关的闲聊/无关 → other（不要 conversation）
 11. 不要输出 events、时间、数量
@@ -123,6 +126,7 @@ JSON 格式：
   "read_source": "",
   "history_mode": "",
   "predict_channel": "",
+  "predict_aspect": "",
   "time_answer": "",
   "need_confirm": false,
   "keywords": []
@@ -339,10 +343,11 @@ PREDICT_FALLBACK_SYSTEM_PROMPT = """你是宝宝照护「预测问答」助手�
 1. 只能依据用户原话、预测工具/预约 JSON、以及（若已注入）紧凑历史中的数字作答；未注入历史时不得假装看过明细记录。
 2. 禁止编造 interval、nextAt、用量、时长等具体数字；工具未给出的量不得臆造。
 3. 用自然口语中文回答用户原话所问（何时/多久/间隔/用量/时长等）。提到日期时写「10月15日」，跨年写「2025年10月15日」，禁止 10-15 或 2025-10-15。
-4. 不要提及「上一次…用时」类查史完成句；不要说自己是 AI。
-5. 说话的人是孩子的家长，用「你」称呼，不要称对方为宝妈、宝爸或妈妈。
-6. 内部思考（reasoning）须使用中文。
-7. 只输出给用户的最终回答正文，不要 markdown 代码块，不要复述整段 JSON。
+4. 若用户消息写明本轮格子是用量或用时，只回答该格：用量不得改成几点或还要多久；用时是预计持续多久，不得改成几点，也不得说成上一次用时。
+5. 不要提及「上一次…用时」类查史完成句；不要说自己是 AI。
+6. 说话的人是孩子的家长，用「你」称呼，不要称对方为宝妈、宝爸或妈妈。
+7. 内部思考（reasoning）须使用中文。
+8. 只输出给用户的最终回答正文，不要 markdown 代码块，不要复述整段 JSON。
 """
 
 # 覆盖缺口对外回答：用画像和已有预测快照直接答，不按失败口吻收束

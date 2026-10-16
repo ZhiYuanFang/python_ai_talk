@@ -77,6 +77,8 @@ class IntentResult(BaseModel):
     # 预测问答分维：仅 read+predict（或遗留 predict）时有效
     predict_channel: Optional[str] = None
     time_answer: Optional[str] = None
+    # 预测问什么：when|amount|duration；缺省按 when
+    predict_aspect: Optional[str] = None
     match_source: Optional[str] = None
     match_confidence: Optional[float] = None
     need_confirm: Optional[bool] = None

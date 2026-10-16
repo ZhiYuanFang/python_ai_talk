@@ -96,21 +96,25 @@ def build_intent_response_from_fields(fields: Dict[str, Any]) -> IntentResponse:
     rs = str(fields.get("read_source") or "").strip().lower()
     pc = str(fields.get("predict_channel") or "").strip().lower()
     ta = str(fields.get("time_answer") or "").strip().lower()
+    aspect = str(fields.get("predict_aspect") or "").strip().lower()
     is_predict = tt == TargetType.PREDICT.value or (
         tt == TargetType.READ.value and rs == "predict"
     )
     if not is_predict:
-        pc, ta = "", ""
+        pc, ta, aspect = "", "", ""
         if tt != TargetType.READ.value:
             rs = ""
-    elif pc not in ("active", "next") or ta not in ("clock", "remain"):
-        pc, ta = "", ""
+    else:
+        from app.feeding.services.predict_qa import coerce_predict_dims
+
+        pc, ta, aspect, _filled = coerce_predict_dims(pc, ta, aspect or "when")
 
     return IntentResponse(
         target_type=fields.get("target_type", TargetType.OTHER.value),
         read_source=rs or None,
         predict_channel=pc or None,
         time_answer=ta or None,
+        predict_aspect=aspect or None,
         event_name=fields.get("event_name", "") or "",
         event_id=str(fields.get("event_id", "") or ""),
         quantity=fields.get("quantity"),
@@ -229,11 +233,18 @@ def create_predict_confirm_response(
     mc["_type_target"] = TargetType.PREDICT.value
     mc["_type_predict_channel"] = fields.get("predict_channel")
     mc["_type_time_answer"] = fields.get("time_answer")
+    mc["_type_predict_aspect"] = fields.get("predict_aspect") or "when"
     if fields.get("keywords"):
         mc["_type_keywords"] = list(fields.get("keywords") or [])
+    from app.feeding.services.predict_qa import predict_confirm_sentence
+
     confirm_message = (
         str(fields.get("confirm_message") or "").strip()
-        or f"您是要问「{event_name or '相关事件'}」大概还要多久吗？"
+        or predict_confirm_sentence(
+            event_name,
+            str(fields.get("predict_aspect") or "when"),
+            str(fields.get("time_answer") or ""),
+        )
     )
     pending = create_leaf_confirm_pending(
         leaf={
@@ -436,6 +447,8 @@ async def try_handle_pending(
                 fields["predict_channel"] = mc.get("_type_predict_channel")
             if mc.get("_type_time_answer") is not None:
                 fields["time_answer"] = mc.get("_type_time_answer")
+            if mc.get("_type_predict_aspect") is not None:
+                fields["predict_aspect"] = mc.get("_type_predict_aspect")
             if mc.get("_type_read_source") is not None:
                 fields["read_source"] = mc.get("_type_read_source")
             # EVENT 软候选确认：把选定叶写回 events，并写核词短说法飞轮
@@ -740,19 +753,22 @@ def postprocess_feeding_result(
             slot_qty = head.get("quantity")
             if slot_qty is None:
                 slot_qty = quantity
-            # TYPE 关键字挂 pending，确认后写入类型飞轮（含预测两维）
+            # 预测确认后带回通道、问法与 read_source，避免同意后误走查记录
             mc = dict(model_config or {})
-            if fields.get("keywords"):
-                mc["_type_keywords"] = list(fields.get("keywords") or [])
+            rs_now = str(fields.get("read_source") or "").strip().lower()
+            tt_now = str(fields.get("target_type") or "")
+            is_pred = tt_now == TargetType.PREDICT.value or (
+                tt_now == TargetType.READ.value and rs_now == "predict"
+            )
+            if fields.get("keywords") or is_pred:
+                if fields.get("keywords"):
+                    mc["_type_keywords"] = list(fields.get("keywords") or [])
                 mc["_type_target"] = fields.get("target_type")
                 mc["_type_history_mode"] = fields.get("history_mode")
+                mc["_type_read_source"] = fields.get("read_source")
                 mc["_type_predict_channel"] = fields.get("predict_channel")
                 mc["_type_time_answer"] = fields.get("time_answer")
-            elif str(fields.get("target_type") or "") == TargetType.PREDICT.value:
-                # 无 keywords 仍须带回预测维供确认后播报
-                mc["_type_target"] = fields.get("target_type")
-                mc["_type_predict_channel"] = fields.get("predict_channel")
-                mc["_type_time_answer"] = fields.get("time_answer")
+                mc["_type_predict_aspect"] = fields.get("predict_aspect") or "when"
             pending = create_leaf_confirm_pending(
                 leaf=leaf,
                 original_utterance=user_input,
@@ -817,11 +833,15 @@ async def _execute_after_confirm(
             read_source_cue_store.add(doc, rs_w)
         pc_w = str(fields.get("predict_channel") or "").strip().lower()
         ta_w = str(fields.get("time_answer") or "").strip().lower()
+        asp_w = str(fields.get("predict_aspect") or "").strip().lower()
+        from app.feeding.services.predict_qa import coerce_predict_dims
+
+        pc_w, ta_w, asp_w, filled = coerce_predict_dims(pc_w, ta_w, asp_w or "when")
         if (
             (tt == TargetType.READ.value and rs_w == "predict")
             or tt == TargetType.PREDICT.value
-        ) and pc_w in ("active", "next") and ta_w in ("clock", "remain"):
-            predict_cue_store.add(doc, pc_w, ta_w)
+        ) and filled:
+            predict_cue_store.add(doc, pc_w, ta_w, asp_w)
 
     state = {
         "intent_result": fields,

@@ -500,29 +500,19 @@ def _attach_expect(
             amount_points.sort(key=lambda x: x[0])
             _, _, amt_unit, amt_leaf = amount_points[-1]
 
-    # 决胜：有 duration 且最近发生像 time → duration；否则有 amount 用 amount
-    pick_duration = dur is not None and dur > 0
-    pick_amount = amt_med is not None and amt_med > 0
-    if pick_duration and (not pick_amount or True):
-        # 简化：两者都有时优先 duration（睡眠类）；若量线更贴喂养可由 LLM 结合史判断
-        if pick_amount and _leaf_event_type(result.event_id, catalog) in (
-            "number",
-            "",
-        ):
-            # number 根更偏用量
-            result.expect_kind = K_EXPECT_AMOUNT
-            result.expect_amount = float(amt_med)  # type: ignore[arg-type]
-            result.expect_unit = amt_unit or None
-            result.expect_leaf_title = amt_leaf or None
-            return
-        result.expect_kind = K_EXPECT_DURATION
-        result.expect_duration_sec = int(round(dur))  # type: ignore[arg-type]
-        return
-    if pick_amount:
-        result.expect_kind = K_EXPECT_AMOUNT
-        result.expect_amount = float(amt_med)  # type: ignore[arg-type]
+    # 两个数都留下，由 predict_aspect 决定念哪一个，不再二选一丢掉
+    if dur is not None and dur > 0:
+        result.expect_duration_sec = int(round(dur))
+    if amt_med is not None and amt_med > 0:
+        result.expect_amount = float(amt_med)
         result.expect_unit = amt_unit or None
         result.expect_leaf_title = amt_leaf or None
+    if result.expect_duration_sec and result.expect_amount:
+        result.expect_kind = "both"
+    elif result.expect_duration_sec:
+        result.expect_kind = K_EXPECT_DURATION
+    elif result.expect_amount:
+        result.expect_kind = K_EXPECT_AMOUNT
 
 
 def filter_records_for_root(

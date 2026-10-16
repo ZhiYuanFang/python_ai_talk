@@ -210,6 +210,9 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
 
     channel = str(intent.get("predict_channel") or "").strip().lower()
     time_answer = str(intent.get("time_answer") or "").strip().lower()
+    aspect = str(intent.get("predict_aspect") or "").strip().lower()
+    if aspect not in ("when", "amount", "duration"):
+        aspect = "when"
     device_no = state_get(state, "device_no") or ""
     full_events = (
         state_get(state, "event_dictionary_full")
@@ -244,9 +247,10 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
     # 仅命中事件自身 isAppointment（对齐 Go）；不按根/子树聚合
     is_appt = catalog_event_is_appointment(eid, full_events)
 
-    # 预约不走 Go predict Redis；非预约先试 Go 模板热路径
+    # 何时才走时间点模板；用量/用时即使有 nextAt 也进冷路径
     if (
-        not is_appt
+        aspect == "when"
+        and not is_appt
         and channel in ("active", "next")
         and time_answer in ("clock", "remain")
     ):
@@ -304,6 +308,7 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
         event_name=ename,
         full_events=full_events,
         is_appointment=is_appt,
+        aspect=aspect,
     )
     content = _guard_no_history_duration(content, uncertainty_message(ename))
     intent["content"] = content
@@ -323,8 +328,11 @@ async def _cold_path_answer(
     event_name: str,
     full_events: List[Dict[str, Any]],
     is_appointment: bool,
+    aspect: str = "when",
 ) -> str:
     """算法/预约 +（按需）语境史 + LLM；样本不足直接降级。"""
+    from app.feeding.services.predict_qa import missing_aspect_message
+
     tool = await _resolve_tool_result(
         device_no=device_no,
         event_id=event_id,
@@ -337,6 +345,11 @@ async def _cold_path_answer(
         return tool.message or "数据量太少，无法预测"
     if tool.status == "no_appointment":
         return tool.message or "还没有约定下次时间"
+    # 问用量或用时时，缺的那一格不改念另一个数
+    if aspect == "amount" and not tool.expect_amount:
+        return missing_aspect_message(event_name, "amount")
+    if aspect == "duration" and not tool.expect_duration_sec:
+        return missing_aspect_message(event_name, "duration")
 
     # B：纯下次何时只灌工具；有日词/近况/规律线索才拉语境史（仅命中事件，非同根全叶）
     history_text = ""
@@ -354,6 +367,7 @@ async def _cold_path_answer(
         history_text=history_text,
         tool=tool,
         event_name=event_name,
+        aspect=aspect,
     )
 
 
@@ -584,6 +598,7 @@ async def _llm_predict_answer(
     history_text: str,
     tool: PredictToolResult,
     event_name: str,
+    aspect: str = "when",
 ) -> str:
     """原话 + 工具 JSON（+ 按需紧凑史）→ LLM 终答。"""
     tool_json = json.dumps(tool.to_prompt_dict(), ensure_ascii=False)
@@ -592,9 +607,16 @@ async def _llm_predict_answer(
         if (history_text or "").strip()
         else "紧凑历史：（未注入，请仅依据工具 JSON 与原话作答）\n"
     )
+    if aspect == "amount":
+        focus = "本轮格子：用量。只回答预计用量，禁止改成几点或还要多久。\n"
+    elif aspect == "duration":
+        focus = "本轮格子：用时。只回答预计持续多久，禁止改成几点，禁止说上一次用时。\n"
+    else:
+        focus = "本轮格子：何时。\n"
     user_payload = (
         f"用户原话：{user_text or '（空）'}\n"
         f"事件：{event_name or tool.event_name or tool.event_id}\n"
+        f"{focus}"
         f"预测工具JSON：{tool_json}\n"
         f"{hist_block}"
         "请依据以上信息回答用户。"
