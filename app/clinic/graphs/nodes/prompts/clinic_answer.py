@@ -14,7 +14,7 @@ from app.clinic.graphs.nodes.prompts.system import (
     CLINIC_ANSWER_SYSTEM_PROMPT_WITH_HISTORY,
     CLINIC_ANSWER_SYSTEM_PROMPT_WITHOUT_HISTORY,
 )
-from app.shared.baby_age import format_age_months_text
+from app.shared.baby_age import format_baby_profile_prompt
 from app.shared.feeding_history_compact import build_feeding_history_prompt_blocks
 from app.shared.graphs.state_patch import state_get
 from app.shared.history_prompt_fields import looks_like_summary_query
@@ -101,15 +101,9 @@ def build_clinic_answer_user_message(
     needs_history=False 时不注入喂养记录块与 chat_context 块。
     有记录则标注必点；有对话仅作可选背景。不再注入通识「知识库参考」。
     """
-    baby_info = ""
-    if baby_profile or baby_age_months is not None:
-        age_text = format_age_months_text(baby_age_months)
-        gender = (baby_profile or {}).get("gender", "未知")
-        baby_info = f"""
-宝宝信息：
-- 月龄：{age_text}
-- 性别：{gender}
-"""
+    baby_info = format_baby_profile_prompt(baby_profile, baby_age_months)
+    if baby_info:
+        baby_info = f"\n{baby_info}\n"
 
     history_info = ""
     chat_block = ""

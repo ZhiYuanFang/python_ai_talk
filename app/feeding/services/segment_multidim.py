@@ -119,6 +119,8 @@ class SegmentDraft:
     # 多命中消歧：叶子列表 + 关键字（extra_names 或 Go 反查）
     disambiguation_leaves: List[Dict[str, Any]] = field(default_factory=list)
     disambiguation_keyword: str = ""
+    # 附近历史猜中的叶子：不写事件说法飞轮
+    history_guessed: bool = False
     gaps: List[str] = field(default_factory=list)
 
 
@@ -254,7 +256,7 @@ async def resolve_type(
         return TargetType.CREATE.value, IntentOp.CREATE.value, "", "", "", True, [], ""
 
 
-async def resolve_event(
+async def _resolve_event_core(
     segment: str,
     *,
     full_events: List[Dict[str, Any]],
@@ -387,6 +389,63 @@ async def resolve_event(
         )
 
     return None, MatchSource.NAME.value, 0.0, "event_unresolved", "", [], ""
+
+
+async def resolve_event(
+    segment: str,
+    *,
+    full_events: List[Dict[str, Any]],
+    utterance: str,
+    device_no: str = "",
+    remark_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    llm_model: Optional[Dict[str, Any]] = None,
+) -> Tuple[
+    Optional[Dict[str, Any]],
+    str,
+    float,
+    str,
+    str,
+    List[Dict[str, Any]],
+    str,
+]:
+    """
+    事件维阶梯之后：父、未识别、多候选、软确认再用附近历史猜叶子。
+
+    猜中则返回带 history_guessed 的叶子，并清空消歧列表。
+    猜不中保持阶梯原结果。
+    """
+    from app.feeding.services.history_event_guess import (
+        guess_leaf_from_history,
+        needs_history_event_guess,
+    )
+
+    event, src, score, fail, remark, leaves, kw = await _resolve_event_core(
+        segment,
+        full_events=full_events,
+        utterance=utterance,
+        device_no=device_no,
+        remark_cache=remark_cache,
+        llm_model=llm_model,
+    )
+    if not needs_history_event_guess(
+        event,
+        fail_reason=fail,
+        disambiguation_leaves=leaves,
+        full_events=full_events,
+    ):
+        return event, src, score, fail, remark, leaves, kw
+    guessed = await guess_leaf_from_history(
+        segment=segment,
+        utterance=utterance,
+        device_no=device_no,
+        full_events=full_events,
+        llm_model=llm_model,
+        event=event,
+        disambiguation_leaves=leaves,
+    )
+    if not guessed:
+        return event, src, score, fail, remark, leaves, kw
+    return guessed, src or MatchSource.LLM.value, score, "", remark, [], ""
 
 
 def resolve_shape(
@@ -549,6 +608,7 @@ async def resolve_segment(
 
     draft.event_id = str(ev.get("event_id") or "")
     draft.event_name = str(ev.get("event_name") or "")
+    draft.history_guessed = bool(ev.get("history_guessed"))
     draft.event_kind = (
         "parent" if is_parent_event(draft.event_id, full_events) else "leaf"
     )
@@ -901,6 +961,7 @@ def drafts_to_intent(
             "remark": rem,
             "missing_quantity": d.missing_quantity,
             "segment_text": d.text,
+            "history_guessed": bool(d.history_guessed),
         }
         events.append(ev)
         outcomes.append(
@@ -926,6 +987,13 @@ def drafts_to_intent(
         parent_cud_block = True
         break
     type_need = any(bool(d.type_need_confirm) for d in ok_drafts)
+    delete_guess = None
+    for d in ok_drafts:
+        if not d.history_guessed:
+            continue
+        if d.target_type == TargetType.DELETE.value or d.op == IntentOp.DELETE.value:
+            delete_guess = d
+            break
     if read_source == "predict" and (
         predict_channel not in ("active", "next")
         or time_answer not in ("clock", "remain")
@@ -937,9 +1005,14 @@ def drafts_to_intent(
             s = str(k or "").strip()
             if s and s not in type_kws:
                 type_kws.append(s)
-    need_confirm = bool(missing_qty or parent_cud_block or type_need)
+    need_confirm = bool(
+        missing_qty or parent_cud_block or type_need or delete_guess is not None
+    )
     confirm_message = ""
-    if type_need and not missing_qty:
+    if delete_guess is not None:
+        shown = (delete_guess.event_name or "该事件").strip()
+        confirm_message = f"要删除「{shown}」吗？"
+    elif type_need and not missing_qty:
         head_name = str(events[0].get("event_name") or "") if events else ""
         if read_source == "predict":
             confirm_message = f"您是要问「{head_name or '相关事件'}」大概还要多久吗？"

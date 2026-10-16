@@ -107,3 +107,46 @@ def format_age_months_text(baby_age_months: Optional[int]) -> str:
     if baby_age_months is None:
         return "未知"
     return f"{baby_age_months} 个月"
+
+
+def format_sex_text(raw: Any) -> str:
+    """
+    生日接口 sex：0 女，1 男，其它为未知。
+
+    不把原始数字交给模型。
+    """
+    if raw is None or raw == "":
+        return "未知"
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return "未知"
+    if n == 0:
+        return "女"
+    if n == 1:
+        return "男"
+    return "未知"
+
+
+def format_baby_profile_prompt(
+    baby_profile: Any,
+    baby_age_months: Optional[int] = None,
+) -> str:
+    """
+    给模型的宝宝信息块。
+
+    名字用 babyName，空则省略。性别用 sex。月龄优先用调用方已算值，
+    否则按 birthday 用上海日历自算。没有画像且没有月龄时返回空串。
+    """
+    profile = baby_profile if isinstance(baby_profile, dict) else {}
+    if not profile and baby_age_months is None:
+        return ""
+    if baby_age_months is None:
+        baby_age_months = age_months_from_profile(profile)
+    lines = ["宝宝信息："]
+    name = str(profile.get("babyName") or "").strip()
+    if name:
+        lines.append(f"- 名字：{name}")
+    lines.append(f"- 月龄：{format_age_months_text(baby_age_months)}")
+    lines.append(f"- 性别：{format_sex_text(profile.get('sex'))}")
+    return "\n".join(lines)

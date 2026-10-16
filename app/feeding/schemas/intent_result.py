@@ -39,6 +39,8 @@ class IntentEventItem(BaseModel):
     # 段级多维：缺 quantity / 段原文（写短说法用）
     missing_quantity: bool = False
     segment_text: str = ""
+    # 事件由附近历史猜中：不写事件说法飞轮；删除须先确认
+    history_guessed: bool = False
 
 
 class IntentResult(BaseModel):

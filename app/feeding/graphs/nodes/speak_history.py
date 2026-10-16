@@ -974,6 +974,11 @@ async def speak_history(state: Any) -> Dict[str, Any]:
         if isinstance(e, dict) and e.get("event_id")
     }
     intent["content"] = content
+    guessed_ids = {
+        str(e.get("event_id") or "").strip()
+        for e in (intent.get("events") or [])
+        if isinstance(e, dict) and e.get("history_guessed")
+    }
     intent["events"] = cache_events or intent.get("events") or []
     # 仅对拉史成功的段写短说法（失败段不写；不依赖 leaf_confirm）
     full = state_get(state, "event_dictionary_full") or []
@@ -982,6 +987,8 @@ async def speak_history(state: Any) -> Dict[str, Any]:
             continue
         eid = str(ev.get("event_id") or "").strip()
         if not eid:
+            continue
+        if eid in guessed_ids:
             continue
         seg = str(ev.get("segment_text") or "").strip() or seg_by_id.get(eid, "")
         ename = str(ev.get("event_name") or "").strip()

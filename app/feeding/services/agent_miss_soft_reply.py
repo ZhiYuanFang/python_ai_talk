@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from app.feeding.graphs.nodes.prompts.system import AGENT_MISS_SOFT_REPLY_SYSTEM_PROMPT
 from app.feeding.services.predict_algo_cache import predict_algo_cache
+from app.shared.baby_age import format_baby_profile_prompt
 from app.shared.graphs.stream_llm_collect import stream_llm_collect
 from app.shared.http_client import http_client
 from app.shared.llm_client import llm_model_config_from_mapping
@@ -29,34 +30,8 @@ _FAIL_KIND_ZH = {
 
 
 def _baby_profile_brief(profile: Optional[Dict[str, Any]]) -> str:
-    """画像摘要；空则空串。"""
-    if not isinstance(profile, dict) or not profile:
-        return ""
-    # 只取常见基础字段，避免整包噪声
-    keys = (
-        "nickname",
-        "name",
-        "gender",
-        "sex",
-        "birthDate",
-        "birth_date",
-        "months",
-        "ageMonths",
-        "age_months",
-    )
-    parts = []
-    for k in keys:
-        v = profile.get(k)
-        if v is not None and str(v).strip():
-            parts.append(f"{k}={v}")
-    if not parts:
-        # 回退：截断 JSON
-        try:
-            raw = json.dumps(profile, ensure_ascii=False)
-            return raw[:800]
-        except Exception:
-            return ""
-    return "; ".join(parts)
+    """与诊疗同一套名字、性别、月龄；没有画像则空串。"""
+    return format_baby_profile_prompt(profile)
 
 
 async def soft_reply_for_miss(

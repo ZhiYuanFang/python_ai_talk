@@ -159,6 +159,8 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
             doc = seg or ename
             if not doc:
                 continue
+            if ev.get("history_guessed"):
+                continue
             kind = "parent" if is_parent_event(eid, full) else "leaf"
             intent_cache_store.add_event_phrase(
                 doc, event_id=eid, event_name=ename, kind=kind
