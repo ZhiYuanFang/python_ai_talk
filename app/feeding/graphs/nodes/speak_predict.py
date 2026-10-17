@@ -30,16 +30,24 @@ from app.feeding.services.event_hierarchy import (
 from app.feeding.services.predict_algo import (
     PredictToolResult,
     appointment_tool_result,
-    filter_records_for_root,
-    half_life_days_for_age_months,
-    predict_next_for_records,
     prediction_seven_day_unix_bounds,
 )
 from app.feeding.services.predict_algo_cache import predict_algo_cache
+from app.feeding.services.predict_interval_snapshot import (
+    baby_age_months,
+    compute_interval_tool,
+    leaf_ids_for_root,
+)
 from app.feeding.services.predict_qa import (
+    format_go_measure_answer,
     format_predict_answer,
     match_active_expect_end,
+    match_active_item,
+    match_imminent_item,
     match_imminent_next_at,
+    read_expect_amount,
+    read_expect_duration_sec,
+    read_expect_unit,
     uncertainty_message,
 )
 from app.shared.constants import TargetType
@@ -298,6 +306,27 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
                 "response": content,
             }
 
+    # 用量/用时先读 Go 的该格；没有再进近 7 日。预约不走这里
+    if (
+        aspect in ("amount", "duration")
+        and not is_appt
+        and channel in ("active", "next")
+    ):
+        go_text = await _go_measure_answer(
+            device_no=device_no,
+            event_id=eid,
+            event_name=ename,
+            full_events=full_events,
+            channel=channel,
+            aspect=aspect,
+        )
+        if go_text:
+            intent["content"] = go_text
+            return {
+                "intent_result": IntentResult.model_validate(intent),
+                "response": go_text,
+            }
+
     # —— 冷路径 ——
     content = await _cold_path_answer(
         state=state,
@@ -316,6 +345,50 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
         "intent_result": IntentResult.model_validate(intent),
         "response": content,
     }
+
+
+async def _go_measure_answer(
+    *,
+    device_no: str,
+    event_id: str,
+    event_name: str,
+    full_events: List[Dict[str, Any]],
+    channel: str,
+    aspect: str,
+) -> str:
+    """
+    用量或用时先读 Go 的该格。
+
+    有数则返回播报句，不拉近 7 日、不写间隔快照。没有或失败返回空串，交给间隔算法。
+    """
+    try:
+        if channel == "active":
+            items = await http_client.get_predict_active_eta(device_no)
+            item = match_active_item(event_id, items, full_events)
+        else:
+            items = await http_client.get_predict_imminent_pending(device_no)
+            item = match_imminent_item(event_id, items, full_events)
+    except Exception as exc:
+        logger.warning(
+            "预测用量/用时拉 Go 失败，转间隔算法: channel=%s err=%s",
+            channel,
+            exc,
+        )
+        return ""
+    if not item:
+        return ""
+    if aspect == "duration":
+        return format_go_measure_answer(
+            event_name=event_name,
+            aspect="duration",
+            duration_sec=read_expect_duration_sec(item),
+        )
+    return format_go_measure_answer(
+        event_name=event_name,
+        aspect="amount",
+        amount=read_expect_amount(item),
+        unit=read_expect_unit(item),
+    )
 
 
 async def _cold_path_answer(
@@ -434,45 +507,19 @@ async def _resolve_tool_result(
             )
         return tool
 
-    start_u, end_u = prediction_seven_day_unix_bounds()
-    leaf_ids = _leaf_ids_for_root(root_id, full_events)
-    try:
-        rows = await http_client.get_filtered_history_events(
-            device_no,
-            event_ids=leaf_ids or [root_id],
-            start_time=start_u,
-            end_time=end_u,
-            limit=500,
-        )
-    except Exception as exc:
-        logger.warning("近 7 日拉史失败: %s", exc)
-        rows = []
-    scoped = filter_records_for_root(rows or [], root_id, full_events)
-    # 月龄：有画像则用；缺省用默认半衰期
-    months = await _baby_age_months(device_no)
-    half = half_life_days_for_age_months(months)
-    tool = predict_next_for_records(
-        event_id=root_id,
+    # 间隔算法不读快照；上面已处理命中。成功结果由计算函数写入
+    return await compute_interval_tool(
+        device_no=device_no,
+        root_id=root_id,
         event_name=event_name,
-        records=scoped,
-        catalog=full_events,
-        half_life_days=half,
+        full_events=full_events,
+        write_cache=True,
     )
-    if tool.status == "ok":
-        await predict_algo_cache.put_root(device_no, root_id, tool.to_prompt_dict())
-    return tool
 
 
 def _leaf_ids_for_root(root_id: str, full_events: List[Dict[str, Any]]) -> List[str]:
     """算法轨拉史：根下全部叶子；根本身是叶则返回 [root]。"""
-    rid = str(root_id or "").strip()
-    if not rid:
-        return []
-    if not is_parent_event(rid, full_events):
-        return [rid]
-    leaves = get_descendant_leaves(rid, full_events)
-    ids = [str(x.get("event_id") or "").strip() for x in leaves]
-    return [x for x in ids if x] or [rid]
+    return leaf_ids_for_root(root_id, full_events)
 
 
 def _context_history_event_ids(
@@ -495,32 +542,7 @@ def _context_history_event_ids(
 
 async def _baby_age_months(device_no: str) -> Optional[int]:
     """从画像推月龄；失败返回 None。"""
-    try:
-        profile = await http_client.get_baby_profile(device_no)
-        if not isinstance(profile, dict):
-            return None
-        # 常见字段：months / ageMonths / birthDate
-        for key in ("months", "ageMonths", "age_months"):
-            if profile.get(key) is not None:
-                return int(profile[key])
-        birth = profile.get("birthDate") or profile.get("birth_date")
-        if birth:
-            tz = shanghai_tz()
-            from datetime import datetime as dt
-
-            if isinstance(birth, (int, float)):
-                bdt = dt.fromtimestamp(float(birth), tz=tz)
-            else:
-                s = str(birth).strip()[:10]
-                bdt = dt.strptime(s, "%Y-%m-%d").replace(tzinfo=tz)
-            now = dt.now(tz=tz)
-            months = (now.year - bdt.year) * 12 + (now.month - bdt.month)
-            if now.day < bdt.day:
-                months -= 1
-            return max(0, months)
-    except Exception as exc:
-        logger.debug("画像月龄不可用: %s", exc)
-    return None
+    return await baby_age_months(device_no)
 
 
 async def _load_context_history_compact(

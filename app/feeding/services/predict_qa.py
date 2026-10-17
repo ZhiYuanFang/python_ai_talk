@@ -2,7 +2,8 @@
 预测问答：双通道锚点匹配与播报文案
 
 业务说明：
-active 消费 active-eta items 的 expectEndAt；next 消费 imminent events 的 nextAt。
+active 消费 active-eta 的 expectEndAt 与预计用量/时长；
+next 消费 imminent 的 nextAt 与预计用量/时长。
 按段事件 id 与目录归根对齐 leaf/root/eventId。
 clock / remain 分维播报；remain 超时固定「已经过了预计时间」。
 无匹配时估不准，禁止回落查史「上一次…用时」。
@@ -90,6 +91,161 @@ def match_active_expect_end(
     return None
 
 
+def read_expect_duration_sec(item: Dict[str, Any]) -> Optional[int]:
+    """
+    从 Go 条目读取预计时长（秒）。
+
+    依次看 expectDurationSec、expect_duration_sec、expectDuration。0 或空视为没有。
+    """
+    if not isinstance(item, dict):
+        return None
+    for key in ("expectDurationSec", "expect_duration_sec", "expectDuration"):
+        raw = item.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            sec = int(float(raw))
+        except (TypeError, ValueError):
+            continue
+        if sec > 0:
+            return sec
+    return None
+
+
+def read_expect_amount(item: Dict[str, Any]) -> Optional[float]:
+    """
+    从 Go 条目读取预计用量。
+
+    依次看 expectAmount、expect_amount。0 或空视为没有。
+    """
+    if not isinstance(item, dict):
+        return None
+    for key in ("expectAmount", "expect_amount"):
+        raw = item.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            amount = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if amount > 0:
+            return amount
+    return None
+
+
+def read_expect_unit(item: Dict[str, Any]) -> str:
+    """预计用量的单位。没有则空串。"""
+    if not isinstance(item, dict):
+        return ""
+    for key in ("expectUnit", "expect_unit", "unit"):
+        raw = item.get(key)
+        if raw not in (None, ""):
+            return str(raw).strip()
+    return ""
+
+
+def _active_id_rank(item: Dict[str, Any], leaf: str, root: str) -> int:
+    """进行中条目与事件的匹配档：叶子优先于根，对不上为 0。"""
+    if leaf and _ids_equal(leaf, item.get("leafEventId")):
+        return 3
+    if root and _ids_equal(root, item.get("rootEventId")):
+        return 2
+    raw = item.get("eventId") or item.get("event_id")
+    if leaf and _ids_equal(leaf, raw):
+        return 1
+    if root and _ids_equal(root, raw):
+        return 1
+    return 0
+
+
+def match_active_item(
+    event_id: str,
+    eta_items: List[Dict[str, Any]],
+    full_events: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """按叶子、根的优先级取进行中 ETA 的整条，供读取预计用量或时长。"""
+    if not eta_items:
+        return None
+    leaf, root = _event_match_ids(event_id, full_events)
+    if not leaf and not root:
+        return None
+    best: Optional[Dict[str, Any]] = None
+    best_rank = 0
+    for it in eta_items:
+        if not isinstance(it, dict):
+            continue
+        rank = _active_id_rank(it, leaf, root)
+        if rank > best_rank:
+            best = it
+            best_rank = rank
+    return best
+
+
+def match_imminent_item(
+    event_id: str,
+    events: List[Dict[str, Any]],
+    full_events: List[Dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    按事件 id 取 imminent 整条。
+
+    多条时与 nextAt 选择相同：最近的未来，否则最近的过去。没有 nextAt 时用第一条对上的。
+    """
+    if not events:
+        return None
+    leaf, root = _event_match_ids(event_id, full_events)
+    if not leaf and not root:
+        return None
+    matched: List[Dict[str, Any]] = []
+    for it in events:
+        if not isinstance(it, dict):
+            continue
+        eid = it.get("eventId") or it.get("event_id")
+        if (leaf and _ids_equal(leaf, eid)) or (root and _ids_equal(root, eid)):
+            matched.append(it)
+    if not matched:
+        return None
+    timed: List[Tuple[int, Dict[str, Any]]] = []
+    for it in matched:
+        nxt = _parse_unix_sec(it.get("nextAt") or it.get("next_at"))
+        if nxt is not None:
+            timed.append((nxt, it))
+    if not timed:
+        return matched[0]
+    tz = shanghai_tz()
+    current = now or datetime.now(tz=tz)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=tz)
+    else:
+        current = current.astimezone(tz)
+    now_ts = int(current.timestamp())
+    future = sorted((n, it) for n, it in timed if n >= now_ts)
+    if future:
+        return future[0][1]
+    return max(timed, key=lambda pair: pair[0])[1]
+
+
+def format_go_measure_answer(
+    *,
+    event_name: str,
+    aspect: str,
+    duration_sec: Optional[int] = None,
+    amount: Optional[float] = None,
+    unit: str = "",
+) -> str:
+    """用 Go 给出的预计时长或用量说一句。没有该格时返回空串。"""
+    name = (event_name or "").strip() or "这件事"
+    if aspect == "duration" and duration_sec and duration_sec > 0:
+        return f"这次{name}预计持续大约{_format_remain_hm(int(duration_sec))}。"
+    if aspect == "amount" and amount and amount > 0:
+        num = float(amount)
+        text = str(int(num)) if num.is_integer() else str(num)
+        return f"这次{name}预计大约{text}{(unit or '').strip()}。"
+    return ""
+
+
 def match_imminent_next_at(
     event_id: str,
     events: List[Dict[str, Any]],
@@ -100,37 +256,12 @@ def match_imminent_next_at(
     """
     按 eventId（叶/根）匹配 imminent 的 nextAt；多条取最近未来，否则取最近过去。
     """
-    if not events:
+    item = match_imminent_item(
+        event_id, events, full_events, now=now
+    )
+    if not item:
         return None
-    leaf, root = _event_match_ids(event_id, full_events)
-    if not leaf and not root:
-        return None
-
-    candidates: List[int] = []
-    for it in events:
-        eid = it.get("eventId") or it.get("event_id")
-        if not (
-            (leaf and _ids_equal(leaf, eid))
-            or (root and _ids_equal(root, eid))
-        ):
-            continue
-        nxt = _parse_unix_sec(it.get("nextAt") or it.get("next_at"))
-        if nxt is not None:
-            candidates.append(nxt)
-    if not candidates:
-        return None
-
-    tz = shanghai_tz()
-    current = now or datetime.now(tz=tz)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=tz)
-    else:
-        current = current.astimezone(tz)
-    now_ts = int(current.timestamp())
-    future = sorted(n for n in candidates if n >= now_ts)
-    if future:
-        return future[0]
-    return max(candidates)
+    return _parse_unix_sec(item.get("nextAt") or item.get("next_at"))
 
 
 def format_predict_answer(

@@ -48,10 +48,25 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
         or state_get(state, "event_dictionary")
         or []
     )
-    # 分类路径未走 overlay 时，仍用原文补全闭合起止
+    # 分类路径未走 overlay 时，仍用原文补全闭合起止。删除不靠钟点选行，不把时间盖上去
     text = state_get(state, "user_input") or state_get(state, "text") or ""
     events = [e for e in (intent.get("events") or []) if isinstance(e, dict)]
-    new_events, slot_changed = apply_time_slots_to_events(text, events)
+    slot_targets = [
+        e
+        for e in events
+        if str(e.get("op") or "").strip().lower() != IntentOp.DELETE.value
+    ]
+    new_targets, slot_changed = apply_time_slots_to_events(text, slot_targets)
+    if slot_changed:
+        filled = iter(new_targets)
+        new_events = [
+            next(filled)
+            if str(e.get("op") or "").strip().lower() != IntentOp.DELETE.value
+            else e
+            for e in events
+        ]
+    else:
+        new_events = events
     if slot_changed:
         intent["events"] = new_events
         logger.info("落库前闭合槽位已覆盖: events=%s", len(new_events))
@@ -73,13 +88,35 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
 
     # 仅本批含修改或删除时才解析定位；记一笔的钟点已在段解析写入，不按 latest 改旧记录
     locate_strategy = "latest"
-    needs_locate = any(
+    mutation_ops = [
         (it.get("_item_op") or it.get("op") or "").strip().lower()
-        in (IntentOp.UPDATE.value, IntentOp.DELETE.value)
         for it in items
         if isinstance(it, dict)
+    ]
+    mutation_ops = [
+        op
+        for op in mutation_ops
+        if op in (IntentOp.UPDATE.value, IntentOp.DELETE.value)
+    ]
+    delete_only = bool(mutation_ops) and all(
+        op == IntentOp.DELETE.value for op in mutation_ops
     )
-    if needs_locate:
+    if delete_only:
+        # 纯删除：有定位词用本地结果，没有就直接最近一条，不问模型
+        from app.feeding.services.dim_local_rules import match_local_locate
+        from app.feeding.services.dim_rule_lexicon import apply_locate_view
+        from app.feeding.services.event_homophone import cut_segment_pinyin
+
+        local_locate = match_local_locate(
+            apply_locate_view(text, cut_segment_pinyin(text))
+        )
+        if local_locate:
+            locate_strategy = local_locate
+            logger.info("纯删除本地定位: strategy=%s", local_locate)
+        else:
+            locate_strategy = "latest"
+            logger.info("纯删除无定位词，直接最近一条")
+    elif mutation_ops:
         try:
             from app.feeding.services.dim_resolve import resolve_locate
 

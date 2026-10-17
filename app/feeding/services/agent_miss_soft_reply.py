@@ -2,8 +2,9 @@
 覆盖缺口对外回答
 
 业务说明：
-miss 已用硬文案落库。对外不再复述失败，只把宝宝画像和已有预测快照交给模型直接答。
-快照没有对应事件时允许按快照猜测。无快照不重算。模型失败才回退硬文案。
+miss 已用硬文案落库。对外不再复述失败，只把宝宝画像和预测快照交给模型直接答。
+快照没有对应事件时允许按快照猜测。整份快照缺失时先按近 7 日间隔生成再答。
+已有快照不重算。模型失败才回退硬文案。
 不影响 fail_kind 与统计。
 """
 
@@ -41,20 +42,35 @@ async def soft_reply_for_miss(
     fail_kind 只留给上游统计，不写入提示词。
 
     Side Effects:
-        只读 Redis 预测快照、只读宝宝画像；可能调用 LLM stream。
+        快照缺失时可能拉近 7 日历史并写入 Redis；已有快照只读。
+        只读宝宝画像；可能调用 LLM stream。
     """
     del fail_kind
     hard = (hard_content or "").strip()
     if not hard:
         return hard_content or ""
 
-    snap_block = "（无预测算法快照）"
+    snap: Optional[Dict[str, Any]] = None
     try:
         snap = await predict_algo_cache.get(device_no)
-        if snap and isinstance(snap.get("by_root"), dict) and snap["by_root"]:
-            snap_block = json.dumps(snap, ensure_ascii=False)[:4000]
     except Exception as exc:
         logger.debug("miss 软回复读预测快照跳过: %s", exc)
+    by_root = snap.get("by_root") if isinstance(snap, dict) else None
+    if not isinstance(by_root, dict) or not by_root:
+        # 整份没有才生成。单个根失败或字典为空时仍按无快照继续
+        try:
+            from app.feeding.services.predict_interval_snapshot import (
+                fill_interval_snapshot,
+            )
+
+            snap = await fill_interval_snapshot(device_no)
+        except Exception as exc:
+            logger.warning("miss 软回复补预测快照失败: %s", exc)
+            snap = None
+
+    snap_block = "（无预测算法快照）"
+    if snap and isinstance(snap.get("by_root"), dict) and snap["by_root"]:
+        snap_block = json.dumps(snap, ensure_ascii=False)[:4000]
 
     baby_block = "（无宝宝基础信息）"
     try:

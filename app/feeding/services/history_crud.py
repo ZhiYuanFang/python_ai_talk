@@ -143,6 +143,15 @@ def collect_event_items(
             number = int(qty) if qty is not None else 0
         except (TypeError, ValueError):
             number = 0
+        # one 类一次一件：新增和删除固定为 1。number 用数量，time 与修改保持原值
+        leaf_type = str(
+            leaf.get("type") or leaf.get("event_type") or ""
+        ).strip().lower()
+        if leaf_type == "one" and item_op in (
+            IntentOp.CREATE.value,
+            IntentOp.DELETE.value,
+        ):
+            number = 1
         # 业务说明：同 event_id 可出现多次（同叶多时刻 create），各自 start_time/quantity
         try:
             raw_start = int(ev.get("start_time") or 0)

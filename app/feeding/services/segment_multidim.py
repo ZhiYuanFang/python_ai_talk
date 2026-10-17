@@ -689,7 +689,7 @@ async def resolve_segment(
     """
     对单段跑完整多维。
 
-    顺序：OP → EVENT → REMARK（read 跳过）→ QTY（read 跳过）→ TIME。
+    顺序：OP → EVENT → REMARK（read 与删除叶子跳过）→ QTY → TIME。
     """
     model = llm_model or {}
     raw_segment = (segment or "").strip()
@@ -788,17 +788,31 @@ async def resolve_segment(
     draft.match_source = src
     draft.match_confidence = score
     draft.remark = remark or ""
+    # 删除且已是唯一叶子：反查/别名关键字不留在备注上，后面也不再抽明细、数量、时间
+    delete_leaf = (
+        tt == TargetType.DELETE.value
+        and draft.event_kind == "leaf"
+        and bool(draft.event_id)
+    )
+    if delete_leaf:
+        draft.remark = ""
+        logger.info(
+            "删除叶子短路旁路: event=%s text=%s",
+            draft.event_name,
+            (draft.text or "")[:40],
+        )
     # 事件视图里认定的名字在原文上的起止，供备注按位置删除
     event_span = _span_in_text(event_view, draft.event_name)
     if event_span is None and (remark or "").strip():
         event_span = _span_in_text(event_view, remark)
 
-    # 备注维：read 整维跳过；否则 别名已有 → 无明细则空 → 飞轮 → 明细 LLM → 回写
+    # 备注维：read 与删除叶子跳过；否则 别名已有 → 无明细则空 → 飞轮 → 明细 LLM → 回写
     is_read_rail = tt == TargetType.READ.value
     if (
         extract_detail_remark
         and draft.event_id
         and not is_read_rail
+        and not delete_leaf
     ):
         if (draft.remark or "").strip():
             # 别名/反查已有备注：跳过 LLM，不强制写飞轮
@@ -882,10 +896,10 @@ async def resolve_segment(
         # 时间槽在 TIME 段填充后再二次检查；此处先占位
         pass
 
-    # QTY：read 跳过；否则 规则 → 飞轮 →（真线索）小 LLM → 回写
+    # QTY：read 与删除叶子跳过；否则 规则 → 飞轮 →（真线索）小 LLM → 回写
     qty: Optional[int] = None
     qty_from_llm = False
-    if not is_read_rail:
+    if not is_read_rail and not delete_leaf:
         qty = extract_quantity_from_text(draft.text)
         if qty is None and utterance and draft.text in utterance:
             qty = extract_quantity_from_text(utterance)
@@ -932,8 +946,10 @@ async def resolve_segment(
         # 无量线索：缺量追问；不写数量飞轮
         draft.missing_quantity = True
 
-    # TIME：点查跳过窗 → 仅日词本地窗 → 规则钟点 → 全轨飞轮 → LLM
-    if _is_read_record(tt, draft.read_source) or op == IntentOp.READ.value:
+    # TIME：删除叶子不解析；点查跳过窗 → 仅日词本地窗 → 规则钟点 → 全轨飞轮 → LLM
+    if delete_leaf:
+        pass
+    elif _is_read_record(tt, draft.read_source) or op == IntentOp.READ.value:
         if hm == "point":
             draft.ignore_time_range = True
         elif not _try_apply_day_word_window(draft):
