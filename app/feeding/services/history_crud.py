@@ -203,6 +203,8 @@ def collect_event_items(
                 "remark": str(ev.get("remark") or data.get("remark") or ""),
                 "_display_name": leaf.get("event_name") or name,
                 "_item_op": item_op,
+                # 回执用；execute_batch 会丢掉下划线字段，不进 Go
+                "_leaf_type": leaf_type,
             }
         )
     return sort_end_items_first(items), missing
@@ -232,6 +234,8 @@ def render_persist_content(
         qty = item.get("eventNumber") or 0
         unit = item.get("eventUnit") or ""
         op = item.get("op") or "create"
+        # 一次性事件的 1 只用于落库，回执不念
+        leaf_type = str(item.get("_leaf_type") or "").strip().lower()
         res = {}
         for r in results:
             if int(r.get("index", -1)) == i:
@@ -241,7 +245,7 @@ def render_persist_content(
             res = results[i] or {}
         ok = bool(res.get("ok"))
         reason = str(res.get("reason") or "").strip()
-        qty_txt = f"{qty}{unit}" if qty else ""
+        qty_txt = "" if leaf_type == "one" else (f"{qty}{unit}" if qty else "")
         if ok:
             if op in ("create",):
                 ok_lines.append(f"已记录{name}" + (f" {qty_txt}" if qty_txt else ""))
