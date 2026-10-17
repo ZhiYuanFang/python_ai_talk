@@ -2,8 +2,9 @@
 事件解析末尾：用附近历史在允许集合里猜一个叶子。
 
 业务说明：
-父事件、未识别、多候选、软确认才进来。猜中打 history_guessed，不写事件说法飞轮。
-猜不中则调用方保持原来的消歧或无法识别。
+父事件点查按各子孙叶子最近开始时间选叶子，不调模型。
+未识别、多候选、非点查的父事件仍用附近历史猜叶子。
+猜中或按时间选定都打 history_guessed，不写事件说法飞轮。
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.feeding.graphs.nodes.prompts.system import HISTORY_EVENT_GUESS_SYSTEM_PROMPT
 from app.feeding.services.event_hierarchy import (
@@ -84,6 +85,96 @@ def _parse_choice(content: str) -> str:
     if not isinstance(data, dict):
         return ""
     return str(data.get("event_id") or "").strip()
+
+
+def parent_point_ask(leaves: List[Dict[str, Any]]) -> str:
+    """没有子事件记录时的短问，只列事件名。"""
+    names = [
+        str(ev.get("event_name") or "").strip()
+        for ev in leaves or []
+        if str(ev.get("event_name") or "").strip()
+    ]
+    if not names:
+        return "是哪一项？"
+    if len(names) == 1:
+        return f"是{names[0]}吗？"
+    if len(names) == 2:
+        return f"是{names[0]}，还是{names[1]}？"
+    return f"是{'、'.join(names[:-1])}，还是{names[-1]}？"
+
+
+def _row_start_ts(row: Dict[str, Any]) -> int:
+    """历史行开始时间，缺省 0。"""
+    raw = row.get("startTime")
+    if raw in (None, ""):
+        raw = row.get("start_time")
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def pick_parent_point_leaf(
+    *,
+    event: Dict[str, Any],
+    device_no: str,
+    full_events: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    父事件点查：各子孙叶子最近一条里，开始时间最晚的叶子胜出。
+
+    Returns:
+        (选中叶子, 待确认叶子)。没有子孙叶子时两者都空，调用方保持原结果。
+        有叶子但没有历史时，选中为空、待确认为全部叶子。
+    """
+    leaves = get_descendant_leaves(event.get("event_id"), full_events)
+    if not leaves:
+        return None, []
+    ids = [
+        str(ev.get("event_id") or "").strip()
+        for ev in leaves
+        if str(ev.get("event_id") or "").strip()
+    ]
+    rows: List[Dict[str, Any]] = []
+    if (device_no or "").strip() and ids:
+        try:
+            rows = await _recent_rows(device_no, ids)
+        except Exception as exc:
+            logger.warning("父事件点查拉史失败: %s", exc)
+            rows = []
+    best: Dict[str, int] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        eid = _row_event_id(row)
+        if not eid:
+            continue
+        ts = _row_start_ts(row)
+        if eid not in best or ts > best[eid]:
+            best[eid] = ts
+    if not best:
+        return None, leaves
+    winner: Optional[Dict[str, Any]] = None
+    winner_ts = -1
+    # 相同开始时间保留子孙列表里更靠前的叶子
+    for leaf in leaves:
+        eid = str(leaf.get("event_id") or "").strip()
+        ts = best.get(eid)
+        if ts is None or ts <= winner_ts:
+            continue
+        winner = leaf
+        winner_ts = ts
+    if winner is None:
+        return None, leaves
+    copied = dict(winner)
+    copied["history_guessed"] = True
+    logger.info(
+        "父事件点查按开始时间选定: id=%s name=%s start=%s",
+        copied.get("event_id"),
+        copied.get("event_name"),
+        winner_ts,
+    )
+    return copied, []
 
 
 async def _recent_rows(

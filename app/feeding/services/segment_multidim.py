@@ -470,6 +470,7 @@ async def resolve_event(
     device_no: str = "",
     remark_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     llm_model: Optional[Dict[str, Any]] = None,
+    point_query: bool = False,
 ) -> Tuple[
     Optional[Dict[str, Any]],
     str,
@@ -480,14 +481,16 @@ async def resolve_event(
     str,
 ]:
     """
-    事件维阶梯之后：父、未识别、多候选、软确认再用附近历史猜叶子。
+    事件维阶梯之后：父事件点查按开始时间选叶子；其余父、未识别、多候选再用模型猜。
 
-    猜中则返回带 history_guessed 的叶子，并清空消歧列表。
-    猜不中保持阶梯原结果。
+    猜中或按时间选定则返回带 history_guessed 的叶子，并清空消歧列表。
+    点查父事件没有历史时返回待确认叶子。猜不中保持阶梯原结果。
     """
     from app.feeding.services.history_event_guess import (
         guess_leaf_from_history,
         needs_history_event_guess,
+        parent_point_ask,
+        pick_parent_point_leaf,
     )
 
     event, src, score, fail, remark, leaves, kw = await _resolve_event_core(
@@ -498,6 +501,32 @@ async def resolve_event(
         remark_cache=remark_cache,
         llm_model=llm_model,
     )
+    # 点查且已命中父节点：用开始时间选叶子，不走猜叶子模型
+    if (
+        point_query
+        and event
+        and not leaves
+        and is_parent_event(event.get("event_id"), full_events)
+    ):
+        picked, ask_leaves = await pick_parent_point_leaf(
+            event=event,
+            device_no=device_no,
+            full_events=full_events,
+        )
+        if ask_leaves:
+            question = parent_point_ask(ask_leaves)
+            return (
+                None,
+                src,
+                score,
+                "parent_point_no_history",
+                "",
+                ask_leaves,
+                question,
+            )
+        if picked:
+            return picked, src or MatchSource.NAME.value, score, "", remark, [], ""
+        return event, src, score, fail, remark, leaves, kw
     if not needs_history_event_guess(
         event,
         fail_reason=fail,
@@ -675,6 +704,11 @@ async def resolve_segment(
         device_no=device_no,
         remark_cache=remark_cache,
         llm_model=model,
+        point_query=(
+            tt == TargetType.READ.value
+            and hm == "point"
+            and (rs == "record" or op == IntentOp.READ.value)
+        ),
     )
     if disamb_leaves:
         draft.ok = False

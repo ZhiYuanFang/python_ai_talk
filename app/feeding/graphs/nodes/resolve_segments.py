@@ -389,6 +389,48 @@ async def resolve_segments(state: Any) -> Dict[str, Any]:
             remark_cache=remark_cache,
             llm_model=llm_model,
         )
+        # 父事件点查没有子记录：只问叶子名
+        if (
+            draft.fail_reason == "parent_point_no_history"
+            and draft.disambiguation_leaves
+        ):
+            if draft.history_mode == "point":
+                draft.ignore_time_range = True
+            question = (draft.disambiguation_keyword or "").strip()
+            pending = create_parent_disambiguation_pending(
+                parent={"event_id": "", "event_name": ""},
+                children=draft.disambiguation_leaves,
+                original_utterance=text,
+                action=IntentAction.ONE.value,
+                quantity=None,
+                match_source=MatchSource.NAME.value,
+                device_no=device_no,
+                model_config={
+                    **(llm_model or {}),
+                    "_type_target": draft.target_type or TargetType.READ.value,
+                    "_type_history_mode": draft.history_mode or "point",
+                    "_type_read_source": draft.read_source or "record",
+                },
+                conversation_id=conversation_id,
+                op=IntentOp.READ.value,
+                events=_soft_pending_events(draft, leaf=None),
+                clarify_message=question,
+                history_mode=draft.history_mode or "point",
+            )
+            fields = pending_to_response_fields(pending)
+            logger.info(
+                "父事件点查无记录，短问: %s",
+                question[:80],
+            )
+            return {
+                "intent_result": IntentResult.model_validate(fields),
+                "need_confirm": True,
+                "confirm_type": fields.get("confirm_type") or "",
+                "confirm_message": fields.get("confirm_message") or question,
+                "conversation_id": pending.conversation_id,
+                "intent_cache_hit": False,
+                "match_source": MatchSource.NAME.value,
+            }
         # EVENT 软候选：单确认 / 多消歧（未确认不执行）
         if (
             draft.fail_reason == "event_soft_candidate"
