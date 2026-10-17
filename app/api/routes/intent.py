@@ -26,12 +26,6 @@ from app.feeding.services.agent_miss_record import (
     maybe_record_agent_miss,
 )
 from app.feeding.services.agent_miss_soft_reply import soft_reply_for_miss
-from app.feeding.services.intent_barge import (
-    dump_to_response,
-    maybe_prepare_concat_rerun,
-    response_to_dump,
-)
-from app.feeding.services.intent_barge_store import intent_barge_store
 from app.feeding.services.intent_pipeline import (
     build_intent_response_from_fields,
     create_history_confirm_response,
@@ -61,7 +55,7 @@ async def _finish_intent_response(
     """
     对外返回前：终局 miss 先硬文案落库，再 LLM 软回复替换 content。
 
-    确认/消歧也记下对外句子。软回复失败回退硬文案。barge 认 miss_canonical_content。
+    确认/消歧也记下对外句子。软回复失败回退硬文案。硬文案留在 miss_canonical_content。
     近况在软回复之前读取，本函数返回前再写入本轮听到的句子。
     """
     from app.feeding.services.intent_recent_talk import intent_recent_talk_store
@@ -371,54 +365,25 @@ async def analyze_intent(request: IntentRequest):
     """
     非流式意图分析：与 stream 同一套 pending / 图 / 后处理。
 
-    同 device 单飞：busy 时挂起至本轮终局；miss 可拼接重跑。
+    每句直接进图，不按设备占坑或挂起。
     """
     logger.info(
         f"非流式意图: device_no={request.device_no}, "
         f"text={request.text[:50]}..., conversation_id={request.conversation_id}"
     )
-    role = await intent_barge_store.begin_or_enqueue(
-        request.device_no, request.text
-    )
-    if role == "waiter":
-        dump = await intent_barge_store.wait_for_final(request.device_no)
-        return dump_to_response(dump)
-
     full_events, leaf_events = await _prepare_dictionaries()
     model_config = _model_config_dict(request)
-    text = request.text
-    conversation_id = request.conversation_id
     try:
-        while True:
-            response = await _run_one_sync_attempt(
-                text=text,
-                device_no=request.device_no,
-                conversation_id=conversation_id,
-                model_config=model_config,
-                full_events=full_events,
-                leaf_events=leaf_events,
-            )
-            concat, do_rerun = await maybe_prepare_concat_rerun(
-                request.device_no, response
-            )
-            if do_rerun and concat:
-                logger.info(
-                    "意图 barge 拼接重跑 device=%s text=%s...",
-                    request.device_no,
-                    concat[:50],
-                )
-                text = concat
-                conversation_id = None
-                continue
-            await intent_barge_store.finish_success(
-                request.device_no, response_to_dump(response)
-            )
-            return response
+        return await _run_one_sync_attempt(
+            text=request.text,
+            device_no=request.device_no,
+            conversation_id=request.conversation_id,
+            model_config=model_config,
+            full_events=full_events,
+            leaf_events=leaf_events,
+        )
     except Exception as exc:
         logger.exception("非流式意图异常 device=%s: %s", request.device_no, exc)
-        await intent_barge_store.finish_error(
-            request.device_no, "脑电波过载，请稍后重试"
-        )
         raise
 
 
@@ -427,27 +392,17 @@ async def analyze_intent_stream(request: IntentRequest):
     """
     意图分析流式接口。
 
-    占坑连接推完整 thinking+answer（含 miss 重跑）；挂起连接仅终答快照。
+    每句推送本轮 thinking 与终答，不因同设备已有请求而挂起。
     """
     logger.info(
         f"意图分析流式请求: device_no={request.device_no}, text={request.text[:50]}..., "
         f"conversation_id={request.conversation_id}"
     )
 
-    role = await intent_barge_store.begin_or_enqueue(
-        request.device_no, request.text
-    )
-    if role == "waiter":
-        return StreamingResponse(
-            _stream_waiter_final(request.device_no),
-            media_type="text/event-stream",
-            headers=_sse_headers(),
-        )
-
     full_events, leaf_events = await _prepare_dictionaries()
     model_config = _model_config_dict(request)
     return StreamingResponse(
-        _stream_owner_with_barge(
+        _stream_intent(
             text=request.text,
             device_no=request.device_no,
             conversation_id=request.conversation_id,
@@ -460,14 +415,6 @@ async def analyze_intent_stream(request: IntentRequest):
     )
 
 
-async def _stream_waiter_final(device_no: str) -> AsyncGenerator[str, None]:
-    """挂起方：不推 thinking，等终局后 answer-only。"""
-    dump = await intent_barge_store.wait_for_final(device_no)
-    response = dump_to_response(dump)
-    async for chunk in _stream_answer_done(response):
-        yield chunk
-
-
 async def _stream_answer_done(response: IntentResponse) -> AsyncGenerator[str, None]:
     """推送一条 answer 与 [DONE]。"""
     answer_event = IntentStreamResponse(
@@ -478,7 +425,7 @@ async def _stream_answer_done(response: IntentResponse) -> AsyncGenerator[str, N
     yield "data: [DONE]\n\n"
 
 
-async def _stream_owner_with_barge(
+async def _stream_intent(
     *,
     text: str,
     device_no: str,
@@ -488,95 +435,72 @@ async def _stream_owner_with_barge(
     model_config: Dict[str, Any],
 ) -> AsyncGenerator[str, None]:
     """
-    占坑方：推 thinking；miss 有 pending 则同连接拼接重跑；终局写快照并 answer。
+    推送本句 thinking 与终答。
+
+    有 conversation_id 时先走续聊；否则冷启动。不拼接同设备的另一句。
     """
-    run_text = text
-    run_cid = conversation_id
     try:
-        while True:
-            response: Optional[IntentResponse] = None
-            # pending 续聊
-            if run_cid and clarification_store.get(run_cid):
-                async for kind, payload in _iter_pending_stream(
-                    text=run_text,
-                    conversation_id=run_cid,
-                    full_events=full_events,
-                ):
-                    if kind == "thinking":
-                        event = IntentStreamResponse(
-                            type="thinking",
-                            content=str(payload),
-                            node="pending_clarify",
+        response: Optional[IntentResponse] = None
+        if conversation_id and clarification_store.get(conversation_id):
+            async for kind, payload in _iter_pending_stream(
+                text=text,
+                conversation_id=conversation_id,
+                full_events=full_events,
+            ):
+                if kind == "thinking":
+                    event = IntentStreamResponse(
+                        type="thinking",
+                        content=str(payload),
+                        node="pending_clarify",
+                    )
+                    yield (
+                        f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
+                    )
+                elif kind == "result":
+                    pending_resp, as_new = payload
+                    if pending_resp is not None:
+                        response = pending_resp
+                    elif as_new:
+                        async for chunk, resp in _iter_cold_thinking(
+                            text=text,
+                            device_no=device_no,
+                            full_events=full_events,
+                            leaf_events=leaf_events,
+                            model_config=model_config,
+                        ):
+                            if chunk:
+                                yield chunk
+                            if resp is not None:
+                                response = resp
+                    else:
+                        response = IntentResponse(
+                            target_type="other",
+                            content="",
+                            need_confirm=False,
                         )
-                        yield (
-                            f"data: {json.dumps(event.model_dump(), ensure_ascii=False)}\n\n"
-                        )
-                    elif kind == "result":
-                        pending_resp, as_new = payload
-                        if pending_resp is not None:
-                            response = pending_resp
-                        elif as_new:
-                            async for chunk, resp in _iter_cold_thinking(
-                                text=run_text,
-                                device_no=device_no,
-                                full_events=full_events,
-                                leaf_events=leaf_events,
-                                model_config=model_config,
-                            ):
-                                if chunk:
-                                    yield chunk
-                                if resp is not None:
-                                    response = resp
-                        else:
-                            response = IntentResponse(
-                                target_type="other",
-                                content="",
-                                need_confirm=False,
-                            )
-            else:
-                async for chunk, resp in _iter_cold_thinking(
-                    text=run_text,
-                    device_no=device_no,
-                    full_events=full_events,
-                    leaf_events=leaf_events,
-                    model_config=model_config,
-                ):
-                    if chunk:
-                        yield chunk
-                    if resp is not None:
-                        response = resp
+        else:
+            async for chunk, resp in _iter_cold_thinking(
+                text=text,
+                device_no=device_no,
+                full_events=full_events,
+                leaf_events=leaf_events,
+                model_config=model_config,
+            ):
+                if chunk:
+                    yield chunk
+                if resp is not None:
+                    response = resp
 
-            if response is None:
-                response = IntentResponse(
-                    target_type="other",
-                    content="脑电波过载，请稍后重试",
-                    need_confirm=False,
-                )
-
-            concat, do_rerun = await maybe_prepare_concat_rerun(
-                device_no, response
+        if response is None:
+            response = IntentResponse(
+                target_type="other",
+                content="脑电波过载，请稍后重试",
+                need_confirm=False,
             )
-            if do_rerun and concat:
-                logger.info(
-                    "意图 barge 流式拼接重跑 device=%s text=%s...",
-                    device_no,
-                    concat[:50],
-                )
-                run_text = concat
-                run_cid = None
-                continue
-
-            await intent_barge_store.finish_success(
-                device_no, response_to_dump(response)
-            )
-            async for chunk in _stream_answer_done(response):
-                yield chunk
-            return
+        async for chunk in _stream_answer_done(response):
+            yield chunk
     except Exception as exc:
         logger.exception("流式意图异常 device=%s: %s", device_no, exc)
-        await intent_barge_store.finish_error(
-            device_no, "脑电波过载，请稍后重试"
-        )
         err = IntentResponse(
             target_type="other",
             content="脑电波过载，请稍后重试",

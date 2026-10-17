@@ -177,7 +177,7 @@ class IntentResponse(BaseModel):
         default_factory=list,
         description="澄清选项列表（如父事件下的子事件）",
     )
-    # 内部：miss 规范硬文案（软回复前）；不对外序列化，供 barge 判 miss
+    # 内部：软回复前的 miss 硬文案，不对外序列化
     miss_canonical_content: Optional[str] = Field(
         default=None,
         exclude=True,
