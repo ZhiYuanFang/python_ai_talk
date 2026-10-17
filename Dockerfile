@@ -33,7 +33,8 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
         pydantic-settings==2.* \
         redis==5.* \
         python-dotenv==1.* \
-        tqdm==4.* && \
+        tqdm==4.* \
+        "pypinyin==0.53.*" && \
     pip uninstall -y onnxruntime && \
     python -c "import chromadb" 2>/dev/null && \
     echo "onnxruntime safely removed" || \
