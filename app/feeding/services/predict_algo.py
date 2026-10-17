@@ -2,7 +2,7 @@
 本地预测算法（对齐 Flutter event_next_predictor 场景核）
 
 业务说明：
-非预约：近 7 日发生时刻 → TOD 桶 + 半衰期加权中位间隔 → nextAt；
+非预约：近 7 日发生时刻 → 同档/相邻/全桶三档投票 + 半衰期加权中位间隔 → nextAt；
 并可估计 expect 时长/用量。预约由调用方旁路，本模块不算间隔。
 样本不足返回 status=insufficient_samples，禁止上层用 LLM 编造数字。
 """
@@ -112,6 +112,17 @@ def _bucket_weight(sample_bucket: int, anchor_bucket: int) -> float:
     if _buckets_adjacent(sample_bucket, anchor_bucket):
         return 0.6
     return 0.2
+
+
+def _age_days(now: datetime, at: datetime) -> float:
+    """
+    距今天数，对齐 Flutter Duration.inHours / 24。
+
+    整小时截断，不用精确秒，避免和卡片算法差出权重。
+    """
+    seconds = (now - at).total_seconds()
+    hours = math.trunc(seconds / 3600.0)
+    return hours / 24.0
 
 
 def _recency_weight(age_days: float, half_life_days: int) -> float:
@@ -270,16 +281,31 @@ def _collect_weighted_intervals(
     anchor_bucket: int,
     half_life_days: int,
     now: datetime,
-    strict_buckets: bool,
+    scope: str,
 ) -> List[Tuple[int, float]]:
+    """
+    间隔样本。scope 对齐 Flutter：same 只留同档，adjacent 同档加相邻，all 全桶。
+
+    同档够门槛就不再让白天短间隔混进过夜长间隔。
+    """
     out: List[Tuple[int, float]] = []
     for i in range(1, len(times)):
         delta = int((times[i] - times[i - 1]).total_seconds())
         if delta < K_MIN_INTERVAL_SEC:
             continue
+        # 桶取间隔起点，和 lastAt 所在档比较
         b = time_of_day_bucket(times[i - 1])
-        bw = _bucket_weight(b, anchor_bucket) if strict_buckets else 1.0
-        age_days = (now - times[i]).total_seconds() / 86400.0
+        if scope == "same":
+            if b != anchor_bucket:
+                continue
+            bw = 1.0
+        elif scope == "adjacent":
+            if not _buckets_adjacent(b, anchor_bucket):
+                continue
+            bw = _bucket_weight(b, anchor_bucket)
+        else:
+            bw = 1.0
+        age_days = _age_days(now, times[i])
         w = bw * _recency_weight(age_days, half_life_days)
         if w > 0.001:
             out.append((delta, w))
@@ -343,7 +369,8 @@ def predict_next_for_records(
     for r in records or []:
         if not isinstance(r, dict):
             continue
-        t = occurrence_instant(r, include_active=False)
+        # 进行中用开始时间，对齐 Flutter includeActive
+        t = occurrence_instant(r, include_active=True)
         if t is not None:
             times.append(t)
     times.sort()
@@ -358,21 +385,18 @@ def predict_next_for_records(
 
     last_at = times[-1]
     anchor_bucket = time_of_day_bucket(last_at)
-    samples = _collect_weighted_intervals(
-        times,
-        anchor_bucket=anchor_bucket,
-        half_life_days=half_life_days,
-        now=current,
-        strict_buckets=True,
-    )
-    if len(samples) < K_MIN_SAMPLES:
+    # 同档 → 相邻档 → 全桶，够 2 个样本就停
+    samples: List[Tuple[int, float]] = []
+    for scope in ("same", "adjacent", "all"):
         samples = _collect_weighted_intervals(
             times,
             anchor_bucket=anchor_bucket,
             half_life_days=half_life_days,
             now=current,
-            strict_buckets=False,
+            scope=scope,
         )
+        if len(samples) >= K_MIN_SAMPLES:
+            break
     if len(samples) < K_MIN_SAMPLES:
         return PredictToolResult(
             event_id=event_id,
@@ -480,7 +504,7 @@ def _attach_expect(
             for at, value in points:
                 b = time_of_day_bucket(at)
                 bw = _bucket_weight(b, anchor_bucket) if strict else 1.0
-                age = (now - at).total_seconds() / 86400.0
+                age = _age_days(now, at)
                 w = bw * _recency_weight(age, half_life_days)
                 if w > 0.001:
                     samples.append((value, w))
