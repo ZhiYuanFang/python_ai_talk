@@ -38,36 +38,17 @@ async def list_rule_gaps(
     分页列出规则缺口（默认 open，新→旧）。
 
     业务说明：
-    未指定 dimension 时默认仅 time|quantity（类型/事件/形态飞轮自更新，不进缺口箱）。
+    未指定 dimension 时返回全部 open 缺口（含维度字段），供 Hub 按维筛选。
+    指定 dimension 时只返回该维。
 
     Query:
         offset / limit / dimension / status
     """
     try:
-        dim = (dimension or "").strip()
-        if not dim:
-            # 默认只展 TIME/QTY：分别取再合并按时间排序
-            t = rule_gap_store.list_entries(
-                offset=0, limit=500, dimension="time", status=status
-            )
-            q = rule_gap_store.list_entries(
-                offset=0, limit=500, dimension="quantity", status=status
-            )
-            items = list(t.get("items") or []) + list(q.get("items") or [])
-            items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
-            start = max(0, int(offset))
-            lim = max(1, min(500, int(limit)))
-            page = items[start : start + lim]
-            return {
-                "total": len(items),
-                "offset": start,
-                "limit": lim,
-                "items": page,
-            }
         return rule_gap_store.list_entries(
             offset=offset,
             limit=limit,
-            dimension=dim,
+            dimension=(dimension or "").strip(),
             status=status,
         )
     except Exception as exc:

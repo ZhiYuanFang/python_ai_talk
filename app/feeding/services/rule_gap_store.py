@@ -2,8 +2,7 @@
 规则缺口收件箱
 
 业务说明：
-仅 TIME/QTY 规则未覆盖且走小 LLM 时落盘，供 Hub 扩规则。
-TYPE/EVENT/SHAPE 走飞轮自更新，不进本箱。
+各维本地规则未覆盖时落盘（飞轮命中或小模型都记），供 Hub 扩规则。
 JSONL 落在 CHROMA_PERSIST_DIR 子目录 rule_gaps/，与 Docker chroma 卷同命运；
 短窗按 dimension+segment 去重。open 记录仅人工 dismissed，启动不清箱。
 """

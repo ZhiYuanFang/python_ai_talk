@@ -175,9 +175,22 @@ async def resolve_type(
         if re.search(r"睡醒|醒了", text):
             return TargetType.UPDATE.value, "end", "", "", "", "", False, [], ""
 
+    from app.feeding.services.dim_local_rules import match_local_frame, record_rule_miss
+
+    local = match_local_frame(text)
+    if local is not None:
+        return local
+
     # OP 整段飞轮（仅轨；read 子维走 resolve_read_source / predict）
     hit_rail = op_cue_store.search_op_rail(text)
     if hit_rail:
+        record_rule_miss(
+            dimension="op",
+            segment_text=text,
+            utterance=utterance,
+            via="flywheel",
+            device_no=device_no,
+        )
         tt = hit_rail
         if tt == TargetType.READ.value:
             rs_hit, _from_fw = await resolve_read_source(text, llm_model=llm_model)
@@ -227,9 +240,26 @@ async def resolve_type(
             text, llm_model or {}
         )
         logger.info("OP LLM: %s", summary[:240])
+        record_rule_miss(
+            dimension="op",
+            segment_text=text,
+            utterance=utterance,
+            via="llm",
+            llm_result=summary,
+            device_no=device_no,
+        )
         # record 已定：优先用查史词表填 history_mode（不改写 source）
         if tt == TargetType.READ.value and rs == "record":
             hm = infer_expected_history_mode(text) or hm or "point"
+        if tt == TargetType.READ.value and rs in ("record", "predict"):
+            record_rule_miss(
+                dimension="read_source",
+                segment_text=text,
+                utterance=utterance,
+                via="llm",
+                llm_result=summary,
+                device_no=device_no,
+            )
         if not need_confirm and tt:
             doc = text.strip()
             op_cue_store.add(doc, tt)
@@ -238,6 +268,14 @@ async def resolve_type(
             pc, ta, aspect, filled = coerce_predict_dims(pc, ta, aspect)
             if tt == TargetType.READ.value and rs == "predict" and filled:
                 predict_cue_store.add(doc, pc, ta, aspect)
+                record_rule_miss(
+                    dimension="predict",
+                    segment_text=doc,
+                    utterance=utterance,
+                    via="llm",
+                    llm_result=summary,
+                    device_no=device_no,
+                )
             # 预测格残缺：交独立预测维补齐（用量题 time_answer 为空不算残缺）
             if tt == TargetType.READ.value and rs == "predict" and not filled:
                 pc2, ta2, aspect2, need_p = await resolve_predict_dims(
@@ -322,6 +360,15 @@ async def _resolve_event_core(
         payload = top.get("payload") or {}
         eid = str(payload.get("event_id") or "").strip()
         if score >= EVENT_PHRASE_THRESHOLD and eid:
+            from app.feeding.services.dim_local_rules import record_rule_miss
+
+            record_rule_miss(
+                dimension="event",
+                segment_text=segment,
+                utterance=utterance,
+                via="flywheel",
+                device_no=device_no,
+            )
             ev = None
             for e in full_events:
                 if str(e.get("event_id") or "") == eid:
@@ -382,6 +429,16 @@ async def _resolve_event_core(
             phrase_kw,
             (summary or "")[:160],
         )
+        from app.feeding.services.dim_local_rules import record_rule_miss
+
+        record_rule_miss(
+            dimension="event",
+            segment_text=segment,
+            utterance=utterance,
+            via="llm",
+            llm_result=summary,
+            device_no=device_no,
+        )
         return (
             None,
             MatchSource.LLM.value,
@@ -392,6 +449,16 @@ async def _resolve_event_core(
             phrase_kw,
         )
 
+    from app.feeding.services.dim_local_rules import record_rule_miss
+
+    record_rule_miss(
+        dimension="event",
+        segment_text=segment,
+        utterance=utterance,
+        via="llm",
+        llm_result=summary,
+        device_no=device_no,
+    )
     return None, MatchSource.NAME.value, 0.0, "event_unresolved", "", [], ""
 
 
@@ -551,7 +618,11 @@ async def resolve_segment(
     顺序：OP → EVENT → REMARK（read 跳过）→ QTY（read 跳过）→ TIME。
     """
     model = llm_model or {}
-    draft = SegmentDraft(text=(segment or "").strip())
+    raw_segment = (segment or "").strip()
+    from app.feeding.services.event_homophone import apply_event_homophone
+
+    # 解析与飞轮用同音替换后的段；utterance 仍是 ASR 原文
+    draft = SegmentDraft(text=apply_event_homophone(raw_segment, full_events))
     if not draft.text:
         draft.ok = False
         draft.fail_reason = "empty_segment"
@@ -640,6 +711,15 @@ async def resolve_segment(
         else:
             fw_hit = remark_cue_store.search_remark(draft.text)
             if fw_hit is not None:
+                from app.feeding.services.dim_local_rules import record_rule_miss
+
+                record_rule_miss(
+                    dimension="remark",
+                    segment_text=draft.text,
+                    utterance=utterance,
+                    via="flywheel",
+                    device_no=device_no,
+                )
                 draft.remark = merge_remarks(draft.remark, fw_hit[0])
             else:
                 try:
@@ -649,8 +729,16 @@ async def resolve_segment(
                         model,
                     )
                     draft.remark = merge_remarks(draft.remark, llm_r)
-                    # 成功调用后整段回写（含空串，表示已确认无明细）
                     remark_cue_store.add(draft.text, draft.remark or "")
+                    from app.feeding.services.dim_local_rules import record_rule_miss
+
+                    record_rule_miss(
+                        dimension="remark",
+                        segment_text=draft.text,
+                        utterance=utterance,
+                        via="llm",
+                        device_no=device_no,
+                    )
                 except Exception as exc:
                     logger.warning("明细备注 LLM 失败: %s", exc)
 
@@ -695,6 +783,16 @@ async def resolve_segment(
             qty = extract_quantity_from_text(utterance)
         if qty is None:
             qty = qty_cue_store.search_quantity(draft.text)
+            if qty is not None:
+                from app.feeding.services.dim_local_rules import record_rule_miss
+
+                record_rule_miss(
+                    dimension="quantity",
+                    segment_text=draft.text,
+                    utterance=utterance,
+                    via="flywheel",
+                    device_no=device_no,
+                )
         if qty is None and has_quantity_clue(draft.text):
             try:
                 qty_llm, summary = await llm_resolve_quantity(draft.text, model)

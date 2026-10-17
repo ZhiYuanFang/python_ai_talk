@@ -146,6 +146,9 @@ class EventCache:
 
             # 将全量数据存入缓存
             self._cache[self._CACHE_KEY] = event_dictionary
+            from app.feeding.services.event_homophone import rebuild_homophone_index
+
+            rebuild_homophone_index(event_dictionary)
 
             leaf_count = len(self._leaf_view(event_dictionary))
             logger.info(
@@ -186,6 +189,9 @@ class EventCache:
 
             # 更新全量缓存
             self._cache[self._CACHE_KEY] = event_dictionary
+            from app.feeding.services.event_homophone import rebuild_homophone_index
+
+            rebuild_homophone_index(event_dictionary)
 
             leaf_count = len(self._leaf_view(event_dictionary))
             logger.info(

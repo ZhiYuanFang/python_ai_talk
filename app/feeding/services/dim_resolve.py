@@ -68,8 +68,16 @@ async def resolve_read_source(
     text = (segment or "").strip()
     if not text:
         return None, False
+    from app.feeding.services.dim_local_rules import record_rule_miss
+
     hit = read_source_cue_store.search_read_source(text)
     if hit in ("record", "predict"):
+        record_rule_miss(
+            dimension="read_source",
+            segment_text=text,
+            utterance=text,
+            via="flywheel",
+        )
         return hit, True
     # 本维不单独打 LLM（与 OP 冷路径合并，避免双次调用）；allow_llm 预留
     _ = (llm_model, allow_llm)
@@ -90,8 +98,19 @@ async def resolve_predict_dims(
     text = (segment or "").strip()
     if not text:
         return "", "", "", True
+    from app.feeding.services.dim_local_rules import match_local_frame, record_rule_miss
+
+    local = match_local_frame(text)
+    if local is not None and local[8] == "predict" and local[5] in ("when", "amount", "duration"):
+        return local[3], local[4], local[5], False
     hit = predict_cue_store.search_dims(text)
     if hit:
+        record_rule_miss(
+            dimension="predict",
+            segment_text=text,
+            utterance=text,
+            via="flywheel",
+        )
         return hit[0], hit[1], hit[2], False
 
     cfg = llm_model_config_from_mapping(llm_model or {})
@@ -133,6 +152,13 @@ async def resolve_predict_dims(
         str(data.get("predict_aspect") or ""),
     )
     need_confirm = bool(data.get("need_confirm")) or not filled
+    record_rule_miss(
+        dimension="predict",
+        segment_text=text,
+        utterance=text,
+        via="llm",
+        llm_result=(content or "")[:200],
+    )
     if filled and not need_confirm:
         predict_cue_store.add(text, pc, ta, aspect)
     return pc, ta, aspect, need_confirm
@@ -170,6 +196,15 @@ async def resolve_time(
             if matured is not None:
                 st, et = matured
                 if st and st > 0:
+                    from app.feeding.services.dim_local_rules import record_rule_miss
+
+                    record_rule_miss(
+                        dimension="time",
+                        segment_text=text,
+                        utterance=utterance or text,
+                        via="flywheel",
+                        device_no=device_no,
+                    )
                     return st, et, "flywheel"
 
     try:
@@ -218,8 +253,19 @@ async def resolve_locate(
     text = (segment or "").strip()
     if not text:
         return default_strategy, True
+    from app.feeding.services.dim_local_rules import match_local_locate, record_rule_miss
+
+    local = match_local_locate(text)
+    if local:
+        return local, False
     hit = locate_cue_store.search_strategy(text)
     if hit:
+        record_rule_miss(
+            dimension="locate",
+            segment_text=text,
+            utterance=text,
+            via="flywheel",
+        )
         return hit, False
 
     cfg = llm_model_config_from_mapping(llm_model or {})
@@ -246,6 +292,13 @@ async def resolve_locate(
     need_confirm = bool(data.get("need_confirm"))
     if st not in LOCATE_STRATEGIES:
         return default_strategy, True
+    record_rule_miss(
+        dimension="locate",
+        segment_text=text,
+        utterance=text,
+        via="llm",
+        llm_result=(content or "")[:200],
+    )
     if not need_confirm:
         locate_cue_store.add(text, st)
     return st, need_confirm
