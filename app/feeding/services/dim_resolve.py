@@ -99,8 +99,11 @@ async def resolve_predict_dims(
     if not text:
         return "", "", "", True
     from app.feeding.services.dim_local_rules import match_local_frame, record_rule_miss
+    from app.feeding.services.dim_rule_lexicon import apply_op_view
+    from app.feeding.services.event_homophone import cut_segment_pinyin
 
-    local = match_local_frame(text)
+    # 预测本地规则看操作轨视图；飞轮和模型用原文
+    local = match_local_frame(apply_op_view(text, cut_segment_pinyin(text)))
     if local is not None and local[8] == "predict" and local[5] in ("when", "amount", "duration"):
         return local[3], local[4], local[5], False
     hit = predict_cue_store.search_dims(text)
@@ -254,8 +257,11 @@ async def resolve_locate(
     if not text:
         return default_strategy, True
     from app.feeding.services.dim_local_rules import match_local_locate, record_rule_miss
+    from app.feeding.services.dim_rule_lexicon import apply_locate_view
+    from app.feeding.services.event_homophone import cut_segment_pinyin
 
-    local = match_local_locate(text)
+    # 定位本地规则看定位视图；飞轮和模型用原文
+    local = match_local_locate(apply_locate_view(text, cut_segment_pinyin(text)))
     if local:
         return local, False
     hit = locate_cue_store.search_strategy(text)

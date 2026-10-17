@@ -12,9 +12,14 @@ import json
 import logging
 import re
 from collections import Counter
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.feeding.graphs.nodes.prompts.system import SEGMENT_REMARK_EXTRACT_SYSTEM_PROMPT
+from app.feeding.services.dim_rule_lexicon import (
+    PERIOD_WORDS,
+    REMARK_VERBS,
+    words_pattern,
+)
 from app.feeding.services.event_hierarchy import get_event_by_id, is_parent_event
 from app.shared.graphs.stream_llm_collect import stream_llm_collect
 from app.shared.history_window import enum_to_unix
@@ -39,23 +44,34 @@ _CLOCK_SPAN_RE = re.compile(
     r"\d{1,2}\s*[:：点]\s*\d{0,2}\s*分?"
 )
 # 判断是否还有备注明细：时段词、记一笔套话、语气词都不算明细
-_PERIOD_WORD_RE = re.compile(
-    r"凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|晚间|昨天|今天|昨日|今日|昨晚"
-)
-_CREATE_VERB_RE = re.compile(r"吃了|喝了|拉了|尿了|睡了|喂了")
+_PERIOD_WORD_RE = words_pattern(PERIOD_WORDS)
+_CREATE_VERB_RE = words_pattern(REMARK_VERBS)
 _REMARK_NOISE_RE = re.compile(r"[了啦啊呀哦呢吧\s，,。．.！!？?、]")
 
 
-def segment_has_remark_detail(segment: str, event_name: str = "") -> bool:
+def segment_has_remark_detail(
+    segment: str,
+    event_name: str = "",
+    event_span: Optional[Tuple[int, int]] = None,
+    remark_view: str = "",
+) -> bool:
     """
-    去掉事件名、数量、钟点和记一笔套话后，是否还剩应写入备注的描述。
+    去掉事件片段、数量、钟点和记一笔套话后，是否还剩应写入备注的描述。
 
+    事件片段按原文起止删除，不读事件视图整句。套话按备注视图剥离。
     「吃了120配方奶」为否；「有点凉」为是。
     """
-    text = segment or ""
-    name = (event_name or "").strip()
-    if name:
-        text = text.replace(name, "")
+    heard = segment or ""
+    text = remark_view if remark_view else heard
+    span = event_span
+    if span and len(text) == len(heard):
+        start, end = span
+        if 0 <= start < end <= len(text):
+            text = text[:start] + text[end:]
+    else:
+        name = (event_name or "").strip()
+        if name:
+            text = text.replace(name, "")
     text = _CLOCK_SPAN_RE.sub("", text)
     text = _QTY_SPAN_RE.sub("", text)
     text = _PERIOD_WORD_RE.sub("", text)

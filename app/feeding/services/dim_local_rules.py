@@ -11,24 +11,37 @@ from __future__ import annotations
 import re
 from typing import Optional, Tuple
 
+from app.feeding.services.dim_rule_lexicon import (
+    CREATE_VERBS,
+    LOCATE_DONE_WORDS,
+    LOCATE_LATEST_WORDS,
+    LOCATE_OPEN_WORDS,
+    PREDICT_AMOUNT_WORDS,
+    PREDICT_DURATION_WORDS,
+    PREDICT_WHEN_WORDS,
+    PRIOR_WORDS,
+    QUESTION_WORDS,
+    RECORD_AMOUNT_WORDS,
+    RECORD_DURATION_WORDS,
+    RECORD_POINT_EXTRA_WORDS,
+    words_pattern,
+)
 from app.feeding.services.rule_gap_store import rule_gap_store
 from app.shared.constants import IntentOp, TargetType
 
-# 预测用量：要吃/要喝多少，且不是「吃了多少」
-_PREDICT_AMOUNT_RE = re.compile(
-    r"这次要吃多少|这次要喝多少|要吃多少|要喝多少|大概要吃多少|大概要喝多少|大概还要吃多少"
-)
-_RECORD_AMOUNT_RE = re.compile(r"吃了多少|喝了多少|拉了多少|尿了多少")
-_PREDICT_DURATION_RE = re.compile(r"这次要吃多久|这次要喝多久|这次要睡多久|要吃多久|要喝多久")
-_RECORD_DURATION_RE = re.compile(r"睡了多久|吃了多久|喝了多久|拉了多久")
-_PREDICT_WHEN_RE = re.compile(r"还要多久|还要多长时间|还有多久|几点吃|什么时候吃|什么时候喝")
-_RECORD_POINT_RE = re.compile(r"上次|上一次|最近一次|几次|多少次")
-_CREATE_RE = re.compile(r"吃了|喝了|拉了|尿了|睡了|开始")
-_QUESTION_RE = re.compile(r"多少|多久|几次|什么时候|还要")
+# 正则来自规则名词模块，判断顺序仍是预测用量先于记一笔
+_PREDICT_AMOUNT_RE = words_pattern(PREDICT_AMOUNT_WORDS)
+_RECORD_AMOUNT_RE = words_pattern(RECORD_AMOUNT_WORDS)
+_PREDICT_DURATION_RE = words_pattern(PREDICT_DURATION_WORDS)
+_RECORD_DURATION_RE = words_pattern(RECORD_DURATION_WORDS)
+_PREDICT_WHEN_RE = words_pattern(PREDICT_WHEN_WORDS)
+_RECORD_POINT_RE = words_pattern(PRIOR_WORDS + RECORD_POINT_EXTRA_WORDS)
+_CREATE_RE = words_pattern(CREATE_VERBS)
+_QUESTION_RE = words_pattern(QUESTION_WORDS)
 
-_LOCATE_OPEN_RE = re.compile(r"正在进行|还没结束|进行中的")
-_LOCATE_DONE_RE = re.compile(r"已完成的|做完的那次")
-_LOCATE_LATEST_RE = re.compile(r"最近一条|上一条|刚才那条")
+_LOCATE_OPEN_RE = words_pattern(LOCATE_OPEN_WORDS)
+_LOCATE_DONE_RE = words_pattern(LOCATE_DONE_WORDS)
+_LOCATE_LATEST_RE = words_pattern(LOCATE_LATEST_WORDS)
 
 
 def record_rule_miss(

@@ -16,6 +16,13 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.feeding.graphs.nodes.prompts.system import HISTORY_SPEAK_LLM_PROMPT
+from app.feeding.services.dim_rule_lexicon import (
+    ELAPSED_WORDS,
+    PRIOR_WORDS,
+    apply_speak_view,
+    words_pattern,
+)
+from app.feeding.services.event_homophone import cut_segment_pinyin
 from app.feeding.services.history_speak_cue_store import (
     as_history_speak_payload,
     history_speak_cue_store,
@@ -31,8 +38,8 @@ _JSON_BLOCK = re.compile(r"\{[\s\S]*\}")
 HISTORY_SPEAK_DEGRADE = "暂时无法准确回答上次情况，请稍后再试。"
 
 # 「上次」先于「多久了」，避免「上次睡眠多久」被收成最近一条
-_PRIOR_SESSION_RE = re.compile(r"上次|上一次|最近一次")
-_ELAPSED_RE = re.compile(r"多久了|多长时间了")
+_PRIOR_SESSION_RE = words_pattern(PRIOR_WORDS)
+_ELAPSED_RE = words_pattern(ELAPSED_WORDS)
 
 
 def match_local_speak_policy(text: str) -> Optional[Tuple[str, str]]:
@@ -115,7 +122,9 @@ async def resolve_history_speak_policy(
     本地规则命中不查飞轮、不回写。来自 LLM 时仅以段整句原文写入飞轮。
     """
     text = (utterance or "").strip()
-    local = match_local_speak_policy(text)
+    # 本地规则看播报视图；飞轮和模型仍用原文
+    rule_text = apply_speak_view(text, cut_segment_pinyin(text))
+    local = match_local_speak_policy(rule_text)
     if local is not None:
         logger.info(
             "查史播报本地规则: pick=%s open=%s text=%s",

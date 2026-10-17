@@ -127,6 +127,17 @@ class SegmentDraft:
     gaps: List[str] = field(default_factory=list)
 
 
+def _span_in_text(text: str, needle: str) -> Optional[Tuple[int, int]]:
+    """名词在视图中的起止。视图与原文等长时，这个区间就是原文位置。"""
+    word = (needle or "").strip()
+    if not word:
+        return None
+    start = (text or "").find(word)
+    if start < 0:
+        return None
+    return start, start + len(word)
+
+
 def _empty_predict_dims() -> Tuple[str, str]:
     """非 predict 时清空两维。"""
     return "", ""
@@ -149,9 +160,12 @@ async def resolve_type(
     sentence_target_type: str = "",
     device_no: str = "",
     llm_model: Optional[Dict[str, Any]] = None,
+    rule_text: str = "",
 ) -> Tuple[str, str, str, str, str, str, bool, List[str], str]:
     """
     OP 轨：显式 CUD/exit 规则 → 整段 OP 飞轮 →（read 时）R·source → OP 小 LLM。
+
+    本地规则读 rule_text（操作轨视图）。飞轮、小模型和回写用 segment 原文。
 
     Returns:
         (target_type, op, history_mode, predict_channel, time_answer,
@@ -162,23 +176,25 @@ async def resolve_type(
     st_raw = (sentence_target_type or "").strip().lower()
     st = normalize_target_rail(st_raw) if st_raw else ""
     text = segment or utterance or ""
-    if st == TargetType.EXIT.value or _EXIT_RE.search((text or "").strip()):
+    # 本地规则看操作轨视图；后面的飞轮和模型仍用 text
+    rules = rule_text or text
+    if st == TargetType.EXIT.value or _EXIT_RE.search((rules or "").strip()):
         return TargetType.EXIT.value, "", "", "", "", "", False, [], ""
-    if _OTHER_HINT_RE.search(text) and st in ("", TargetType.OTHER.value):
+    if _OTHER_HINT_RE.search(rules) and st in ("", TargetType.OTHER.value):
         return TargetType.OTHER.value, "", "", "", "", "", False, [], ""
     # 显式改删强线索（保留有效本地规则）
-    if _DELETE_RE.search(text):
+    if _DELETE_RE.search(rules):
         return TargetType.DELETE.value, IntentOp.DELETE.value, "", "", "", "", False, [], ""
-    if _UPDATE_RE.search(text) and not _END_HINT_RE.search(text):
+    if _UPDATE_RE.search(rules) and not _END_HINT_RE.search(rules):
         return TargetType.UPDATE.value, IntentOp.UPDATE.value, "", "", "", "", False, [], ""
-    if _END_HINT_RE.search(text) and st in ("", TargetType.UPDATE.value, TargetType.CREATE.value):
+    if _END_HINT_RE.search(rules) and st in ("", TargetType.UPDATE.value, TargetType.CREATE.value):
         # 「睡醒了」类结束计时：U·end（无进行中时由落库层转 C）
-        if re.search(r"睡醒|醒了", text):
+        if re.search(r"睡醒|醒了", rules):
             return TargetType.UPDATE.value, "end", "", "", "", "", False, [], ""
 
     from app.feeding.services.dim_local_rules import match_local_frame, record_rule_miss
 
-    local = match_local_frame(text)
+    local = match_local_frame(rules)
     if local is not None:
         return local
 
@@ -307,6 +323,7 @@ async def _resolve_event_core(
     device_no: str = "",
     remark_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     llm_model: Optional[Dict[str, Any]] = None,
+    rule_text: str = "",
 ) -> Tuple[
     Optional[Dict[str, Any]],
     str,
@@ -319,19 +336,23 @@ async def _resolve_event_core(
     """
     事件维阶梯：词典 → extra_names → 向量 → Go 反查 → 事件小 LLM。
 
+    词典和别名读 rule_text（事件视图）。飞轮、反查和小模型用 segment 原文。
+
     Returns:
         (event, match_source, score, fail_reason, remark,
          disambiguation_leaves, disambiguation_keyword)
     """
     cache = remark_cache if remark_cache is not None else {}
+    heard = segment or ""
+    rules = rule_text or heard
 
-    # 1) 正式名词典匹配
-    hit = match_feeding_event(segment, full_events)
+    # 1) 正式名词典匹配（事件视图）
+    hit = match_feeding_event(rules, full_events)
     if hit:
         return hit, MatchSource.NAME.value, 1.0, "", "", [], ""
 
     # 2) extra_names 精确
-    alias_ev, alias_hits, alias_word = match_extra_names(segment, full_events)
+    alias_ev, alias_hits, alias_word = match_extra_names(rules, full_events)
     if len(alias_hits) > 1:
         return (
             None,
@@ -354,7 +375,7 @@ async def _resolve_event_core(
         )
 
     # 3) 短说法向量
-    phrases = intent_cache_store.search_event_phrase(segment, n_results=1)
+    phrases = intent_cache_store.search_event_phrase(heard, n_results=1)
     if phrases:
         top = phrases[0]
         score = float(top.get("score") or 0)
@@ -365,7 +386,7 @@ async def _resolve_event_core(
 
             record_rule_miss(
                 dimension="event",
-                segment_text=segment,
+                segment_text=heard,
                 utterance=utterance,
                 via="flywheel",
                 device_no=device_no,
@@ -384,7 +405,7 @@ async def _resolve_event_core(
             return ev, MatchSource.VECTOR.value, score, "", "", [], ""
 
     # 4) Go 备注模糊反查
-    keyword = remark_keyword_from_segment(segment)
+    keyword = remark_keyword_from_segment(heard)
     leaves = await resolve_remark_leaves_cached(
         keyword,
         device_no=device_no,
@@ -415,14 +436,14 @@ async def _resolve_event_core(
     # 5) 事件小 LLM：表内软候选（须确认/消歧；未确认不写飞轮）
     try:
         cands, summary = await llm_resolve_event(
-            segment, full_events, llm_model or {}
+            heard, full_events, llm_model or {}
         )
     except Exception as exc:
         logger.warning("EVENT 小 LLM 失败: %s", exc)
         cands, summary = [], str(exc)[:200]
     if cands:
-        phrase_kw = soft_event_phrase_from_segment(segment) or keyword or (
-            (segment or "").strip()[:12]
+        phrase_kw = soft_event_phrase_from_segment(heard) or keyword or (
+            heard.strip()[:12]
         )
         logger.info(
             "EVENT 软候选: n=%s phrase=%s summary=%s",
@@ -434,7 +455,7 @@ async def _resolve_event_core(
 
         record_rule_miss(
             dimension="event",
-            segment_text=segment,
+            segment_text=heard,
             utterance=utterance,
             via="llm",
             llm_result=summary,
@@ -454,7 +475,7 @@ async def _resolve_event_core(
 
     record_rule_miss(
         dimension="event",
-        segment_text=segment,
+        segment_text=heard,
         utterance=utterance,
         via="llm",
         llm_result=summary,
@@ -472,6 +493,7 @@ async def resolve_event(
     remark_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     llm_model: Optional[Dict[str, Any]] = None,
     point_query: bool = False,
+    rule_text: str = "",
 ) -> Tuple[
     Optional[Dict[str, Any]],
     str,
@@ -501,6 +523,7 @@ async def resolve_event(
         device_no=device_no,
         remark_cache=remark_cache,
         llm_model=llm_model,
+        rule_text=rule_text,
     )
     # 点查且已命中父节点：用开始时间选叶子，不走猜叶子模型
     if (
@@ -649,10 +672,20 @@ async def resolve_segment(
     """
     model = llm_model or {}
     raw_segment = (segment or "").strip()
-    from app.feeding.services.event_homophone import apply_event_homophone
+    from app.feeding.services.dim_rule_lexicon import apply_op_view, apply_remark_view
+    from app.feeding.services.event_homophone import (
+        apply_event_view,
+        cut_segment_pinyin,
+        rebuild_homophone_index,
+    )
 
-    # 解析与飞轮用同音替换后的段；utterance 仍是 ASR 原文
-    draft = SegmentDraft(text=apply_event_homophone(raw_segment, full_events))
+    # 原文只切一次拼音。各维视图互不写回。draft.text 保持语音识别原文。
+    rebuild_homophone_index(full_events)
+    syllables = cut_segment_pinyin(raw_segment)
+    op_view = apply_op_view(raw_segment, syllables)
+    event_view = apply_event_view(raw_segment, syllables)
+    remark_view = apply_remark_view(raw_segment, syllables)
+    draft = SegmentDraft(text=raw_segment)
     if not draft.text:
         draft.ok = False
         draft.fail_reason = "empty_segment"
@@ -664,6 +697,7 @@ async def resolve_segment(
         sentence_target_type=sentence_target_type,
         device_no=device_no,
         llm_model=model,
+        rule_text=op_view,
     )
     draft.target_type = tt
     draft.op = op
@@ -710,6 +744,7 @@ async def resolve_segment(
             and hm == "point"
             and (rs == "record" or op == IntentOp.READ.value)
         ),
+        rule_text=event_view,
     )
     if disamb_leaves:
         draft.ok = False
@@ -732,6 +767,10 @@ async def resolve_segment(
     draft.match_source = src
     draft.match_confidence = score
     draft.remark = remark or ""
+    # 事件视图里认定的名字在原文上的起止，供备注按位置删除
+    event_span = _span_in_text(event_view, draft.event_name)
+    if event_span is None and (remark or "").strip():
+        event_span = _span_in_text(event_view, remark)
 
     # 备注维：read 整维跳过；否则 别名已有 → 无明细则空 → 飞轮 → 明细 LLM → 回写
     is_read_rail = tt == TargetType.READ.value
@@ -743,7 +782,12 @@ async def resolve_segment(
         if (draft.remark or "").strip():
             # 别名/反查已有备注：跳过 LLM，不强制写飞轮
             pass
-        elif not segment_has_remark_detail(draft.text, draft.event_name):
+        elif not segment_has_remark_detail(
+            draft.text,
+            draft.event_name,
+            event_span=event_span,
+            remark_view=remark_view,
+        ):
             # 只剩事件名、数量、钟点和套话：备注为空，不查飞轮、不问模型
             logger.info(
                 "备注无剩余明细: text=%s event=%s",
