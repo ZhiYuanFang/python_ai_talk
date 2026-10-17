@@ -5,7 +5,8 @@ LLM 思考句界回车
 客户端约定：thinking content 以 \\r 开头则清空前置、展示新短文案。
 对 LLM reasoning 流式增量：上一句已在句界结束后，下一句开头前置 \\r；
 禁止在句界字符后直接贴 \\r（否则最后一句会被清空）。
-展示前去掉拉丁字母与常见 JSON / markdown 符号，避免字幕里出现字段名。
+展示前去掉拉丁字母、常见 JSON / markdown 符号与英文标点，
+避免字幕里出现字段名，或字母滤掉后只剩逗号、括号、箭头。
 编排字幕 emit_thinking 不走本模块。
 """
 
@@ -13,21 +14,23 @@ from __future__ import annotations
 
 from typing import List
 
-# 句界：中文。！？与英文.!?（英文句界符号本身保留，字母另删）
-_SENTENCE_END = frozenset("。！？.!?")
+# 句界只留中文。！？。英文 .!? 已在剔除表里删掉，到不了分句。
+_SENTENCE_END = frozenset("。！？")
 
-# 思考字幕不展示：拉丁字母 + 常见 JSON / markdown 格式符
+# 思考字幕不展示：拉丁字母 + JSON / markdown 格式符 + 英文标点
+# 英文标点直接删，不留占位；中文标点、数字、空白、\r 保留
 _STRIP_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
     "{}[]\"'`:#*_"
+    ",.()><-;/\\|=+~@%^&!?"
 )
 
 
 def _strip_display_ascii(text: str) -> str:
     """
-    去掉思考字幕里的拉丁字母与格式符号。
+    去掉思考字幕里的拉丁字母、格式符号与英文标点。
 
-    保留中文、数字、空白、句界、段首用的 \\r。直接删掉，不换占位。
+    保留中文、数字、空白、中文句界、中文标点、段首用的 \\r。直接删掉，不换占位。
     """
     if not text:
         return ""
@@ -50,7 +53,7 @@ class ThinkingSentenceCrRewriter:
         """
         吃入一段 reasoning 增量，返回 0～N 条应透出的 content。
 
-        先剔除拉丁字母与格式符号，再按句拆分。
+        先剔除拉丁字母、格式符号与英文标点，再按中文句界拆分。
         每条要么是句中追加（无段首 \\r），要么是新句（段首 \\r）。
         不返回单独的裸 \\r；剔空或仅空白不透出。
         """
