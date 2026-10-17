@@ -23,6 +23,9 @@ from app.feeding.services.event_homophone import (
 PRIOR_WORDS: Tuple[str, ...] = (
     "上次",  # 上一次发生的记录
     "上一次",  # 同上，说法更完整
+    "上一顿",  # 同上，说法更完整
+    "上一餐",  # 同上，说法更完整
+    "上一回",  # 同上，说法更完整
     "最近一次",  # 最近的那一次，仍按点查而不是日汇总
 )
 
