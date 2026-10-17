@@ -145,6 +145,7 @@ async def resolve_predict_dims(
             "内部思考（reasoning）须使用中文。"
         ),
         node_name="segment_predict_dims_llm",
+        thinking_enabled=False,
     )
     data = _parse_json_obj(content or "")
     from app.feeding.services.predict_qa import coerce_predict_dims
@@ -292,6 +293,7 @@ async def resolve_locate(
             'JSON：{"strategy":"latest","need_confirm":false}'
         ),
         node_name="segment_locate_llm",
+        thinking_enabled=False,
     )
     data = _parse_json_obj(content or "")
     st = str(data.get("strategy") or "").strip().lower()

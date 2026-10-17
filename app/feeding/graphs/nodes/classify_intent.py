@@ -139,6 +139,7 @@ async def classify_intent(state: Any) -> Dict[str, Any]:
             model_config=llm_model_config,
             system_prompt=system_prompt,
             node_name="classify_intent",
+            thinking_enabled=False,
         )
         if not content:
             # 与旧 invoke 失败路径对齐：走下方 except 的 overload 提示

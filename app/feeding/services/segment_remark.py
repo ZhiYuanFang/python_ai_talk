@@ -276,5 +276,6 @@ async def extract_detail_remark_llm(
         model_config=cfg,
         system_prompt=SEGMENT_REMARK_EXTRACT_SYSTEM_PROMPT,
         node_name="resolve_segments_remark",
+        thinking_enabled=False,
     )
     return _parse_remark_json(content or "")

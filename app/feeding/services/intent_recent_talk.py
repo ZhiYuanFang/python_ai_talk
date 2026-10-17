@@ -1,9 +1,9 @@
 """
-意图侧最近十分钟对话
+意图侧最近三分钟对话
 
 业务说明：
 按设备记下家长听到的原话和回答，只给漏答自由回答当背景。
-与诊疗陪伴会话分开。超过十分钟的轮次丢掉。Redis 失败不阻断主回答。
+与诊疗陪伴会话分开。超过三分钟的轮次丢掉。Redis 失败不阻断主回答。
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from app.shared.redis_gate import create_async_redis_client
 logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "intent:recent_talk:"
-# 窗口与键过期都是十分钟
-WINDOW_SEC = 600
+# 窗口与键过期都是三分钟
+WINDOW_SEC = 180
 # 注入提示词的整段上限；放不下就丢更早的轮
 PROMPT_BUDGET = 800
 # 单侧过长只留前一段，避免一轮占满预算
@@ -73,7 +73,7 @@ class IntentRecentTalkStore:
         return f"{_KEY_PREFIX}{device_no}"
 
     async def load_recent(self, device_no: str) -> List[Dict[str, Any]]:
-        """读取仍在十分钟内的轮次。失败返回空列表。"""
+        """读取仍在三分钟内的轮次。失败返回空列表。"""
         if not device_no:
             return []
         now = time.time()
@@ -115,7 +115,7 @@ class IntentRecentTalkStore:
 
     async def append_turn(self, device_no: str, *, user: str, assistant: str) -> None:
         """
-        追加一轮并刷新十分钟过期。
+        追加一轮并刷新三分钟过期。
 
         空回答不记。失败只打日志。
         """

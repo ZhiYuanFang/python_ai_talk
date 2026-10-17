@@ -248,6 +248,7 @@ async def guess_leaf_from_history(
             model_config=llm_model_config_from_mapping(llm_model or {}),
             system_prompt=HISTORY_EVENT_GUESS_SYSTEM_PROMPT,
             node_name="history_event_guess",
+            thinking_enabled=False,
         )
     except Exception as exc:
         logger.warning("历史猜事件模型失败: %s", exc)

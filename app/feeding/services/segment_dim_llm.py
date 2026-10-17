@@ -151,6 +151,7 @@ async def llm_resolve_type(
         model_config=cfg,
         system_prompt=SEGMENT_TYPE_LLM_PROMPT,
         node_name="segment_op_llm",
+        thinking_enabled=False,
     )
     data = _parse_json_obj(content or "")
     tt_raw = str(data.get("target_type") or "").strip().lower()
@@ -285,6 +286,7 @@ async def llm_resolve_event(
         model_config=cfg,
         system_prompt=SEGMENT_EVENT_LLM_PROMPT,
         node_name="segment_event_llm",
+        thinking_enabled=False,
     )
     data = _parse_json_obj(content or "")
     raw_cands = data.get("candidates")
@@ -357,6 +359,7 @@ async def llm_resolve_time(
         model_config=cfg,
         system_prompt=SEGMENT_TIME_LLM_PROMPT,
         node_name="segment_time_llm",
+        thinking_enabled=False,
     )
     data = _parse_json_obj(content or "")
     if not isinstance(data, dict):
@@ -434,6 +437,7 @@ async def llm_resolve_quantity(
         model_config=cfg,
         system_prompt=SEGMENT_QTY_LLM_PROMPT,
         node_name="segment_qty_llm",
+        thinking_enabled=False,
     )
     data = _parse_json_obj(content or "")
     raw = data.get("quantity")
@@ -476,6 +480,7 @@ async def llm_resolve_shape(
         model_config=cfg,
         system_prompt=SEGMENT_SHAPE_LLM_PROMPT,
         node_name="segment_shape_llm",
+        thinking_enabled=False,
     )
     data = _parse_json_obj(content or "")
     op = str(data.get("op") or "").strip().lower()

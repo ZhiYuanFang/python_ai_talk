@@ -989,6 +989,7 @@ async def llm_resolve_pending_reply(
             system_prompt=build_pending_reply_system_prompt(),
             node_name="pending_clarify",
             on_thinking=on_thinking,
+            thinking_enabled=False,
         )
         data = _parse_llm_clarify_json(content)
         if not data:

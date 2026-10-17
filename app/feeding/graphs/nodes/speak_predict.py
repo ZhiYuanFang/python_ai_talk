@@ -650,6 +650,7 @@ async def _llm_predict_answer(
             model_config=cfg,
             system_prompt=PREDICT_FALLBACK_SYSTEM_PROMPT,
             node_name="speak_predict_fallback_llm",
+            thinking_enabled=False,
         )
     except Exception as exc:
         logger.warning("预测兜底 LLM 失败: %s", exc)

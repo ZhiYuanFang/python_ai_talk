@@ -308,6 +308,7 @@ async def _llm_split(
         model_config=cfg,
         system_prompt=SEGMENT_SPLIT_SYSTEM_PROMPT,
         node_name="resolve_segments",
+        thinking_enabled=False,
     )
     return _parse_split(content or "")
 

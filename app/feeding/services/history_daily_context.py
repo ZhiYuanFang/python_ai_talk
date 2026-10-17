@@ -157,6 +157,7 @@ async def llm_daily_uncovered(
             model_config=llm_model_config_from_mapping(llm_model or {}),
             system_prompt=HISTORY_DAILY_CONTEXT_SYSTEM_PROMPT,
             node_name="history_daily_context_llm",
+            thinking_enabled=False,
         )
     except Exception as exc:
         logger.warning("日汇总语境模型失败: %s", exc)
@@ -202,6 +203,7 @@ async def llm_missing_event_guess(
             model_config=llm_model_config_from_mapping(llm_model or {}),
             system_prompt=HISTORY_MISSING_EVENT_SYSTEM_PROMPT,
             node_name="history_missing_event_llm",
+            thinking_enabled=False,
         )
     except Exception as exc:
         logger.warning("无事件猜测模型失败: %s", exc)

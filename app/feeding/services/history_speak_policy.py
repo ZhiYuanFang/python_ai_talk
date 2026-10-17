@@ -96,6 +96,7 @@ async def llm_resolve_history_speak(
         model_config=cfg,
         system_prompt=HISTORY_SPEAK_LLM_PROMPT,
         node_name="history_speak_llm",
+        thinking_enabled=False,
     )
     data = _parse_json_obj(content or "")
     clean = as_history_speak_payload(data)

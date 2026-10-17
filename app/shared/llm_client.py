@@ -524,15 +524,26 @@ class LLMClient:
             )
 
             answer_buffer = ""
-            if thinking_enabled:
+            # 通义关闭思考必须显式 enable_thinking=false，省略字段时千问 3 仍会先写 reasoning
+            dashscope_off = (
+                not thinking_enabled and model_config.provider == "aliyun_dashscope"
+            )
+            if thinking_enabled or dashscope_off:
                 openai_messages = _build_openai_chat_messages(messages, system_prompt)
+                extra_body: Dict[str, Any] = (
+                    dict(_THINKING_EXTRA_BODY)
+                    if thinking_enabled
+                    else {"enable_thinking": False}
+                )
+                if dashscope_off:
+                    logger.info("通义关闭思考: extra_body=%s", extra_body)
                 create_kwargs: Dict[str, Any] = {
                     "model": model_config.name,
                     "messages": openai_messages,
                     "stream": True,
                     "temperature": 0.7,
                     "max_tokens": 4096,
-                    "extra_body": dict(_THINKING_EXTRA_BODY),
+                    "extra_body": extra_body,
                 }
                 stream = await client.root_async_client.chat.completions.create(
                     **create_kwargs
@@ -548,11 +559,13 @@ class LLMClient:
                         continue
                     if content_part:
                         answer_buffer += content_part
+                    # 关闭思考时丢掉模型 reasoning，只把正文交给调用方
                     yield LLMResponse(
                         content=content_part,
-                        thinking=thinking_part,
+                        thinking=thinking_part if thinking_enabled else "",
                     )
             else:
+                # 其他厂商：不带 thinking extra_body，沿用 LangChain 流式
                 langchain_messages = _build_langchain_messages(messages, system_prompt)
                 async for chunk in client.astream(langchain_messages):
                     chunk_content = _coerce_text(chunk.content)

@@ -90,7 +90,7 @@ async def soft_reply_for_miss(
     except Exception as exc:
         logger.debug("miss 软回复读近况跳过: %s", exc)
     recent_section = (
-        f"近十分钟对话（只作背景，不是喂养记录）：\n{recent_block}\n"
+        f"近三分钟对话（只作背景，不是喂养记录）：\n{recent_block}\n"
         if recent_block
         else ""
     )
@@ -109,6 +109,7 @@ async def soft_reply_for_miss(
             model_config=cfg,
             system_prompt=AGENT_MISS_SOFT_REPLY_SYSTEM_PROMPT,
             node_name="agent_miss_soft_reply",
+            thinking_enabled=False,
         )
     except Exception as exc:
         logger.warning("miss 软回复 LLM 失败，回退硬文案: %s", exc)
