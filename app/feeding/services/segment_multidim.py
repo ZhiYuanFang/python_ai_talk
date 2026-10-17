@@ -54,6 +54,7 @@ from app.feeding.services.segment_outcome import (
 from app.feeding.services.segment_remark import (
     extract_detail_remark_llm,
     merge_remarks,
+    segment_has_remark_detail,
     remark_keyword_from_segment,
     resolve_remark_leaves_cached,
     soft_event_phrase_from_segment,
@@ -732,7 +733,7 @@ async def resolve_segment(
     draft.match_confidence = score
     draft.remark = remark or ""
 
-    # 备注维：read 整维跳过；否则 别名已有 → 飞轮 → 明细 LLM → 回写
+    # 备注维：read 整维跳过；否则 别名已有 → 无明细则空 → 飞轮 → 明细 LLM → 回写
     is_read_rail = tt == TargetType.READ.value
     if (
         extract_detail_remark
@@ -742,6 +743,13 @@ async def resolve_segment(
         if (draft.remark or "").strip():
             # 别名/反查已有备注：跳过 LLM，不强制写飞轮
             pass
+        elif not segment_has_remark_detail(draft.text, draft.event_name):
+            # 只剩事件名、数量、钟点和套话：备注为空，不查飞轮、不问模型
+            logger.info(
+                "备注无剩余明细: text=%s event=%s",
+                (draft.text or "")[:40],
+                draft.event_name,
+            )
         else:
             fw_hit = remark_cue_store.search_remark(draft.text)
             if fw_hit is not None:

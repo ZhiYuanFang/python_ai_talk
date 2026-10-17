@@ -71,16 +71,23 @@ async def execute_history_crud(state: Any) -> Dict[str, Any]:
     items = sort_end_items_first(items)
     intent["missing_events"] = missing
 
-    # U/D：定位策略飞轮 → 再按策略现查行；create/end 保持 id=0
+    # 仅本批含修改或删除时才解析定位；记一笔的钟点已在段解析写入，不按 latest 改旧记录
     locate_strategy = "latest"
-    try:
-        from app.feeding.services.dim_resolve import resolve_locate
+    needs_locate = any(
+        (it.get("_item_op") or it.get("op") or "").strip().lower()
+        in (IntentOp.UPDATE.value, IntentOp.DELETE.value)
+        for it in items
+        if isinstance(it, dict)
+    )
+    if needs_locate:
+        try:
+            from app.feeding.services.dim_resolve import resolve_locate
 
-        locate_strategy, _need_loc = await resolve_locate(
-            text, llm_model=state_get(state, "llm_model") or {}
-        )
-    except Exception as exc:
-        logger.warning("定位策略解析失败，回退 latest: %s", exc)
+            locate_strategy, _need_loc = await resolve_locate(
+                text, llm_model=state_get(state, "llm_model") or {}
+            )
+        except Exception as exc:
+            logger.warning("定位策略解析失败，回退 latest: %s", exc)
     items = await _fill_latest_ids_for_mutations(
         device_no, items, strategy=locate_strategy
     )

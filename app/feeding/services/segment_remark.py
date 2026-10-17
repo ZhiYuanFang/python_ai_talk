@@ -38,6 +38,30 @@ _QTY_SPAN_RE = re.compile(
 _CLOCK_SPAN_RE = re.compile(
     r"\d{1,2}\s*[:：点]\s*\d{0,2}\s*分?"
 )
+# 判断是否还有备注明细：时段词、记一笔套话、语气词都不算明细
+_PERIOD_WORD_RE = re.compile(
+    r"凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|晚间|昨天|今天|昨日|今日|昨晚"
+)
+_CREATE_VERB_RE = re.compile(r"吃了|喝了|拉了|尿了|睡了|喂了")
+_REMARK_NOISE_RE = re.compile(r"[了啦啊呀哦呢吧\s，,。．.！!？?、]")
+
+
+def segment_has_remark_detail(segment: str, event_name: str = "") -> bool:
+    """
+    去掉事件名、数量、钟点和记一笔套话后，是否还剩应写入备注的描述。
+
+    「吃了120配方奶」为否；「有点凉」为是。
+    """
+    text = segment or ""
+    name = (event_name or "").strip()
+    if name:
+        text = text.replace(name, "")
+    text = _CLOCK_SPAN_RE.sub("", text)
+    text = _QTY_SPAN_RE.sub("", text)
+    text = _PERIOD_WORD_RE.sub("", text)
+    text = _CREATE_VERB_RE.sub("", text)
+    text = _REMARK_NOISE_RE.sub("", text)
+    return bool(text.strip())
 
 
 def remark_keyword_from_segment(segment: str) -> str:
