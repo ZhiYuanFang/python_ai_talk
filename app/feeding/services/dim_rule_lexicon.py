@@ -143,6 +143,18 @@ REMARK_VERBS: Tuple[str, ...] = (
     "睡了",  # 睡觉套话
     "喂了",  # 喂养套话，只在备注剥离时使用
 )
+# 备注·废话和称呼：剥掉后若没有其它描述，就不进备注模型。昵称不在这里
+REMARK_FILLER_WORDS: Tuple[str, ...] = (
+    "还是",  # 口头垫词，不是明细
+    "就是",  # 口头垫词
+    "然后",  # 口头垫词
+    "那个",  # 口头垫词
+    "这个",  # 口头垫词
+    "其实",  # 口头垫词
+    "反正",  # 口头垫词
+    "孩子",  # 对宝宝的称呼，不是明细
+    "宝宝",  # 对宝宝的称呼，不是明细
+)
 
 
 def words_pattern(words: Sequence[str]) -> re.Pattern[str]:
@@ -181,8 +193,8 @@ OP_VIEW_WORDS = _uniq(
 SPEAK_VIEW_WORDS = _uniq(PRIOR_WORDS, ELAPSED_WORDS)
 # 定位视图词表：只换改删定位的三种说法
 LOCATE_VIEW_WORDS = _uniq(LOCATE_OPEN_WORDS, LOCATE_DONE_WORDS, LOCATE_LATEST_WORDS)
-# 备注视图词表：只换时段和记一笔套话，不改事件名
-REMARK_VIEW_WORDS = _uniq(PERIOD_WORDS, REMARK_VERBS)
+# 备注视图词表：时段、记一笔套话、废话和称呼。昵称由当次画像另剥
+REMARK_VIEW_WORDS = _uniq(PERIOD_WORDS, REMARK_VERBS, REMARK_FILLER_WORDS)
 
 # 导入时建成，后续加名词会在进程重启后进入缓存
 _OP_INDEX: LexiconIndex = build_lexicon_index(OP_VIEW_WORDS)

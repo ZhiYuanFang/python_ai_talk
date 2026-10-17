@@ -138,6 +138,27 @@ def _span_in_text(text: str, needle: str) -> Optional[Tuple[int, int]]:
     return start, start + len(word)
 
 
+async def _baby_name_for_remark(device_no: str) -> str:
+    """
+    当次设备的宝宝昵称，供备注剥离。
+
+    画像失败或没有 babyName 时返回空串，调用方仍剥固定废话。
+    """
+    dn = (device_no or "").strip()
+    if not dn:
+        return ""
+    try:
+        from app.shared.http_client import http_client
+
+        profile = await http_client.get_baby_profile(dn)
+    except Exception as exc:
+        logger.warning("备注剥离读取宝宝画像失败: device=%s err=%s", dn, exc)
+        return ""
+    if not isinstance(profile, dict):
+        return ""
+    return str(profile.get("babyName") or "").strip()
+
+
 def _empty_predict_dims() -> Tuple[str, str]:
     """非 predict 时清空两维。"""
     return "", ""
@@ -787,6 +808,7 @@ async def resolve_segment(
             draft.event_name,
             event_span=event_span,
             remark_view=remark_view,
+            baby_name=await _baby_name_for_remark(device_no),
         ):
             # 只剩事件名、数量、钟点和套话：备注为空，不查飞轮、不问模型
             logger.info(

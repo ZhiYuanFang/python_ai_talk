@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.feeding.graphs.nodes.prompts.system import SEGMENT_REMARK_EXTRACT_SYSTEM_PROMPT
 from app.feeding.services.dim_rule_lexicon import (
     PERIOD_WORDS,
+    REMARK_FILLER_WORDS,
     REMARK_VERBS,
     words_pattern,
 )
@@ -46,6 +47,7 @@ _CLOCK_SPAN_RE = re.compile(
 # 判断是否还有备注明细：时段词、记一笔套话、语气词都不算明细
 _PERIOD_WORD_RE = words_pattern(PERIOD_WORDS)
 _CREATE_VERB_RE = words_pattern(REMARK_VERBS)
+_REMARK_FILLER_RE = words_pattern(REMARK_FILLER_WORDS)
 _REMARK_NOISE_RE = re.compile(r"[了啦啊呀哦呢吧\s，,。．.！!？?、]")
 
 
@@ -54,12 +56,13 @@ def segment_has_remark_detail(
     event_name: str = "",
     event_span: Optional[Tuple[int, int]] = None,
     remark_view: str = "",
+    baby_name: str = "",
 ) -> bool:
     """
-    去掉事件片段、数量、钟点和记一笔套话后，是否还剩应写入备注的描述。
+    去掉事件片段、数量、钟点、套话、废话和昵称后，是否还剩应写入备注的描述。
 
-    事件片段按原文起止删除，不读事件视图整句。套话按备注视图剥离。
-    「吃了120配方奶」为否；「有点凉」为是。
+    事件片段按原文起止删除。废话含「还是」和「宝宝」。昵称是当次画像的 babyName，一个字也删。
+    「还是拉屎了」为否；「有点凉」为是。
     """
     heard = segment or ""
     text = remark_view if remark_view else heard
@@ -76,6 +79,10 @@ def segment_has_remark_detail(
     text = _QTY_SPAN_RE.sub("", text)
     text = _PERIOD_WORD_RE.sub("", text)
     text = _CREATE_VERB_RE.sub("", text)
+    text = _REMARK_FILLER_RE.sub("", text)
+    nick = (baby_name or "").strip()
+    if nick:
+        text = text.replace(nick, "")
     text = _REMARK_NOISE_RE.sub("", text)
     return bool(text.strip())
 
