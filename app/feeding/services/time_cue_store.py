@@ -176,6 +176,13 @@ class TimeCueStore:
         logger.info("写入时间飞轮: id=%s kind=%s", vector_id, clean.get("kind"))
         return vector_id
 
+    def find_by_document(self, document: str) -> List[Dict[str, Any]]:
+        """按 trim 后的原文精确取出本集合命中。一次 get 后相等比较，不做近邻检索。"""
+        from app.feeding.services.cue_document_match import filter_entries_by_document
+
+        self._ensure_initialized()
+        return filter_entries_by_document(self._collection, document)
+
     def list_entries(
         self, *, offset: int = 0, limit: int = 100
     ) -> Dict[str, Any]:
