@@ -93,9 +93,9 @@
 
 ### OpenSpec 基线参考约定（强制）
 
-- 后续 AI 发起任何新变更前，**必须**先读取并对照 **`openspec/specs/v0.0.1.md`**（v0.0.1 合并基线规格），再生成 proposal / design / tasks。
+- 后续 AI 发起任何新变更前，**必须**先读取并对照 **`openspec/specs/v0.0.7.md`**（v0.0.7 合并基线规格），再生成 proposal / design / tasks。
 - 若本次需求涉及已有 capability，必须在 proposal 中明确标注复用/变更了哪些已有 spec 边界；禁止脱离历史 spec 直接重写同类能力。
-- AI 在实现阶段（apply）必须以 v0.0.1 基线中的 Requirement / Scenario 作为验收约束；若实现与基线冲突，需先更新变更规格再改代码。
+- AI 在实现阶段（apply）必须以 v0.0.7 基线中的 Requirement / Scenario 作为验收约束；若实现与基线冲突，需先更新变更规格再改代码。
 - 若变更涉及**用户可见行为、对外 API/契约、兼容性或安全语义**的调整，须在 OpenSpec 制品中落到明确的 **`### Requirement`** 与 **`#### Scenario`**（含 `changes/<name>/specs/**` 内 ADDED/MODIFIED delta）；PR 说明、任务勾选理由或评审记录中应能一句话指回对应能力名与需求标题，禁止「只改代码、规格悬空」。
 
 ### OpenSpec 归档约定（强制）

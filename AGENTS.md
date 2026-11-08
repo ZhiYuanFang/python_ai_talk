@@ -5,7 +5,7 @@
 编写或修改代码、OpenSpec 产物前，**必须**阅读：
 
 1. **[openspec/project.md](openspec/project.md)** — 工程约束全文（代码注释、模块分离、OpenSpec 基线、归档、LLM Agent 约定等）。
-2. **[openspec/specs/v0.0.1.md](openspec/specs/v0.0.1.md)** — 当前合并行为基线（Requirement / Scenario 验收）。
+2. **[openspec/specs/v0.0.7.md](openspec/specs/v0.0.7.md)** — 当前合并行为基线（Requirement / Scenario 验收）。
 
 OpenSpec CLI 制品生成时亦须对照 `openspec/project.md`；细则以 project.md 为准，本文仅摘要高频 MUST。
 
@@ -26,7 +26,7 @@ OpenSpec CLI 制品生成时亦须对照 `openspec/project.md`；细则以 proje
 
 ## OpenSpec 工作流
 
-- 新变更前对照 **`openspec/specs/v0.0.1.md`**；行为变更须有 spec delta。
+- 新变更前对照 **`openspec/specs/v0.0.7.md`**；行为变更须有 spec delta。
 - **收版快捷方式**：用户说 `archive vX.Y.Z` / `/opsx-archive vX.Y.Z` 时，执行：
 
   ```bash

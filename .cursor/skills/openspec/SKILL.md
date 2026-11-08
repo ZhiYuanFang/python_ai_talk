@@ -14,7 +14,7 @@ description: >-
 
 1. **[openspec/project.md](../../openspec/project.md)** — 工程约束全文。
 2. **[AGENTS.md](../../AGENTS.md)** — 仓库级 AI 执行约定（摘要 + 链接）。
-3. **[openspec/specs/v0.0.1.md](../../openspec/specs/v0.0.1.md)** — 当前合并行为基线。
+3. **[openspec/specs/v0.0.7.md](../../openspec/specs/v0.0.7.md)** — 当前合并行为基线。
 
 ## 何时走 OpenSpec
 
@@ -28,7 +28,7 @@ description: >-
 
 - 阅读 **`openspec/project.md`** 与 **`AGENTS.md`**。
 - 运行 `openspec list` 了解上下文。
-- 对照 **`openspec/specs/v0.0.1.md`**；检查 `openspec/changes/` 是否已有重叠变更。
+- 对照 **`openspec/specs/v0.0.7.md`**；检查 `openspec/changes/` 是否已有重叠变更。
 
 ### 创建变更
 
