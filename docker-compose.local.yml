@@ -1,5 +1,5 @@
 # 本地开发 overlay：与基线 docker-compose.yml 组合使用
-# 项目名 python-ai-talk-local（与测试/生产隔离）
+# 项目名 python-ai-talk-local（与测试/生产隔离；内含 talk + prediction 两服务）
 # 本文件只改「本地开发特有的部署项」：镜像标签、container_name、端口映射、extra_hosts、网络
 # 不写 environment：业务环境变量全部由基线 + --env-file .env.local 注入
 #
@@ -8,6 +8,7 @@
 #     -f docker-compose.yml \
 #     -f docker-compose.local.yml \
 #     up -d --build
+# 仅启动其一：在 up 后追加服务名，如 python-ai-talk 或 python-prediction
 
 name: python-ai-talk-local
 
@@ -19,6 +20,18 @@ services:
       - "8000:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    networks:
-      external: true
-      name: go-ai-talk-net
+    networks: [go-ai-talk-net]
+
+  python-prediction:
+    image: go-ai-talk/python-prediction:local
+    container_name: python-prediction
+    ports:
+      - "8001:8001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [go-ai-talk-net]
+
+networks:
+  go-ai-talk-net:
+    external: true
+    name: go-ai-talk-net

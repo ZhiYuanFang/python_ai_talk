@@ -1,0 +1,30 @@
+# python-prediction 轻量镜像
+# 业务说明：仅承载健康检查骨架；禁止安装 torch / chromadb / sentence-transformers，
+# 以免 stub 镜像继承 talk 的体积。模型运行时由后续变更再引入。
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# wget 供 Docker HEALTHCHECK 探活；ca-certificates 供后续 HTTPS 调用预留
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# 仅安装 Web 骨架依赖（与 talk 解耦，不读根 pyproject 的完整依赖树）
+RUN pip install --no-cache-dir \
+    "fastapi==0.115.*" \
+    "uvicorn==0.32.*"
+
+# 只复制 prediction 包，避免把 app/ 与重依赖代码打进镜像层语义混乱
+COPY prediction ./prediction
+
+EXPOSE 8001
+
+# 与 compose healthcheck 路径一致：容器内 8001 + /v1/health
+HEALTHCHECK --interval=10s --timeout=3s --retries=6 \
+    CMD wget -q -O - http://127.0.0.1:8001/v1/health || exit 1
+
+# 默认监听 8001，服务名与 ACR 仓库 python-prediction 对应
+CMD ["uvicorn", "prediction.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]

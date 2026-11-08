@@ -21,6 +21,12 @@ services:
       - "8000:8000"
     networks: [go-ai-talk-net]
 
+  python-prediction:
+    image: ${REGISTRY}/python-prediction:${IMAGE_TAG}
+    ports:
+      - "8001:8001"
+    networks: [go-ai-talk-net]
+
 networks:
   go-ai-talk-net:
     external: true

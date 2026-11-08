@@ -1,8 +1,9 @@
 version: "3.9"
 
-# 基线配置：定义 python-ai-talk 服务骨架
+# 基线配置：定义本仓双微服务骨架（python-ai-talk + python-prediction）
 # 环境变量全部由 --env-file 注入，本文件只定义服务结构和默认值占位符
 # 命名规范：三层一致（.env 文件、docker-compose 注入、python 应用读取同名变量）
+# 基线不含 ports，避免与 local/test/prod overlay 合并时端口叠加
 # 使用方式：
 #   本地开发：docker compose --env-file env/.env.local -f docker-compose.yml -f docker-compose.local.yml up -d --build
 #   测试环境：docker compose --env-file env/.env.test -f docker-compose.yml -f docker-compose.test.yml pull && up -d --no-build
@@ -12,7 +13,7 @@ services:
   python-ai-talk:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.python-ai-talk
     container_name: python-ai-talk
     restart: on-failure:1
     environment:
@@ -25,6 +26,8 @@ services:
       DEVICE_SERVICE_URL: "${DEVICE_SERVICE_URL:-}"
       VOICE_SERVICE_URL: "${VOICE_SERVICE_URL:-}"
       DEVICE_GATEWAY_INTERNAL_SECRET: "${DEVICE_GATEWAY_INTERNAL_SECRET:-}"
+      # --- 同仓 python-prediction（本轮仅预留；talk 应用可不读取）---
+      PYTHON_PREDICTION_URL: "${PYTHON_PREDICTION_URL:-http://python-prediction:8001}"
       # --- Redis ---
       REDIS_URL: "${REDIS_URL:-}"
       # --- AI 密钥（与 go_ai_talk 兄弟仓共用；选型由 Go 传入，Python 不换模）---
@@ -51,3 +54,18 @@ services:
       - ./data/chroma_db:/app/data/chroma_db
       # 注意：不要挂载 ./data/models —— Embedding 模型已在镜像构建时预下载到 /app/data/models
       # 挂载宿主机空目录会覆盖镜像内模型，导致运行时访问 huggingface.co 失败
+
+  python-prediction:
+    build:
+      context: .
+      dockerfile: Dockerfile.python-prediction
+    container_name: python-prediction
+    restart: on-failure:1
+    environment:
+      TZ: Asia/Shanghai
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8001/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6

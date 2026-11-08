@@ -1,6 +1,11 @@
 # Python AI Talk
 
-基于 FastAPI + LangGraph 的母婴喂养意图识别微服务。
+本仓为 Python 微服务 monorepo：
+
+- **python-ai-talk**（`app/`，端口 8000）：基于 FastAPI + LangGraph 的母婴喂养意图识别
+- **python-prediction**（`prediction/`，端口 8001）：预测机器学习模型服务（当前为健康检查骨架）
+
+镜像：`Dockerfile.python-ai-talk` / `Dockerfile.python-prediction`。CI 支持 `v*+talk` / `v*+prediction` 选择性推 ACR，详见 `docs/deploy-guide.md`。
 
 ## 功能特性
 
@@ -12,58 +17,15 @@
 
 ## 项目结构
 
-```
-python_ai_talk/
-├── app/                            # 应用代码
-│   ├── main.py                     # FastAPI 入口
-│   ├── api/routes/                 # API 路由
-│   │   ├── intent.py               # 意图分析路由（含确认接口）
-│   │   ├── clinic.py               # 陪伴续聊路由
-│   │   ├── care_alert.py           # 护理留意路由
-│   │   ├── growth_trajectory.py    # 成长轨迹路由
-│   │   └── health.py               # 健康检查路由
-│   ├── feeding/                    # 喂养动作相关代码
-│   │   ├── graphs/                 # LangGraph 状态图
-│   │   │   ├── intent_graph.py     # 意图分析图（向量匹配→分类→确认→后处理）
-│   │   │   ├── nodes/              # 图节点
-│   │   │   │   ├── classify_intent.py       # LLM 意图分类
-│   │   │   │   ├── match_event_by_vector.py # 向量匹配
-│   │   │   │   ├── prepare_confirm.py       # 准备确认
-│   │   │   │   ├── handle_feedback.py       # 处理用户反馈
-│   │   │   │   └── prompts/                 # LLM 提示词（含 system.py）
-│   │   │   └── states/             # 图状态定义
-│   │   │       └── intent_state.py          # 意图分析状态
-│   │   ├── schemas/                # 数据模型
-│   │   │   └── intent.py           # 意图分析请求/响应模型
-│   │   └── services/               # 业务服务
-│   │       ├── event_cache.py      # 事件字典缓存（24h TTL）
-│   │       └── event_vector_store.py # 喂养事件向量存储（意图缓存飞轮）
-│   ├── clinic/                     # 喂养建议相关代码
-│   │   ├── graphs/                 # LangGraph 状态图
-│   │   │   ├── clinic_graph.py     # 陪伴续聊图
-│   │   │   ├── nodes/              # 图节点（prompts/system.py）
-│   │   │   └── states/             # 图状态定义
-│   │   ├── schemas/                # 数据模型
-│   │   └── services/               # 业务服务
-│   ├── care_alert/                 # 护理留意
-│   ├── growth_trajectory/          # 成长轨迹
-│   ├── shared/                     # 共享服务
-│   │   ├── http_client.py          # HTTP 客户端（调用兄弟仓 API）
-│   │   ├── llm_client.py           # LLM 客户端（DeepSeek/GLM）
-│   │   ├── redis_gate.py           # Redis 门控
-│   │   └── vector_store.py         # 通用向量存储服务
-│   └── config/                     # 配置管理
-│       └── settings.py             # 环境变量配置
-├── data/                           # 数据目录（不提交到 Git）
-│   ├── chroma_db/                  # Chroma 向量库存储
-│   └── models/                     # Embedding 模型缓存
-├── scripts/                        # 工具脚本
-├── docs/                           # 文档
-│   ├── deploy-guide.md             # 部署指南
-│   └── vector_db_guide.md          # 向量数据库指南
-└── pyproject.toml                  # Python 依赖管理（Poetry）
-```
-
+\python_ai_talk/
+├── app/                            # python-ai-talk 应用（:8000）
+├── prediction/                     # python-prediction 骨架（:8001）
+├── Dockerfile.python-ai-talk
+├── Dockerfile.python-prediction
+├── docker-compose*.yml
+├── docs/deploy-guide.md
+└── pyproject.toml
+\
 ## API 接口
 
 ### 意图分析

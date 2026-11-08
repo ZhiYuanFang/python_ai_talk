@@ -59,52 +59,49 @@ Python AI Talk 是一个基于 FastAPI + LangGraph 的母婴喂养意图识别�
 
 ### 1.2 部署架构
 
+本仓为 **双微服务 monorepo**：`python-ai-talk`（意图/LLM）与 `python-prediction`（预测 ML 骨架，模型细节后续变更）。
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    部署架构总览                               │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│   用户请求                                                   │
-│      │                                                      │
-│      ▼                                                      │
-│   ┌──────────────┐                                          │
-│   │  go_ai_talk  │  ← 兄弟仓，提供 HTTP API、MySQL、Redis    │
-│   │  (gateway)   │                                          │
-│   └──────┬───────┘                                          │
-│          │                                                  │
-│          ▼                                                  │
-│   ┌─────────────────────────────────────┐                   │
-│   │        python_ai_talk               │                   │
-│   │  ┌──────────┐  ┌─────────────────┐  │                   │
-│   │  │ FastAPI  │  │   LangGraph     │  │                   │
-│   │  │ (HTTP)   │──│ (意图识别引擎)   │  │                   │
-│   │  └──────────┘  └─────────────────┘  │                   │
-│   │         │                           │                   │
-│   │         ▼                           │                   │
-│   │  ┌──────────────┐  ┌──────────┐    │                   │
-│   │  │ Chroma 向量库 │  │ DeepSeek │    │                   │
-│   │  │ (本地存储)    │  │  LLM API │    │                   │
-│   │  └──────────────┘  └──────────┘    │                   │
-│   └─────────────────────────────────────┘                   │
+│   用户请求 → go_ai_talk (gateway / voice …)                 │
+│                    │                                        │
+│                    ▼                                        │
+│   ┌──────────────────────── go-ai-talk-net ──────────────┐  │
+│   │  python-ai-talk:8000     python-prediction:8001      │  │
+│   │  (app/ LangGraph)        (prediction/ 骨架)          │  │
+│   │  ACR/.../python-ai-talk  ACR/.../python-prediction   │  │
+│   └──────────────────────────────────────────────────────┘  │
 │                                                             │
-│   python_ai_talk 依赖 go_ai_talk 的：                        │
-│   • history-service (端口 9801)                              │
-│   • device-service  (端口 9803)                              │
-│   • voice-service   (端口 9802)                              │
-│   • Redis                                          │
+│   python-ai-talk 依赖 go_ai_talk：history / device / voice / Redis │
+│   python-prediction：本阶段仅健康检查；可选由 talk 经 PYTHON_PREDICTION_URL 调用（未强制） │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### 1.3 多环境说明
 
-本项目支持三套环境，通过 Docker Compose overlay 模式管理：
+本项目支持三套环境，通过 Docker Compose overlay 模式管理（project 内含两服务）：
 
-| 环境 | 用途 | 项目名 | 端口 | 镜像来源 |
-|------|------|--------|------|----------|
-| **local** | 本地开发 | python-ai-talk-local | 8000 | 本地构建 |
-| **test** | 测试验证 | python-ai-talk-test | 18000 | ACR 测试仓库 |
-| **prod** | 生产运行 | python-ai-talk-prod | 8000 | ACR 生产仓库 |
+| 环境 | 用途 | 项目名 | talk 端口 | prediction 端口 | 镜像来源 |
+|------|------|--------|-----------|-----------------|----------|
+| **local** | 本地开发 | python-ai-talk-local | 8000 | 8001 | 本地构建 |
+| **test** | 测试验证 | python-ai-talk-test | 18000 | 18001 | ACR 测试仓库 |
+| **prod** | 生产运行 | python-ai-talk-prod | 8000 | 8001 | ACR 生产仓库 |
+
+### 1.4 ACR 与 CI（按服务 tag）
+
+- 工作流：`.github/workflows/docker-acr.yml`（对齐 go_ai_talk）
+- ACR 命名空间下 **须预建** 仓库：`python-ai-talk`、`python-prediction`
+- `IMAGE_TAG` 为 base tag（不含 `+` 后缀）；两服务 pull 共用同一 `IMAGE_TAG`
+- 发版示例：
+  - `v1.0.0-rc.1` → test 全量推两服务
+  - `v1.0.0-rc.1+talk` → 仅推 `python-ai-talk`
+  - `v1.0.0-rc.1+prediction` → 仅推 `python-prediction`
+  - `v1.0.0` → prod 全量
+- 手动：Actions → `workflow_dispatch`，可填 `services`（`talk` / `prediction` / 空=全量）
 
 ---
 
@@ -112,82 +109,36 @@ Python AI Talk 是一个基于 FastAPI + LangGraph 的母婴喂养意图识别�
 
 ```
 python_ai_talk/
-├── docker-compose.yml              # 基线配置（定义服务骨架，所有环境共用）
-├── docker-compose.local.yml        # 本地开发 overlay（端口、网络、extra_hosts）
-├── docker-compose.test.yml         # 测试环境 overlay（镜像、端口、网络）
-├── docker-compose.prod.yml         # 生产环境 overlay（镜像、端口、网络）
-├── Dockerfile                      # Docker 镜像构建文件
-├── .env.example                    # 环境变量模板（提交到 Git，不含真实密钥）
-├── .gitignore                      # Git 忽略规则
-│
-├── env/                            # 环境变量文件目录（不提交到 Git）
-│   ├── .env.local                  # 本地开发环境变量
-│   ├── .env.test                   # 测试环境变量
-│   └── .env.prod                   # 生产环境变量
-│
-├── docs/                           # 文档目录
-│   └── deploy-guide.md             # 本文件
-│
-├── app/                            # 应用代码
-│   ├── main.py                     # FastAPI 入口
-│   ├── api/                        # API 路由
-│   │   └── routes/                 # 路由模块
-│   │       ├── intent.py           # 意图分析路由（含确认接口）
-│   │       ├── clinic.py           # 诊疗问答路由
-│   │       ├── health.py           # 健康检查路由
-│   ├── feeding/                    # 喂养动作相关代码
-│   │   ├── graphs/                 # LangGraph 状态图和节点
-│   │   ├── schemas/                # 数据模型
-│   │   └── services/               # 事件缓存、事件向量存储
-│   ├── clinic/                     # 喂养建议相关代码
-│   │   ├── graphs/                 # LangGraph 状态图和节点
-│   │   ├── schemas/                # 数据模型
-│   │   └── services/               # 知识向量存储
-│   ├── shared/                     # 共享服务
-│   │   ├── http_client.py          # HTTP 客户端
-│   │   ├── llm_client.py           # LLM 客户端
-│   │   ├── redis_gate.py           # Redis 门控
-│   │   └── vector_store.py         # 通用向量存储
-│   └── config/                     # 配置管理
-│
-├── scripts/                        # 工具脚本
-│   └── build_vector_db.py          # 向量数据库构建脚本
-│
-├── data/                           # 数据目录（不提交到 Git）
-│   ├── chroma_db/                  # Chroma 向量库存储（compose 挂载持久化）
-│   │   └── rule_gaps/gaps.jsonl    # 规则缺口收件箱（与 chroma 同卷，无需单独挂载）
-│   └── models/                     # Embedding 模型缓存（仅本地非 Docker 开发用；
-│                                   # Docker 路径下模型在镜像构建时预下载打入镜像，
-│                                   # 切勿将空的 ./data/models 挂载进容器）
-│
-└── pyproject.toml                  # Python 依赖管理（Poetry）
+├── docker-compose.yml              # 基线（python-ai-talk + python-prediction）
+├── docker-compose.local.yml        # 本地 overlay（8000/8001、go-ai-talk-net）
+├── docker-compose.test.yml         # 测试 overlay（18000/18001、go-ai-talk-test-net）
+├── docker-compose.prod.yml         # 生产 overlay（8000/8001、go-ai-talk-net）
+├── Dockerfile.python-ai-talk       # talk 镜像
+├── Dockerfile.python-prediction    # prediction 轻量镜像
+├── .env.example                    # 环境变量模板
+├── .github/workflows/docker-acr.yml
+├── app/                            # python-ai-talk
+├── prediction/                     # python-prediction 骨架
+├── env/                            # .env.*（不提交）
+├── docs/deploy-guide.md
+└── pyproject.toml
 ```
 
 ### 文件关系说明
 
 ```
 基线 (docker-compose.yml)
-  ├── 定义服务骨架：python-ai-talk
-  ├── 定义 healthcheck、volumes
-  └── 定义 environment（引用 ${VAR} 占位符）
+  ├── 定义服务骨架：python-ai-talk + python-prediction
+  ├── build → Dockerfile.python-ai-talk / Dockerfile.python-prediction
+  ├── 定义 healthcheck、volumes（talk）
+  └── 定义 environment（含可选 PYTHON_PREDICTION_URL）
        │
-       ├─ 本地 overlay (docker-compose.local.yml)
-       │    ├── 添加 ports: 8000:8000
-       │    ├── 添加 extra_hosts
-       │    └── 添加 networks: go-ai-talk-net
-       │
-       ├─ 测试 overlay (docker-compose.test.yml)
-       │    ├── 添加 image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
-       │    ├── 添加 ports: 18000:8000
-       │    └── 添加 networks: python-ai-talk-test-net
-       │
-       └─ 生产 overlay (docker-compose.prod.yml)
-            ├── 添加 image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
-            ├── 添加 ports: 8000:8000
-            └── 添加 networks: go-ai-talk-net
+       ├─ 本地 overlay：ports 8000 / 8001，networks go-ai-talk-net
+       ├─ 测试 overlay：REGISTRY 镜像，ports 18000 / 18001，go-ai-talk-test-net
+       └─ 生产 overlay：REGISTRY 镜像，ports 8000 / 8001，go-ai-talk-net
 
 环境变量 (.env.*)
-  └── 完整定义所有 ${VAR} 的实际值
+  └── 完整定义所有 ${VAR} 的实际值；IMAGE_TAG 为 base tag（无 + 后缀）
 ```
 
 ---
