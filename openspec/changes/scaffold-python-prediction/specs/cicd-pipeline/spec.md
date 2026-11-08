@@ -23,7 +23,7 @@
 - **THEN** 工作流仅构建并推送 `python-prediction`
 
 ### Requirement: 构建范围
-系统 SHALL 支持与 go_ai_talk 同构的构建范围：git tag 形如 `vMAJOR.MINOR.PATCH[-预发布][+别名列表]`，或 `workflow_dispatch` 的 services 输入。`+` 后为逗号分隔别名；支持 `talk` / `ai-talk` / `python-ai-talk`、`prediction` / `python-prediction`、`all`。无 `+` 后缀且非手动指定 services 时 MUST 全量构建两服务。`primary_tag`（ACR 主 tag）MUST 为 `+` 之前的 base tag，且 MUST 与服务器 `.env` 中 `IMAGE_TAG` 对齐语义。
+系统 SHALL 支持与 go_ai_talk 同构的构建范围：git tag 形如 `vMAJOR.MINOR.PATCH[-预发布][+别名列表]`，或 `workflow_dispatch` 的 services 输入。`+` 后为逗号分隔别名；支持 `talk` / `ai-talk` / `python-ai-talk`、`prediction` / `python-prediction`、`all`。无 `+` 后缀且非手动指定 services 时 MUST 全量构建两服务。`primary_tag`（ACR 主 tag）MUST 为 `+` 之前的 base tag。部署时 talk 的 `PYTHON_AI_TALK_IMAGE_TAG`（或过渡期 `IMAGE_TAG`）与 prediction 的 `PYTHON_PREDICTION_IMAGE_TAG` MAY 彼此不同；某次构建产出的 `primary_tag` MUST 与**本次被构建服务**在服务器上将要写入的对应 `*_IMAGE_TAG` 对齐，MUST NOT 再要求两服务共用单一 `IMAGE_TAG`。
 
 #### Scenario: 全量 tag 构建
 - **WHEN** 推送 git tag `v1.0.0-rc.1`（无 `+` 后缀）
@@ -34,11 +34,13 @@
 - **WHEN** 推送 git tag `v1.0.0-rc.1+talk`
 - **THEN** 工作流仅构建并推送 `python-ai-talk`
 - **AND** 镜像主 tag 为 `v1.0.0-rc.1`
+- **AND** 运维可将服务器 `PYTHON_AI_TALK_IMAGE_TAG` 设为 `v1.0.0-rc.1` 而不必改动 `PYTHON_PREDICTION_IMAGE_TAG`
 
 #### Scenario: 仅 prediction
 - **WHEN** 推送 git tag `v1.0.0-rc.1+prediction`
 - **THEN** 工作流仅构建并推送 `python-prediction`
 - **AND** 镜像主 tag 为 `v1.0.0-rc.1`
+- **AND** 运维可将服务器 `PYTHON_PREDICTION_IMAGE_TAG` 设为 `v1.0.0-rc.1` 而不必改动 talk 的 tag 变量
 
 #### Scenario: 生产全量
 - **WHEN** 推送 git tag `v1.0.0`

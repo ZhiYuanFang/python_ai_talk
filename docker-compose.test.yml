@@ -14,14 +14,16 @@ name: python-ai-talk-test
 
 services:
   python-ai-talk:
-    image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
+    # 分版本：优先 PYTHON_AI_TALK_IMAGE_TAG；未设时回退旧 IMAGE_TAG（过渡期）
+    image: ${REGISTRY}/python-ai-talk:${PYTHON_AI_TALK_IMAGE_TAG:-${IMAGE_TAG}}
     container_name: python-ai-talk-test
     ports:
       - "18000:8000"
     networks: [go-ai-talk-test-net]
 
   python-prediction:
-    image: ${REGISTRY}/python-prediction:${IMAGE_TAG}
+    # 必须显式 PYTHON_PREDICTION_IMAGE_TAG，禁止回退共用 IMAGE_TAG
+    image: ${REGISTRY}/python-prediction:${PYTHON_PREDICTION_IMAGE_TAG}
     container_name: python-prediction-test
     ports:
       - "18001:8001"

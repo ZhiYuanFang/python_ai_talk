@@ -15,6 +15,7 @@ Go 侧参考（`go_ai_talk`）：
 - prediction 提供可健康检查的 FastAPI 骨架（端口 8001）
 - CI 对齐 Go：按服务别名选择性 build/push
 - Compose 三环境均能拉起双服务并加入既有外部网络
+- **部署分版本**：test/prod 用独立 env 变量钉各服务 ACR tag，prediction 可与 talk 不同号发版/回滚
 
 **Non-Goals:**
 - 不实现预测模型训练/推理业务 API
@@ -22,6 +23,7 @@ Go 侧参考（`go_ai_talk`）：
 - 不要求本轮修改 go_ai_talk 仓库
 - 不做 `app/` → `services/` 大目录搬迁
 - 不为 prediction stub 引入 torch / sklearn 等 ML 重依赖
+- 不引入独立 git tag 命名空间（如 `talk/v*`、`prediction/v*`）；CI 仍用 `v*[+alias]`
 
 ## Decisions
 
@@ -55,13 +57,24 @@ Go 侧参考（`go_ai_talk`）：
 - tag：`primary_tag` 为 `+` 前 base；ACR 推送 `${REGISTRY}/<id>:${primary_tag}` 与 `${REGISTRY}/<id>:${GITHUB_SHA}`
 - `workflow_dispatch` 增加可选 `services` 输入（与 Go 一致）
 - 修正基线中过时的「无 `+python` 则跳过构建」语义
+- CI **不**为两服务生成不同 primary_tag；分版本仅发生在部署 env
 
-### 5. 跨服务调用预留（可选、弱绑定）
+### 5. 部署双 tag（路径 1）
+- **选择**：
+  - talk：`${REGISTRY}/python-ai-talk:${PYTHON_AI_TALK_IMAGE_TAG:-${IMAGE_TAG}}`
+  - prediction：`${REGISTRY}/python-prediction:${PYTHON_PREDICTION_IMAGE_TAG}`（无回退到共用 `IMAGE_TAG`，避免误把 talk 旧号当成 prediction 已推送号）
+- **替代**：继续共用 `IMAGE_TAG`（已否决）；独立 git tag 线（路径 2，本轮不做）
+- **理由**：prediction 可单独升/降级；CI 仍 `v0.1.3+prediction`；运维只改对应 `*_IMAGE_TAG`
+- local overlay 仍用 `:local`，与 ACR tag 无关
+- `.env.example` / deploy-guide 标明：`IMAGE_TAG` 仅作 talk 过渡回退，新环境应显式写两变量
+- workflow 注释改为「primary_tag 应对齐**被构建服务**在服务器上的 `*_IMAGE_TAG`」
+
+### 6. 跨服务调用预留（可选、弱绑定）
 - 在基线 compose / `.env.example` 为 talk 预留 `PYTHON_PREDICTION_URL=http://python-prediction:8001`
 - 本轮 talk 代码 **不** 强制读取或调用；下一轮模型提案再接线
 - prediction 暂不依赖 history/device 等兄弟服务 URL
 
-### 6. 依赖管理
+### 7. 依赖管理
 - 保持根 `pyproject.toml` 服务 talk；prediction Dockerfile 用 pip 钉最小依赖，避免污染 talk 依赖树
 - 后续若共享代码，再抽 `shared` 或 poetry packages——不在本轮
 
@@ -70,23 +83,26 @@ Go 侧参考（`go_ai_talk`）：
 - **[Risk] ACR 尚未创建 `python-prediction` 仓库 → push 失败**  
   → Mitigation：部署文档注明需在 test/prod 命名空间预建仓库；CI 失败信息指向 runbook
 - **[Risk] 旧脚本仍 `docker build -f Dockerfile`**  
-  → Mitigation：deploy-guide / README 更新；可选保留根 `Dockerfile` 为 talk 的副本或 symlink 式说明（Windows 上优先「同内容文件 + 文档」，避免 symlink 坑）
+  → Mitigation：deploy-guide / README 更新；不保留同名 `Dockerfile`
 - **[Risk] 同 compose 一键 up 会同时起两个服务，本地资源变重**  
   → Mitigation：可用 `docker compose up python-ai-talk` 单起；CI 可用 `+talk` / `+prediction` 分推
+- **[Risk] 只改共用 `IMAGE_TAG` 仍期望两服务一起升版 → prediction 未设 `PYTHON_PREDICTION_IMAGE_TAG` 时 pull 失败**  
+  → Mitigation：文档与 `.env.example` 强制列出两变量；compose 不让 prediction 静默回退到 `IMAGE_TAG`
 - **[Trade-off] project 名仍叫 `python-ai-talk-*`**  
   → 少改运维习惯；语义上略偏单服务，可在文档标明「含多 Python 微服务」
-- **[Trade-off] prediction 与 talk 同仓发布节奏绑定**  
-  → 用 `+prediction` 缓解；真要完全独立生命周期再评估拆仓
+- **[Trade-off] 同仓代码仍共享 git 历史**  
+  → 部署 tag 已解耦；真要完全独立生命周期再评估拆仓
 
 ## Migration Plan
 
-1. 合并代码：双 Dockerfile、双服务 compose、workflow、prediction stub
+1. 合并代码：双 Dockerfile、双服务 compose、workflow、prediction stub、双 tag 变量
 2. ACR：在 test/prod 命名空间创建 `python-prediction` 仓库
-3. 服务器：更新 `env/.env.*`（如需），`pull && up -d --no-build`（两服务）
-4. 验证：`/v1/health` 在 8000 与 8001（测试 18000/18001）均 healthy
-5. 回滚：overlay 可暂时 scale prediction 为 0 或不 pull prediction；talk 镜像路径变更后需确保仍指向 `Dockerfile.python-ai-talk` 产物
+3. 服务器 `env/.env.*`：设 `PYTHON_AI_TALK_IMAGE_TAG`（可由原 `IMAGE_TAG` 拷贝）与 `PYTHON_PREDICTION_IMAGE_TAG`（首次可与 talk 同号或独立 stub 号）
+4. `pull && up -d --no-build`（或按服务 up）；验证 8000/8001（测试 18000/18001）health
+5. 回滚：只改对应 `*_IMAGE_TAG` 再 up 该服务；或 scale prediction 为 0
 
 ## Open Questions
 
-- 根目录是否保留名为 `Dockerfile` 的 talk 副本以兼容旧命令？（默认：**不保留**，文档改指向 `Dockerfile.python-ai-talk`）
-- talk 是否本轮写入读取 `PYTHON_PREDICTION_URL` 的 settings 字段？（默认：**仅 env/compose 预留，应用代码不读**）
+- 根目录是否保留名为 `Dockerfile` 的 talk 副本以兼容旧命令？（已决：**不保留**）
+- talk 是否本轮写入读取 `PYTHON_PREDICTION_URL` 的 settings 字段？（已决：**仅 env/compose 预留，应用代码不读**）
+- prediction 是否允许回退到 `IMAGE_TAG`？（已决：**不允许**，必须显式 `PYTHON_PREDICTION_IMAGE_TAG`）

@@ -30,3 +30,10 @@
 
 - [x] 6.1 本地确认 talk 与 prediction 均可 build，且各自 `/v1/health` 可用（不编写自动化测试文件）
 - [x] 6.2 确认未改动现有 `predict_*` / `speak_predict` 行为路径
+
+## 7. 部署分版本（双 tag）
+
+- [x] 7.1 更新 `docker-compose.test.yml` / `docker-compose.prod.yml`：talk 使用 `${PYTHON_AI_TALK_IMAGE_TAG:-${IMAGE_TAG}}`；prediction 使用 `${PYTHON_PREDICTION_IMAGE_TAG}`（禁止回退共用 `IMAGE_TAG`）
+- [x] 7.2 更新 `.env.example`：文档化 `PYTHON_AI_TALK_IMAGE_TAG`、`PYTHON_PREDICTION_IMAGE_TAG`；标明共用 `IMAGE_TAG` 仅作 talk 过渡回退
+- [x] 7.3 更新 `docs/deploy-guide.md` 与 workflow 注释：发版/回滚按服务改对应 `*_IMAGE_TAG`；CI `primary_tag` 对齐被构建服务的部署变量
+- [x] 7.4 核对 compose 配置可解析（有 Docker 时 `compose config`；否则人工核对变量名）

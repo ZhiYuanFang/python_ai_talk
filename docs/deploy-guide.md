@@ -91,17 +91,21 @@ Python AI Talk 是一个基于 FastAPI + LangGraph 的母婴喂养意图识别�
 | **test** | 测试验证 | python-ai-talk-test | 18000 | 18001 | ACR 测试仓库 |
 | **prod** | 生产运行 | python-ai-talk-prod | 8000 | 8001 | ACR 生产仓库 |
 
-### 1.4 ACR 与 CI（按服务 tag）
+### 1.4 ACR 与 CI（按服务构建）与部署分版本
 
 - 工作流：`.github/workflows/docker-acr.yml`（对齐 go_ai_talk）
 - ACR 命名空间下 **须预建** 仓库：`python-ai-talk`、`python-prediction`
-- `IMAGE_TAG` 为 base tag（不含 `+` 后缀）；两服务 pull 共用同一 `IMAGE_TAG`
-- 发版示例：
-  - `v1.0.0-rc.1` → test 全量推两服务
-  - `v1.0.0-rc.1+talk` → 仅推 `python-ai-talk`
-  - `v1.0.0-rc.1+prediction` → 仅推 `python-prediction`
-  - `v1.0.0` → prod 全量
+- **部署分版本**（test/prod `.env`）：
+  - `PYTHON_AI_TALK_IMAGE_TAG` → talk 拉哪个 ACR tag（过渡期未设时可回退旧 `IMAGE_TAG`）
+  - `PYTHON_PREDICTION_IMAGE_TAG` → prediction 拉哪个 ACR tag（**必须显式**，不回退 `IMAGE_TAG`）
+  - 两变量可以不同号；只升 prediction 时只改后者
+- CI 发版示例（`primary_tag` 对齐**被构建服务**的 `*_IMAGE_TAG`）：
+  - `v1.0.0-rc.1` → test 全量推两服务（是否两边都升到该号由各 env 变量决定）
+  - `v1.0.0-rc.1+talk` → 仅推 talk；改 `PYTHON_AI_TALK_IMAGE_TAG=v1.0.0-rc.1`
+  - `v1.0.0-rc.1+prediction` → 仅推 prediction；改 `PYTHON_PREDICTION_IMAGE_TAG=v1.0.0-rc.1`
+  - `v1.0.0` → prod 全量推
 - 手动：Actions → `workflow_dispatch`，可填 `services`（`talk` / `prediction` / 空=全量）
+- 回滚：只把对应服务的 `*_IMAGE_TAG` 改回旧号再 `pull && up` 该服务
 
 ---
 
@@ -138,7 +142,7 @@ python_ai_talk/
        └─ 生产 overlay：REGISTRY 镜像，ports 8000 / 8001，go-ai-talk-net
 
 环境变量 (.env.*)
-  └── 完整定义所有 ${VAR} 的实际值；IMAGE_TAG 为 base tag（无 + 后缀）
+  └── 完整定义所有 ${VAR}；PYTHON_AI_TALK_IMAGE_TAG / PYTHON_PREDICTION_IMAGE_TAG 可不同
 ```
 
 ---
@@ -785,8 +789,9 @@ docker compose --env-file env/.env.prod \
   -f docker-compose.prod.yml \
   down
 
-# 步骤 2：修改 env/.env.prod 中的 IMAGE_TAG 为上一个版本
-# 例如：IMAGE_TAG=v2.0.23
+# 步骤 2：修改 env/.env.prod 中对应服务的 *_IMAGE_TAG 为上一个版本
+# 例如：PYTHON_AI_TALK_IMAGE_TAG=v2.0.23
+# 仅回滚 prediction 时改 PYTHON_PREDICTION_IMAGE_TAG
 nano env/.env.prod
 
 # 步骤 3：重新拉取旧版本镜像并启动
@@ -818,7 +823,9 @@ docker compose --env-file env/.env.prod \
 | 变量名 | 用途 | 必填 | 本地示例 | 测试示例 | 生产示例 |
 |--------|------|------|----------|----------|----------|
 | `REGISTRY` | ACR 仓库地址 | 测试/生产 | - | `...pangbao-test` | `...pangbao-release` |
-| `IMAGE_TAG` | 镜像版本号 | 测试/生产 | - | `v2.0.7-beta.43` | `v2.0.24` |
+| `PYTHON_AI_TALK_IMAGE_TAG` | talk 镜像 tag | 测试/生产 | - | `v2.0.7-beta.43` | `v2.0.24` |
+| `PYTHON_PREDICTION_IMAGE_TAG` | prediction 镜像 tag | 测试/生产 | - | `v0.0.1` | `v0.1.3` |
+| `IMAGE_TAG` | talk 过渡回退（废弃为双服务默认） | 测试/生产 | - | 同旧值 | 建议迁到 `PYTHON_AI_TALK_IMAGE_TAG` |
 | `ACR_USERNAME` | ACR 登录账号 | 测试/生产 | - | `8区投投` | `8区投投` |
 | `ACR_PASSWORD` | ACR 登录密码 | 测试/生产 | - | `Fang930927` | `Fang930927` |
 | `REDIS_URL` | Redis 连接地址 | 是 | `redis://localhost:6379/0` | `redis://redis-test:6379/0` | `redis://redis-node-1:7001,...` |
@@ -836,7 +843,7 @@ docker compose --env-file env/.env.prod \
 
 | 变量 | 获取方式 |
 |------|----------|
-| `REGISTRY` / `IMAGE_TAG` / `ACR_USERNAME` / `ACR_PASSWORD` | 由运维人员提供，或查看 ACR 控制台 |
+| `REGISTRY` / `PYTHON_*_IMAGE_TAG` / `ACR_USERNAME` / `ACR_PASSWORD` | 由运维人员提供，或查看 ACR 控制台 |
 | `DEEPSEEK_API_KEY` | [DeepSeek 开放平台](https://platform.deepseek.com/) 创建 API Key |
 | `GLM_API_KEY` | [智谱 AI 开放平台](https://open.bigmodel.cn/) 创建 API Key |
 | `REDIS_URL` | 与 go_ai_talk 的 Redis 配置对齐 |

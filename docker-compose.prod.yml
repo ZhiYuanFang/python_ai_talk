@@ -16,13 +16,15 @@ name: python-ai-talk-prod
 
 services:
   python-ai-talk:
-    image: ${REGISTRY}/python-ai-talk:${IMAGE_TAG}
+    # 分版本：优先 PYTHON_AI_TALK_IMAGE_TAG；未设时回退旧 IMAGE_TAG（过渡期）
+    image: ${REGISTRY}/python-ai-talk:${PYTHON_AI_TALK_IMAGE_TAG:-${IMAGE_TAG}}
     ports:
       - "8000:8000"
     networks: [go-ai-talk-net]
 
   python-prediction:
-    image: ${REGISTRY}/python-prediction:${IMAGE_TAG}
+    # 必须显式 PYTHON_PREDICTION_IMAGE_TAG，禁止回退共用 IMAGE_TAG
+    image: ${REGISTRY}/python-prediction:${PYTHON_PREDICTION_IMAGE_TAG}
     ports:
       - "8001:8001"
     networks: [go-ai-talk-net]

@@ -4,13 +4,17 @@
 #     → 测试命名空间，全量 2 服务，tag :v1.0.0-rc.1 + :<sha>
 #   git tag v1.0.0-rc.2+talk && git push origin v1.0.0-rc.2+talk
 #     → 仅 build/push python-ai-talk；ACR 主 tag 仍为 :v1.0.0-rc.2
+#     → 部署时把服务器 PYTHON_AI_TALK_IMAGE_TAG 设为 v1.0.0-rc.2（不必改 prediction）
 #   git tag v1.0.0-rc.3+prediction && git push origin v1.0.0-rc.3+prediction
 #     → 仅 build/push python-prediction
+#     → 部署时把服务器 PYTHON_PREDICTION_IMAGE_TAG 设为 v1.0.0-rc.3
 #   git tag v1.0.0 && git push origin v1.0.0
-#     → 生产命名空间，全量 2 服务
+#     → 生产命名空间，全量 2 服务（是否两边都升到该号由各 *_IMAGE_TAG 决定）
 # 规则：vMAJOR.MINOR.PATCH（无 - 后缀）→ 生产；含 -rc/-beta 等 → 测试
 # 构建范围后缀：+ 后为逗号分隔服务别名（talk、prediction；all=全量）
 # 手动：Actions → Run workflow（workflow_dispatch，可选 services）
+# primary_tag 须与「本次被构建服务」在服务器上的 PYTHON_AI_TALK_IMAGE_TAG /
+# PYTHON_PREDICTION_IMAGE_TAG 对齐；两服务部署 tag 可以不同。
 #
 # ACR 凭证来自 GitHub Actions Secrets / Environments：
 #   Repository secrets: ACR_USERNAME, ACR_PASSWORD
@@ -33,7 +37,7 @@ on:
           - test
           - prod
       image_tag:
-        description: 镜像主 tag（base tag，如 v1.0.0-rc.1；须与服务器 .env 中 IMAGE_TAG 一致，不含 + 后缀）
+        description: 镜像主 tag（base tag，如 v1.0.0-rc.1；须与被构建服务的 PYTHON_*_IMAGE_TAG 一致，不含 + 后缀）
         required: true
         type: string
       services:

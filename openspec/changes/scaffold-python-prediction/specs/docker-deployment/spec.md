@@ -9,7 +9,7 @@
 - **AND** 两服务均无宿主机 ports 映射
 
 ### Requirement: python-prediction 镜像与 overlay 端口
-local overlay SHALL 将 `python-prediction` 映射为本地镜像 `go-ai-talk/python-prediction:local`，宿主机端口 `8001:8001`，并加入外部网络 `go-ai-talk-net`。test overlay SHALL 使用 `${REGISTRY}/python-prediction:${IMAGE_TAG}`，宿主机端口 `18001:8001`，网络 `go-ai-talk-test-net`。prod overlay SHALL 使用 `${REGISTRY}/python-prediction:${IMAGE_TAG}`，宿主机端口 `8001:8001`，网络 `go-ai-talk-net`。
+local overlay SHALL 将 `python-prediction` 映射为本地镜像 `go-ai-talk/python-prediction:local`，宿主机端口 `8001:8001`，并加入外部网络 `go-ai-talk-net`。test overlay SHALL 使用 `${REGISTRY}/python-prediction:${PYTHON_PREDICTION_IMAGE_TAG}`，宿主机端口 `18001:8001`，网络 `go-ai-talk-test-net`。prod overlay SHALL 使用 `${REGISTRY}/python-prediction:${PYTHON_PREDICTION_IMAGE_TAG}`，宿主机端口 `8001:8001`，网络 `go-ai-talk-net`。prediction 的镜像 tag MUST NOT 回退到共用 `IMAGE_TAG`。
 
 #### Scenario: 本地端口
 - **WHEN** 使用 local overlay 启动
@@ -19,9 +19,9 @@ local overlay SHALL 将 `python-prediction` 映射为本地镜像 `go-ai-talk/py
 - **WHEN** 使用 test overlay 启动
 - **THEN** 宿主机可经 `18001` 访问 prediction（容器内 8001）
 
-#### Scenario: 生产镜像名
-- **WHEN** 使用 prod overlay 启动
-- **THEN** prediction 的 image 为 `${REGISTRY}/python-prediction:${IMAGE_TAG}`
+#### Scenario: 生产镜像名（分版本）
+- **WHEN** 使用 prod overlay 启动且 `PYTHON_PREDICTION_IMAGE_TAG=v0.1.3`
+- **THEN** prediction 的 image 为 `${REGISTRY}/python-prediction:v0.1.3`
 
 ### Requirement: talk Dockerfile 文件名
 python-ai-talk 的生产镜像构建文件 SHALL 为仓库根目录 `Dockerfile.python-ai-talk`。Compose build 段与 CI MUST 引用该路径（不再以未加服务后缀的 `Dockerfile` 作为权威构建文件）。
@@ -44,6 +44,19 @@ python-ai-talk 的生产镜像构建文件 SHALL 为仓库根目录 `Dockerfile.
 - **WHEN** 检查 `.env.example` 或基线 environment
 - **THEN** 可见 `PYTHON_PREDICTION_URL` 占位或其文档说明
 - **AND** 现有意图预测行为不因该预留而改变
+
+### Requirement: 部署按服务独立镜像 tag
+test 与 prod overlay 中，`python-ai-talk` 的 image tag SHALL 取自 `PYTHON_AI_TALK_IMAGE_TAG`（过渡期 MAY 回退 `${PYTHON_AI_TALK_IMAGE_TAG:-${IMAGE_TAG}}`）。`python-prediction` 的 image tag SHALL 取自 `PYTHON_PREDICTION_IMAGE_TAG`，且 MUST NOT 与 talk 强制同号。`.env.example` MUST 同时文档化这两个变量，并标明共用 `IMAGE_TAG` 已废弃为双服务默认。
+
+#### Scenario: 两服务可钉不同版本
+- **WHEN** `.env` 中 `PYTHON_AI_TALK_IMAGE_TAG=v0.0.7` 且 `PYTHON_PREDICTION_IMAGE_TAG=v0.1.3`
+- **THEN** talk 镜像为 `${REGISTRY}/python-ai-talk:v0.0.7`
+- **AND** prediction 镜像为 `${REGISTRY}/python-prediction:v0.1.3`
+
+#### Scenario: talk 过渡回退 IMAGE_TAG
+- **WHEN** 未设置 `PYTHON_AI_TALK_IMAGE_TAG` 但设置了 `IMAGE_TAG=v0.0.7`
+- **THEN** talk 镜像仍可为 `${REGISTRY}/python-ai-talk:v0.0.7`
+- **AND** prediction MUST 仍要求显式 `PYTHON_PREDICTION_IMAGE_TAG`（不得因此静默使用 `v0.0.7`）
 
 ## MODIFIED Requirements
 
