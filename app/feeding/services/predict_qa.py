@@ -2,11 +2,12 @@
 预测问答：双通道锚点匹配与播报文案
 
 业务说明：
-active 消费 active-eta 的 expectEndAt 与预计用量/时长；
-next 消费 imminent 的 nextAt 与预计用量/时长。
-按段事件 id 与目录归根对齐 leaf/root/eventId。
+active 消费 active-eta 的 expectEndAt 与预计用量/时长；无正结束仍可识别进行中。
+next 消费 imminent 的 nextAt 与预计用量/时长；可选 parentEventName 供根名反推。
+按段事件 id 与目录归根对齐 leaf/root/eventId；MUST NOT 依赖 expectLeafTitle。
 clock / remain 分维播报；remain 超时固定「已经过了预计时间」。
 无匹配时估不准，禁止回落查史「上一次…用时」。
+对齐 Go predict-merge-predict-contract：parentEventName 仅 pending。
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.feeding.services.active_timing_eta import _ids_equal, _norm_id, _parse_unix_sec
-from app.feeding.services.event_hierarchy import get_root_event_id
+from app.feeding.services.event_hierarchy import get_event_by_id, get_root_event_id
 from app.shared.history_window import shanghai_tz
 
 
@@ -49,46 +50,72 @@ def _event_match_ids(
     return eid, root
 
 
+def read_parent_event_name(item: Dict[str, Any]) -> str:
+    """
+    读 imminent pending 可选 parentEventName（Go 契约）。
+
+    trim 后空视为无父；不读 parentEventId / expectLeafTitle。
+    """
+    if not isinstance(item, dict):
+        return ""
+    for key in ("parentEventName", "parent_event_name"):
+        raw = item.get(key)
+        if raw in (None, ""):
+            continue
+        name = str(raw).strip()
+        if name:
+            return name
+    return ""
+
+
+def pending_speak_name(item: Dict[str, Any], fallback: str = "") -> str:
+    """
+    pending/active 播报名：优先 title，否则 fallback。
+
+    MUST NOT 使用 expectLeafTitle。
+    """
+    if isinstance(item, dict):
+        title = str(item.get("title") or "").strip()
+        if title:
+            return title
+    return (fallback or "").strip()
+
+
+def catalog_event_name(event_id: str, full_events: List[Dict[str, Any]]) -> str:
+    """目录权威 event_name；找不到则空串。"""
+    found = get_event_by_id(event_id, full_events)
+    if not found:
+        return ""
+    return str(found.get("event_name") or "").strip()
+
+
+def read_positive_expect_end(item: Dict[str, Any]) -> Optional[int]:
+    """
+    读正 expectEndAt（unix 秒）。
+
+    省略 / null / 0 / 非正 → None（无预计结束，与 Go 一致）。
+    """
+    if not isinstance(item, dict):
+        return None
+    return _parse_unix_sec(item.get("expectEndAt"))
+
+
 def match_active_expect_end(
     event_id: str,
     eta_items: List[Dict[str, Any]],
     full_events: List[Dict[str, Any]],
 ) -> Optional[int]:
     """
-    按 leafEventId → rootEventId 匹配进行中 ETA 的 expectEndAt。
+    按 leafEventId → rootEventId 匹配进行中 ETA 的正 expectEndAt。
 
     业务说明：
-    无 history 行时用段事件 id 对齐；多条命中取任意有效 expectEndAt（通常一事件一条）。
+    先命中整条再取正结束；无正结束返回 None（调用方可用 match_active_item 做进行中降级）。
+    不读 parentEventName（active-eta 无该字段）。
     """
-    if not eta_items:
+    item = match_active_item(event_id, eta_items, full_events)
+    if not item:
         return None
-    leaf, root = _event_match_ids(event_id, full_events)
-    if not leaf and not root:
-        return None
-
-    # 先叶子再根，对齐 active_timing_eta 优先级
-    for it in eta_items:
-        if leaf and _ids_equal(leaf, it.get("leafEventId")):
-            end = _parse_unix_sec(it.get("expectEndAt"))
-            if end is not None:
-                return end
-    for it in eta_items:
-        if root and _ids_equal(root, it.get("rootEventId")):
-            end = _parse_unix_sec(it.get("expectEndAt"))
-            if end is not None:
-                return end
-    # 兼容偶发只写 eventId 的项
-    for it in eta_items:
-        raw = it.get("eventId") or it.get("event_id")
-        if leaf and _ids_equal(leaf, raw):
-            end = _parse_unix_sec(it.get("expectEndAt"))
-            if end is not None:
-                return end
-        if root and _ids_equal(root, raw):
-            end = _parse_unix_sec(it.get("expectEndAt"))
-            if end is not None:
-                return end
-    return None
+    return read_positive_expect_end(item)
 
 
 def read_expect_duration_sec(item: Dict[str, Any]) -> Optional[int]:
@@ -181,30 +208,12 @@ def match_active_item(
     return best
 
 
-def match_imminent_item(
-    event_id: str,
-    events: List[Dict[str, Any]],
-    full_events: List[Dict[str, Any]],
+def _pick_imminent_among(
+    matched: List[Dict[str, Any]],
     *,
     now: Optional[datetime] = None,
 ) -> Optional[Dict[str, Any]]:
-    """
-    按事件 id 取 imminent 整条。
-
-    多条时与 nextAt 选择相同：最近的未来，否则最近的过去。没有 nextAt 时用第一条对上的。
-    """
-    if not events:
-        return None
-    leaf, root = _event_match_ids(event_id, full_events)
-    if not leaf and not root:
-        return None
-    matched: List[Dict[str, Any]] = []
-    for it in events:
-        if not isinstance(it, dict):
-            continue
-        eid = it.get("eventId") or it.get("event_id")
-        if (leaf and _ids_equal(leaf, eid)) or (root and _ids_equal(root, eid)):
-            matched.append(it)
+    """多条 pending：最近的未来 nextAt，否则最近的过去；无 nextAt 取第一条。"""
     if not matched:
         return None
     timed: List[Tuple[int, Dict[str, Any]]] = []
@@ -225,6 +234,52 @@ def match_imminent_item(
     if future:
         return future[0][1]
     return max(timed, key=lambda pair: pair[0])[1]
+
+
+def match_imminent_item(
+    event_id: str,
+    events: List[Dict[str, Any]],
+    full_events: List[Dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    取 imminent 整条：先 eventId（叶/根），未命中且所指为根时再按 parentEventName。
+
+    业务说明：
+    非合并子 pending 的 eventId 是子；用户说根名时 eventId 对不上，
+    用目录根权威 name 对齐 parentEventName（仅根话语启用，避免叶子 miss 误命中兄弟）。
+    多条时与 nextAt 选择相同。忽略 expectLeafTitle。
+    """
+    if not events:
+        return None
+    leaf, root = _event_match_ids(event_id, full_events)
+    if not leaf and not root:
+        return None
+    matched: List[Dict[str, Any]] = []
+    for it in events:
+        if not isinstance(it, dict):
+            continue
+        eid = it.get("eventId") or it.get("event_id")
+        if (leaf and _ids_equal(leaf, eid)) or (root and _ids_equal(root, eid)):
+            matched.append(it)
+    hit = _pick_imminent_among(matched, now=now)
+    if hit is not None:
+        return hit
+
+    # 仅当话语指向根（leaf==root）时用 parentEventName 反推
+    if not root or (leaf and leaf != root):
+        return None
+    root_name = catalog_event_name(root, full_events)
+    if not root_name:
+        return None
+    by_parent: List[Dict[str, Any]] = []
+    for it in events:
+        if not isinstance(it, dict):
+            continue
+        if read_parent_event_name(it) == root_name:
+            by_parent.append(it)
+    return _pick_imminent_among(by_parent, now=now)
 
 
 def format_go_measure_answer(
@@ -262,6 +317,16 @@ def match_imminent_next_at(
     if not item:
         return None
     return _parse_unix_sec(item.get("nextAt") or item.get("next_at"))
+
+
+def format_active_in_progress_answer(event_name: str = "") -> str:
+    """
+    active 命中但无正 expectEndAt 时的降级话术。
+
+    MUST NOT 编造预计结束钟点；只表达进行中。
+    """
+    name = (event_name or "").strip() or "这件事"
+    return f"「{name}」现在正在进行中，暂时还没有预计结束时间。"
 
 
 def format_predict_answer(

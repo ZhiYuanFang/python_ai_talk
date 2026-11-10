@@ -2,7 +2,9 @@
 预测问答播报节点
 
 业务说明：
-Go active-eta / imminent 命中 → 保留模板 clock/remain。
+Go active-eta / imminent 命中 → 保留模板 clock/remain；
+active 无正 expectEndAt 仍播进行中，MUST NOT 编造结束钟点。
+imminent 名称优先 title；根名可经 parentEventName 反推（对齐 Go predict-merge-predict-contract）。
 miss 或命中事件 isAppointment → 冷路径：近 7 日算法（或预约约定）+ 语境史 compact + LLM；
 预约仅看该事件自身字段（对齐 Go），不按根/子树聚合；
 算法结果 Redis 快照 TTL 10min；样本不足/无约定直接降级，禁止编造与查史用时回落。
@@ -39,17 +41,21 @@ from app.feeding.services.predict_interval_snapshot import (
     leaf_ids_for_root,
 )
 from app.feeding.services.predict_qa import (
+    format_active_in_progress_answer,
     format_go_measure_answer,
     format_predict_answer,
     match_active_expect_end,
     match_active_item,
     match_imminent_item,
     match_imminent_next_at,
+    pending_speak_name,
     read_expect_amount,
     read_expect_duration_sec,
     read_expect_unit,
+    read_positive_expect_end,
     uncertainty_message,
 )
+from app.feeding.services.active_timing_eta import _parse_unix_sec
 from app.shared.constants import TargetType
 from app.shared.feeding_history_compact import build_feeding_history_prompt_blocks
 from app.shared.graphs.state_patch import state_get
@@ -138,12 +144,49 @@ def _match_predict_anchor(
     eta_items: Optional[List[Dict[str, Any]]],
     pending: Optional[List[Dict[str, Any]]],
 ) -> Optional[int]:
-    """在已拉到的热路径列表里匹配一个事件。"""
+    """在已拉到的热路径列表里匹配时间锚点（active 仅正 expectEndAt；next 为 nextAt）。"""
     if not event_id:
         return None
     if channel == "active":
         return match_active_expect_end(event_id, eta_items or [], full_events)
     return match_imminent_next_at(event_id, pending or [], full_events)
+
+
+def _kin_predict_active_item(
+    *,
+    event_id: str,
+    full_events: List[Dict[str, Any]],
+    eta_items: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """
+    active 整条亲属再试（含无正结束的进行中项）。
+
+    父：子孙中取 startAt 最晚的一条；子：再试父一次。
+    不读 parentEventName。
+    """
+    if is_parent_event(event_id, full_events):
+        best: Optional[Dict[str, Any]] = None
+        best_start = -1
+        best_name = ""
+        for leaf in get_descendant_leaves(event_id, full_events):
+            lid = str(leaf.get("event_id") or "").strip()
+            item = match_active_item(lid, eta_items, full_events)
+            if not item:
+                continue
+            start = _parse_unix_sec(item.get("startAt") or item.get("start_at")) or 0
+            if best is None or start >= best_start:
+                best = item
+                best_start = start
+                best_name = str(leaf.get("event_name") or "").strip()
+        return best, best_name
+    parent_id = _catalog_parent_id(event_id, full_events)
+    if not parent_id:
+        return None, ""
+    item = match_active_item(parent_id, eta_items, full_events)
+    if not item:
+        return None, ""
+    parent = get_event_by_id(parent_id, full_events)
+    return item, str((parent or {}).get("event_name") or "").strip()
 
 
 def _kin_predict_anchor(
@@ -155,11 +198,11 @@ def _kin_predict_anchor(
     pending: Optional[List[Dict[str, Any]]],
 ) -> Tuple[Optional[int], str]:
     """
-    热路径未命中时的亲属再试。
+    热路径未命中时的亲属再试（仅时间锚点）。
 
     父：在子孙里取锚点时间最晚的一个。
     子：只再匹配父 id 一次。
-    没有锚点不算有信息（样本不足文案不在这条热路径上）。
+    active 无正结束请用 _kin_predict_active_item。
     """
     if is_parent_event(event_id, full_events):
         best: Optional[int] = None
@@ -262,16 +305,63 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
         and channel in ("active", "next")
         and time_answer in ("clock", "remain")
     ):
-        anchor: Optional[int] = None
+        content: Optional[str] = None
         eta_items: List[Dict[str, Any]] = []
         pending: List[Dict[str, Any]] = []
         try:
             if channel == "active":
+                # active：先整条命中；有正结束用模板，无结束走进行中降级（不编造钟点）
                 eta_items = await http_client.get_predict_active_eta(device_no)
-                anchor = match_active_expect_end(eid, eta_items, full_events)
+                active_item = match_active_item(eid, eta_items, full_events)
+                if active_item is None:
+                    active_item, kin_name = _kin_predict_active_item(
+                        event_id=eid,
+                        full_events=full_events,
+                        eta_items=eta_items,
+                    )
+                    if kin_name:
+                        ename = kin_name
+                if active_item is not None:
+                    speak_name = pending_speak_name(active_item, ename) or ename
+                    end_at = read_positive_expect_end(active_item)
+                    if end_at is not None:
+                        content = format_predict_answer(
+                            anchor_unix=end_at,
+                            time_answer=time_answer,
+                            predict_channel=channel,
+                            event_name=speak_name,
+                        )
+                    else:
+                        content = format_active_in_progress_answer(speak_name)
             else:
+                # next：eventId 优先，根名可经 parentEventName 反推（见 match_imminent_item）
                 pending = await http_client.get_predict_imminent_pending(device_no)
-                anchor = match_imminent_next_at(eid, pending, full_events)
+                next_item = match_imminent_item(eid, pending, full_events)
+                anchor: Optional[int] = None
+                if next_item is not None:
+                    anchor = _parse_unix_sec(
+                        next_item.get("nextAt") or next_item.get("next_at")
+                    )
+                    ename = pending_speak_name(next_item, ename) or ename
+                if anchor is None:
+                    kin_anchor, kin_name = _kin_predict_anchor(
+                        event_id=eid,
+                        full_events=full_events,
+                        channel=channel,
+                        eta_items=None,
+                        pending=pending,
+                    )
+                    if kin_anchor is not None:
+                        anchor = kin_anchor
+                        if kin_name:
+                            ename = kin_name
+                if anchor is not None:
+                    content = format_predict_answer(
+                        anchor_unix=anchor,
+                        time_answer=time_answer,
+                        predict_channel=channel,
+                        event_name=ename,
+                    )
         except Exception as exc:
             logger.warning(
                 "预测拉数失败，转兜底: channel=%s device_no=%s err=%s",
@@ -279,26 +369,8 @@ async def speak_predict(state: Any) -> Dict[str, Any]:
                 device_no,
                 exc,
             )
-            anchor = None
-        if anchor is None and channel in ("active", "next"):
-            kin_anchor, kin_name = _kin_predict_anchor(
-                event_id=eid,
-                full_events=full_events,
-                channel=channel,
-                eta_items=eta_items if channel == "active" else None,
-                pending=pending if channel != "active" else None,
-            )
-            if kin_anchor is not None:
-                anchor = kin_anchor
-                if kin_name:
-                    ename = kin_name
-        if anchor is not None:
-            content = format_predict_answer(
-                anchor_unix=anchor,
-                time_answer=time_answer,
-                predict_channel=channel,
-                event_name=ename,
-            )
+            content = None
+        if content:
             content = _guard_no_history_duration(content, uncertainty_message(ename))
             intent["content"] = content
             return {
@@ -377,14 +449,16 @@ async def _go_measure_answer(
         return ""
     if not item:
         return ""
+    # 播报名优先 Go title，忽略 expectLeafTitle
+    speak_name = pending_speak_name(item, event_name) or event_name
     if aspect == "duration":
         return format_go_measure_answer(
-            event_name=event_name,
+            event_name=speak_name,
             aspect="duration",
             duration_sec=read_expect_duration_sec(item),
         )
     return format_go_measure_answer(
-        event_name=event_name,
+        event_name=speak_name,
         aspect="amount",
         amount=read_expect_amount(item),
         unit=read_expect_unit(item),

@@ -397,7 +397,8 @@ class HttpClient:
             device_no: 设备编号
 
         Returns:
-            ETA 条目列表（含 rootEventId/leafEventId/historyId/expectEndAt 等）
+            ETA 条目列表（含 rootEventId/leafEventId/historyId/expectEndAt 等；
+            expectEndAt 可空/0 表示无预计结束；无 parentEventName）
 
         Raises:
             httpx.HTTPError: HTTP 请求失败（配置齐全但仍失败时）
@@ -448,7 +449,8 @@ class HttpClient:
             device_no: 设备编号
 
         Returns:
-            imminent 事件列表（含 eventId/nextAt/title/expect* 等）
+            imminent 事件列表（含 eventId/nextAt/title/可选 parentEventName/expect* 等；
+            对齐 Go predict-merge-predict-contract，忽略 expectLeafTitle）
 
         Raises:
             httpx.HTTPError: HTTP 请求失败（配置齐全但仍失败时）
