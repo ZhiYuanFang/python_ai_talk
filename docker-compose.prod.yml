@@ -17,7 +17,7 @@ name: python-ai-talk-prod
 services:
   python-ai-talk:
     # 分版本：优先 PYTHON_AI_TALK_IMAGE_TAG；未设时回退旧 IMAGE_TAG（过渡期）
-    image: ${REGISTRY}/python-ai-talk:${PYTHON_AI_TALK_IMAGE_TAG:-${IMAGE_TAG}}
+    image: ${REGISTRY}/python-ai-talk:${PYTHON_AI_TALK_IMAGE_TAG}
     ports:
       - "8000:8000"
     networks: [go-ai-talk-net]

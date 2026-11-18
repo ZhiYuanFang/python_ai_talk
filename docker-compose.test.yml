@@ -15,7 +15,7 @@ name: python-ai-talk-test
 services:
   python-ai-talk:
     # 分版本：优先 PYTHON_AI_TALK_IMAGE_TAG；未设时回退旧 IMAGE_TAG（过渡期）
-    image: ${REGISTRY}/python-ai-talk:${PYTHON_AI_TALK_IMAGE_TAG:-${IMAGE_TAG}}
+    image: ${REGISTRY}/python-ai-talk:${PYTHON_AI_TALK_IMAGE_TAG}
     container_name: python-ai-talk-test
     ports:
       - "18000:8000"
