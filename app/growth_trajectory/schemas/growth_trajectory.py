@@ -65,7 +65,8 @@ class GrowthTrajectoryTurnRequest(BaseModel):
         validation_alias=AliasChoices("horizon_days", "horizonDays"),
         description="预测天数，默认 7",
     )
+    # Go 可省略；与 intent/clinic/care-alert 同口径；上游 TEMPORARY runtime
     model: Optional[Union[str, ModelConfig, Dict[str, Any]]] = Field(
         None,
-        description="可选 LLM 配置；缺省用内置默认",
+        description="可选 LLM 配置；Go 可省略，缺省由 llm_client TEMPORARY runtime",
     )

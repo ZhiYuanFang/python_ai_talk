@@ -137,12 +137,15 @@ def _model_config_dict(request: IntentRequest) -> Dict[str, Any]:
     从请求取出 Go 传入的 model（写入 state/日志）。
 
     业务说明：
-    路由不再本地写死型号；TEMPORARY 实际上游选型由 llm_client 硬编码覆盖。
+    model 可省略 → 空 dict；TEMPORARY 实际上游选型由 llm_client 硬编码覆盖。
     """
+    m = request.model
+    if m is None:
+        return {}
     return {
-        "provider": request.model.provider,
-        "name": request.model.name,
-        "max_in_flight": request.model.max_in_flight,
+        "provider": m.provider,
+        "name": m.name,
+        "max_in_flight": m.max_in_flight,
     }
 
 

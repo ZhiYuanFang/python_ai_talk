@@ -74,7 +74,7 @@ async def run_care_alert_analyze(request: CareAlertAnalyzeRequest) -> List[Dict[
         ValueError: 模型解析失败（传了非法 model）
         Exception: 图/LLM 底层异常向上抛，由路由转 500
     """
-    # Go 必传 model；解析失败由 resolve 抛错
+    # model 可省略 → 空占位；非法非空 model 由 resolve 抛错
     llm_model = resolve_model_config(request.model)
     day = _resolve_day(request.day)
     window = _care_alert_window()

@@ -46,15 +46,21 @@ async def care_alert_analyze(request: CareAlertAnalyzeRequest) -> CareAlertAnaly
     Returns:
         {"items": [...]}，字段 camelCase 对齐 Flutter CareAlertEventItem
     """
+    # model 可省略；日志用占位，避免 None 误导
+    _model_log = (
+        "(omitted)"
+        if request.model is None
+        else (
+            request.model
+            if isinstance(request.model, str)
+            else getattr(request.model, "provider", "?")
+        )
+    )
     logger.info(
         "护理留意分析请求: device_no=%s day=%s model=%s",
         request.device_no,
         request.day,
-        (
-            request.model
-            if isinstance(request.model, str)
-            else getattr(request.model, "provider", "?")
-        ),
+        _model_log,
     )
 
     try:
@@ -76,16 +82,21 @@ async def care_alert_analyze_stream(request: CareAlertAnalyzeRequest):
     流式分析：推送 thinking 增量，终态 result 含 items。
     供 Go 代理至设备侧 /device/api/care-alert/daily/stream。
     """
-    # 临时选型由 llm_client 硬编码覆盖；路由不再写死 request.model
+    # 临时选型由 llm_client 硬编码覆盖；model 可省略
+    _model_log = (
+        "(omitted)"
+        if request.model is None
+        else (
+            request.model
+            if isinstance(request.model, str)
+            else getattr(request.model, "name", request.model)
+        )
+    )
     logger.info(
         "护理留意 SSE 分析请求: device_no=%s day=%s model=%s",
         request.device_no,
         request.day,
-        (
-            request.model
-            if isinstance(request.model, str)
-            else getattr(request.model, "name", request.model)
-        ),
+        _model_log,
     )
     return StreamingResponse(
         iter_care_alert_analyze_sse(request),

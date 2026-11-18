@@ -57,10 +57,10 @@ class IntentRequest(BaseModel):
             description="设备编号（内部契约 snake_case，可过渡双收 camel）",
         ),
     ]
-    # Go 必传；Python 不换模、不按 VIP 选型
-    model: ModelConfig = Field(
-        ...,
-        description="调用模型（Go 选型必传）",
+    # Go 可省略；缺省由 llm_client TEMPORARY runtime 选型，不换模、不按 VIP
+    model: Optional[ModelConfig] = Field(
+        default=None,
+        description="调用模型（可选；Go 可省略）",
     )
     # 流式返回开关，默认 false（非流式），true 时通过 SSE 返回 thinking 事件
     stream: Optional[bool] = Field(default=False, description="是否流式返回，默认false")
@@ -230,10 +230,10 @@ class ClinicRequest(BaseModel):
             description="设备编号（内部契约 snake_case，可过渡双收 camel）",
         ),
     ]
-    # Go 必传；Python 不换模、不按 VIP 选型
-    model: ModelConfig = Field(
-        ...,
-        description="调用模型（Go 选型必传）",
+    # Go 可省略；缺省由 llm_client TEMPORARY runtime 选型，不换模、不按 VIP
+    model: Optional[ModelConfig] = Field(
+        default=None,
+        description="调用模型（可选；Go 可省略）",
     )
 
 

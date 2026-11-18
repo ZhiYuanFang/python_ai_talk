@@ -28,13 +28,13 @@ async def growth_trajectory_turn(request: GrowthTrajectoryTurnRequest):
 
     action=start|restart 启动会话；answer 用 Command(resume) 恢复 interrupt。
     """
-    # 临时选型由 llm_client 硬编码覆盖；路由不再写死 request.model
+    # 临时选型由 llm_client 硬编码覆盖；model 可省略
     logger.info(
         "成长轨迹 turn 请求: device_no=%s action=%s session_id=%s model=%s",
         request.device_no,
         request.action,
         request.session_id,
-        request.model,
+        "(omitted)" if request.model is None else request.model,
     )
     return StreamingResponse(
         iter_growth_trajectory_sse(request),

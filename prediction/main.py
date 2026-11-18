@@ -20,6 +20,18 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+
+
+class _HealthCheckAccessFilter(logging.Filter):
+    """过滤健康检查路径的 uvicorn access log，避免 Docker healthcheck 刷屏。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/v1/health" not in record.getMessage()
+
+
+# 模块 import 即挂载，覆盖 uvicorn prediction.main:app 启动路径
+logging.getLogger("uvicorn.access").addFilter(_HealthCheckAccessFilter())
+
 logger = logging.getLogger("python-prediction")
 
 # 创建 FastAPI 应用；title 用于 OpenAPI 文档标识服务名

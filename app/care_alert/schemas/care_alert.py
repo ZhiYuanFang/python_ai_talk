@@ -7,7 +7,7 @@
 响应序列化使用 camelCase，便于 Go 透传 Flutter。
 
 设计思路：
-1. model 支持字符串 deepseek|zhipu，或完整 {provider,name,max_in_flight}
+1. model 可选：字符串 deepseek|zhipu，或完整 {provider,name,max_in_flight}；Go 可省略
 2. suggestionId 可由 Python 生成 UUID；Go 亦可覆盖后写入日缓存
 3. reasons 字段与 design D3 / Flutter parseCareAlertReason 一致（毫秒）
 """
@@ -163,27 +163,28 @@ class CareAlertAnalyzeResponse(BaseModel):
 
 def _normalize_model_field(
     value: Any,
-) -> Union[str, ModelConfig, Dict[str, Any]]:
+) -> Optional[Union[str, ModelConfig, Dict[str, Any]]]:
     """
-    规范 model 字段：须为字符串提供商或完整 ModelConfig（Go 必传）。
+    规范 model 字段：可选；字符串提供商或完整 ModelConfig。
 
     业务逻辑：
-    - None / 空串 → 校验失败（不换模、无默认单模）
+    - None → 放行（Go 可省略；上游由 llm_client TEMPORARY runtime）
+    - 空串 → 视为省略（None）
     - "deepseek" / "zhipu" / "glm" → 原样字符串（服务层再补默认模型名）
     - dict / ModelConfig → 交给 ModelConfig 校验
     """
     if value is None:
-        raise TypeError("model 必传（Go 选型），不可省略")
+        return None
     if isinstance(value, ModelConfig):
         return value
     if isinstance(value, str):
         stripped = value.strip().lower()
         if not stripped:
-            raise TypeError("model 必传（Go 选型），不可为空")
+            return None
         return stripped
     if isinstance(value, dict):
         return value
-    raise TypeError("model 须为 deepseek|zhipu 字符串或 {provider,name,...} 对象")
+    raise TypeError("model 须为 deepseek|zhipu 字符串或 {provider,name,...} 对象，或省略")
 
 
 class CareAlertAnalyzeRequest(BaseModel):
@@ -212,14 +213,15 @@ class CareAlertAnalyzeRequest(BaseModel):
             description="逻辑日 YYYY-MM-DD（Asia/Shanghai）；可选，仅日志/上下文",
         ),
     ] = None
-    # Go 必传；Python 不换模、不按 VIP 选型
+    # Go 可省略；缺省由 llm_client TEMPORARY runtime 选型
     model: Annotated[
-        Union[str, ModelConfig, Dict[str, Any]],
+        Optional[Union[str, ModelConfig, Dict[str, Any]]],
         BeforeValidator(_normalize_model_field),
         Field(
-            description="调用模型（Go 选型必传）",
+            default=None,
+            description="调用模型（可选；Go 可省略）",
         ),
-    ]
+    ] = None
     age_months: Optional[int] = Field(
         None,
         validation_alias=AliasChoices("age_months", "ageMonths"),
