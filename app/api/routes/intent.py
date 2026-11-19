@@ -25,7 +25,10 @@ from app.feeding.services.agent_miss_record import (
     infer_miss_fail_kind,
     maybe_record_agent_miss,
 )
-from app.feeding.services.agent_miss_soft_reply import soft_reply_for_miss
+from app.feeding.services.agent_miss_soft_reply import (
+    MISS_FIXED_OUTWARD_REPLY,
+    soft_reply_for_miss,
+)
 from app.feeding.services.intent_pipeline import (
     build_intent_response_from_fields,
     create_history_confirm_response,
@@ -53,20 +56,21 @@ async def _finish_intent_response(
     model_config: Optional[Dict[str, Any]] = None,
 ) -> IntentResponse:
     """
-    对外返回前：终局 miss 先硬文案落库，再 LLM 软回复替换 content。
+    对外返回前：终局 miss 先硬文案落库，再改固定非 AIGC 话术。
 
-    确认/消歧也记下对外句子。软回复失败回退硬文案。硬文案留在 miss_canonical_content。
-    近况在软回复之前读取，本函数返回前再写入本轮听到的句子。
+    确认/消歧不改写。硬文案留在 miss_canonical_content；inbox 用硬文案。
+    近况写入本轮对外听到的句子（miss 时为固定句）。
     """
     from app.feeding.services.intent_recent_talk import intent_recent_talk_store
 
+    del model_config  # 不再用于 miss 软回复选型
     hard = str(response.content or "")
     need_confirm = bool(response.need_confirm)
     confirm_type = str(getattr(response, "confirm_type", None) or "").strip()
     options = list(response.options or [])
     spoken = ""
     try:
-        # 确认中不润色，但确认句本身要留给下一轮近况
+        # 确认/消歧中不改写 miss 话术，但确认句本身要留给下一轮近况
         if need_confirm or confirm_type or options:
             spoken = str(getattr(response, "confirm_message", None) or hard).strip()
             return response
@@ -102,18 +106,10 @@ async def _finish_intent_response(
 
         response.miss_canonical_content = hard
         response.miss_fail_kind = kind
-        try:
-            soft = await soft_reply_for_miss(
-                utterance=user_input,
-                hard_content=hard,
-                fail_kind=kind,
-                device_no=device_no,
-                llm_model=model_config,
-            )
-            if soft:
-                response.content = soft
-        except Exception as exc:
-            logger.warning("miss 软回复失败，保留硬文案: %s", exc)
+        # 对外固定句；不调用 LLM（soft_reply_for_miss 已退化为返回常量）
+        response.content = await soft_reply_for_miss(hard_content=hard) or (
+            MISS_FIXED_OUTWARD_REPLY
+        )
         spoken = str(response.content or "").strip()
         return response
     finally:
